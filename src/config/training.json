@@ -1,0 +1,62 @@
+{
+  "repositories": [
+    {
+      "name": "noir-examples",
+      "org": "noir-lang",
+      "branch": "master",
+      "paths": [],
+      "patterns": ["**/*.nr", "**/*.ts", "**/*.js", "**/*.md"]
+    },
+    {
+      "name": "aztec-starter",
+      "org": "AztecProtocol",
+      "branch": "main",
+      "paths": [],
+      "patterns": ["**/*.nr", "**/*.ts", "**/*.js", "**/*.md"]
+    },
+    {
+      "name": "aztec-packages",
+      "org": "AztecProtocol",
+      "branch": "master",
+      "paths": [],
+      "patterns": [
+        "noir-projects/aztec-nr/**/*.nr",
+        "noir-projects/noir-contracts/**/*.nr",
+        "yarn-project/aztec-faucet/**/*.ts",
+        "yarn-project/aztec-faucet/**/*.js",
+        "yarn-project/aztec-node/**/*.ts",
+        "yarn-project/aztec-node/**/*.js",
+        "yarn-project/aztec.js/**/*.ts",
+        "yarn-project/aztec.js/**/*.js",
+        "yarn-project/aztec/**/*.ts",
+        "yarn-project/aztec/**/*.js",
+        "yarn-project/protocol-contracts/**/*.ts",
+        "yarn-project/protocol-contracts/**/*.js",
+        "yarn-project/cli/**/*.ts",
+        "yarn-project/cli/**/*.js",
+        "yarn-project/accounts/**/*.ts",
+        "yarn-project/accounts/**/*.js",
+        "docs/docs/**/*.md",
+        "docs/docs/**/*.mdx",
+        "README.md",
+        "CONTRIBUTING.md",
+        "CHANGELOG.md",
+        "*.md"
+      ]
+    },
+    {
+      "name": "awesome-aztec",
+      "org": "AztecProtocol",
+      "branch": "main",
+      "paths": [],
+      "patterns": ["README.md"]
+    },
+    {
+      "name": "aztec-handbook",
+      "org": "defi-wonderland",
+      "branch": "dev",
+      "paths": [],
+      "patterns": ["docs/**/*.md"]
+    }
+  ]
+}

@@ -1,0 +1,31 @@
+Honk AI – Evaluation License
+
+Copyright (c) 2025 Crimson M
+
+Permission is hereby granted to the Client identified in the Statement of Work (“Client”) to access and evaluate this software (“Software”) solely for internal, non‑commercial evaluation and testing.
+
+Restrictions:
+
+- No production use, commercial use, hosting, resale, or distribution.
+- No sublicensing, assignment, or transfer.
+- No removal of notices. Source must remain accessible only to Client’s internal personnel for evaluation.
+
+Intellectual Property:
+
+- Except as expressly stated, all right, title, and interest in and to the Software remain with the Licensor.
+- Upon receipt of full payment as defined in the SOW, Licensor will grant Client the agreed final license (e.g., MIT/Apache‑2.0) and, if applicable, assign IP rights per the SOW.
+
+Termination:
+
+- This license terminates automatically if Client breaches these terms or upon issuance of the final license after payment.
+- On termination (other than conversion to final license) Client must cease use and delete all copies.
+
+Warranty/ Liability:
+THE SOFTWARE IS PROVIDED “AS IS”, WITHOUT WARRANTY OF ANY KIND. IN NO EVENT SHALL LICENSOR BE LIABLE FOR ANY CLAIMS OR DAMAGES ARISING FROM USE OF THE SOFTWARE.
+
+Jurisdiction: As set in the SOW; otherwise Licensor’s domicile.
+
+Alignment with Grant:
+
+- Clause 7.1 of the Grant Agreement allows Aztec to request relicensing under Apache-2.0 once the Software is successfully developed. Until written request and/or full payment and acceptance, this Evaluation License governs.
+- Upon acceptance/payment, Licensor will replace this LICENSE with Apache-2.0 (or MIT if agreed in writing) and may tag a release to reflect the change.
