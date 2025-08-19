@@ -375,6 +375,21 @@ export const newMessage = async (
 
       console.log(`Response sent for user: ${message.author.username}`);
 
+      // Extract header from response and rename thread if this is a new thread
+      if (!message.channel.isThread() && threadMessage.channel.isThread()) {
+        try {
+          const firstLine = ragResponse.answer.split('\n')[0].trim();
+          if (firstLine.startsWith('#')) {
+            const headerText = firstLine.replace(/^#+\s*/, '').trim();
+            if (headerText && headerText.length <= 100) {
+              await threadMessage.channel.setName(headerText);
+            }
+          }
+        } catch (headerError) {
+          console.error("Error extracting header for thread rename:", headerError);
+        }
+      }
+
       // Store the response in the database if we have a unique ID and botReply exists
       if (MessageData.ID && botReply) {
         try {

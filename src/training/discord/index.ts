@@ -61,7 +61,13 @@ export async function TrainOnDiscordThreads(client: Client) {
       // Add the already trained threads into a new array to store the newely trained threads
       const newThreads: string[] = [...alreadyTrainedThreads];
 
-      for (const threadId of threadIds) {
+      // Check if this is first startup (empty database) and limit threads
+      const isFirstStartup = alreadyTrainedThreads.length === 0;
+      const threadsToProcess = isFirstStartup 
+        ? threadIds.slice(0, env.FIRST_STARTUP_LIMIT)
+        : threadIds;
+
+      for (const threadId of threadsToProcess) {
         if (newThreads.includes(threadId)) {
           console.log("Stopping, reach already trained!");
           break;
@@ -125,7 +131,7 @@ export async function TrainOnDiscordThreads(client: Client) {
           prompt.human,
         );
 
-        const success = await UpsertDocument(
+        await UpsertDocument(
           `thread-${threadId}`,
           response,
           `https://discord.com/channels/${channel.guild.id}/${channel.id}`,

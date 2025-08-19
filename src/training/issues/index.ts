@@ -23,6 +23,10 @@ export async function TrainOnGithubIssues(client: Client) {
       console.log("Error fetching issues from LMDB, likely empty:", error);
     }
 
+    // Check if this is first startup (empty database) and limit issues
+    const isFirstStartup = trainedIssues.length === 0;
+    let processedCount = 0;
+
     for await (const issue of getAllIssues(
       issuesConfig.GITHUB_REPO_OWNER,
       repo,
@@ -34,11 +38,18 @@ export async function TrainOnGithubIssues(client: Client) {
           break;
         }
 
+        // Limit processing on first startup
+        if (isFirstStartup && processedCount >= env.FIRST_STARTUP_LIMIT) {
+          console.log(`Reached first startup limit of ${env.FIRST_STARTUP_LIMIT} issues`);
+          break;
+        }
+
         console.log(`Processing issue #${issue.number}: ${issue.title}`);
 
         // Most bot messages are automated and useless, so we can skip them (Especially issue's for bumping and what not)
         if (issue.user == null || issue.user.login.includes("[bot]")) {
           console.log("Skipping issue, maybe dependabot or an automated task.");
+          processedCount++; // Still count skipped issues towards limit
           continue;
         }
 
@@ -99,6 +110,8 @@ export async function TrainOnGithubIssues(client: Client) {
         );
 
         console.log("Trained on:", issue.html_url);
+        processedCount++;
+
         try {
           // await (client.channels.cache.get(env.LoggingChannelId) as TextChannel).send({
           //   content: `trained on ${issue.html_url}`,

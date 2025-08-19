@@ -39,6 +39,11 @@ const envSchema = z.object({
   GITHUB_TOKEN: z.string(),
   LMDB_ROUTE: z.string(),
   SNAPSHOT_ROUTE: z.string(),
+
+  FIRST_STARTUP_LIMIT: z
+    .string()
+    .transform((val) => parseInt(val, 10))
+    .default(50),
 });
 
 export const env = envSchema.parse(process.env);
