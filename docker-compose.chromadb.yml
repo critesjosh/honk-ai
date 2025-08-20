@@ -1,6 +1,7 @@
 networks:
   net:
     driver: bridge
+    name: honk-ai_net
 
 services:
   chromadb:
