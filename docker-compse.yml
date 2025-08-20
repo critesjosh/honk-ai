@@ -9,3 +9,9 @@ services:
       - ./db:/app/db
       - ./snapshots:/app/snapshots
     restart: unless-stopped
+    networks:
+      - honk-ai_net
+
+networks:
+  honk-ai_net:
+    external: true
