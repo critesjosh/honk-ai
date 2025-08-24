@@ -38,6 +38,9 @@
         "yarn-project/accounts/**/*.js",
         "docs/docs/**/*.md",
         "docs/docs/**/*.mdx",
+        "barretenberg/docs/docs/**/*.md",
+        "barretenberg/docs/examples/**/*.nr",
+        "barretenberg/docs/examples/**/*.ts",
         "README.md",
         "CONTRIBUTING.md",
         "CHANGELOG.md",
@@ -57,6 +60,13 @@
       "branch": "dev",
       "paths": [],
       "patterns": ["docs/**/*.md"]
+    },
+    {
+      "name": "noir",
+      "org": "noir-lang",
+      "branch": "master",
+      "paths": [],
+      "patterns": ["docs/docs/**/*.md", "examples/**/*.nr"]
     }
   ]
 }
