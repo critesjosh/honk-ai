@@ -126,7 +126,7 @@ Notes
 
 ### Option A: Docker
 
-This repo includes a Dockerfile to containerize the app. The compose file is named `docker-compose.yml` (note the missing "o"). Use `-f` when running compose.
+This repo includes a Dockerfile to containerize the app. The compose file is named `docker-compose.yml`. Use `-f` when running compose.
 
 ```bash
 # Build + run the app container, with db/snapshots mounted
