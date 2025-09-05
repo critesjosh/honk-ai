@@ -1,0 +1,35 @@
+version: "3"
+services:
+  chromadb:
+    image: chromadb/chroma:latest
+    volumes:
+      - ./chromadb:/chroma/chroma
+      - ./chromadb/server.htpasswd:/chroma/server.htpasswd
+    environment:
+      - IS_PERSISTENT=TRUE
+      - PERSIST_DIRECTORY=/chroma/chroma
+      - CHROMA_SERVER_AUTHN_CREDENTIALS_FILE=/chroma/server.htpasswd
+      - CHROMA_SERVER_AUTHN_PROVIDER=chromadb.auth.basic_authn.BasicAuthenticationServerProvider
+    ports:
+      - 8001:8000
+    restart: unless-stopped
+    networks:
+      - honk-ai_net
+
+  honk-ai:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    env_file: .env
+    volumes:
+      - ./db:/app/db
+      - ./snapshots:/app/snapshots
+    restart: unless-stopped
+    depends_on:
+      - chromadb
+    networks:
+      - honk-ai_net
+
+networks:
+  honk-ai_net:
+    driver: bridge

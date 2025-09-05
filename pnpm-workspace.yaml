@@ -1,0 +1,4 @@
+onlyBuiltDependencies:
+  - faiss-node
+  - lmdb
+  - msgpackr-extract

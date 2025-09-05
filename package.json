@@ -1,0 +1,42 @@
+{
+  "name": "honk-ai",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/src/index.js",
+    "docker-deploy": "docker-compose up -d --build",
+    "dev-run": "tsx src/index.ts"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "packageManager": "pnpm@10.13.1",
+  "devDependencies": {
+    "typescript": "^5.8.3"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.57.0",
+    "@chroma-core/openai": "^0.1.7",
+    "@langchain/anthropic": "^0.3.7",
+    "@langchain/community": "^0.3.15",
+    "@langchain/core": "^0.3.19",
+    "@langchain/openai": "^0.3.14",
+    "@octokit/rest": "^22.0.0",
+    "@types/node-cron": "^3.0.11",
+    "chromadb": "^3.0.10",
+    "discord.js": "^14.21.0",
+    "dotenv": "^17.2.1",
+    "faiss-node": "^0.5.1",
+    "glob": "^11.0.3",
+    "langchain": "^0.3.7",
+    "lmdb": "^3.4.2",
+    "node-cron": "^4.2.1",
+    "openai": "^5.11.0",
+    "prettier": "^3.6.2",
+    "simple-git": "^3.28.0",
+    "zod": "^4.0.14"
+  }
+}
