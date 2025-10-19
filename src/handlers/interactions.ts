@@ -1,22 +1,30 @@
-import { ButtonInteraction, ModalSubmitInteraction, ChatInputCommandInteraction } from "discord.js";
+import {
+  ButtonInteraction,
+  ModalSubmitInteraction,
+  ChatInputCommandInteraction,
+} from "discord.js";
 import { CustomEmbed } from "../utils/embedBuilder.js";
 import { processAnalyticsQuery } from "../utils/analytics.js";
 import { chunkLLMResponse } from "../utils/responseFormatter.js";
 import { showAnalyticsModal } from "../commands/analytics.js";
+import { handleMCPCommand } from "../commands/mcp.js";
+import { handleMCPStatsCommand } from "../commands/mcp-stats.js";
 
-export const handleButtonInteraction = async (interaction: ButtonInteraction) => {
+export const handleButtonInteraction = async (
+  interaction: ButtonInteraction,
+) => {
   try {
     // Handle analytics modal button
-    if (interaction.customId === 'open_analytics_modal') {
+    if (interaction.customId === "open_analytics_modal") {
       await showAnalyticsModal(interaction);
       return;
     }
-    
-    // Handle rating buttons
-    if (!interaction.customId.startsWith('rating-')) return;
 
-    const isGood = interaction.customId.includes('good');
-    const responseId = interaction.customId.split('-').pop();
+    // Handle rating buttons
+    if (!interaction.customId.startsWith("rating-")) return;
+
+    const isGood = interaction.customId.includes("good");
+    const responseId = interaction.customId.split("-").pop();
 
     if (!responseId) return;
 
@@ -24,12 +32,12 @@ export const handleButtonInteraction = async (interaction: ButtonInteraction) =>
     await interaction.reply({
       embeds: [
         new CustomEmbed().setDescription(
-          isGood 
+          isGood
             ? "Thanks for the positive feedback! 👍"
-            : "Thanks for the feedback. We'll work on improving! 👎"
-        )
+            : "Thanks for the feedback. We'll work on improving! 👎",
+        ),
       ],
-      ephemeral: true
+      ephemeral: true,
     });
 
     // Update the response in the database with the rating
@@ -39,54 +47,69 @@ export const handleButtonInteraction = async (interaction: ButtonInteraction) =>
         const updatedResponse = {
           ...existingResponse,
           rating: {
-            type: isGood ? 'good' : 'bad',
+            type: isGood ? "good" : "bad",
             response: undefined,
             user_id: interaction.user.id,
-            timestamp: Date.now()
-          }
+            timestamp: Date.now(),
+          },
         };
-        
+
         globalThis.databases?.responses?.put(responseId, updatedResponse);
-        console.log(`Updated response ${responseId} with rating: ${isGood ? 'good' : 'bad'}`);
+        console.log(
+          `Updated response ${responseId} with rating: ${isGood ? "good" : "bad"}`,
+        );
       }
     } catch (dbError) {
-      console.error('Error updating response in database:', dbError);
+      console.error("Error updating response in database:", dbError);
     }
 
     // Update analytics counters
     try {
-      const currentGoodCount = parseInt(globalThis.databases?.analytics?.get("totalGoodRatings") || "0");
-      const currentBadCount = parseInt(globalThis.databases?.analytics?.get("totalBadRatings") || "0");
-      
+      const currentGoodCount = parseInt(
+        globalThis.databases?.analytics?.get("totalGoodRatings") || "0",
+      );
+      const currentBadCount = parseInt(
+        globalThis.databases?.analytics?.get("totalBadRatings") || "0",
+      );
+
       if (isGood) {
-        globalThis.databases?.analytics?.put("totalGoodRatings", (currentGoodCount + 1).toString());
+        globalThis.databases?.analytics?.put(
+          "totalGoodRatings",
+          (currentGoodCount + 1).toString(),
+        );
         console.log(`New total good ratings: ${currentGoodCount + 1}`);
       } else {
-        globalThis.databases?.analytics?.put("totalBadRatings", (currentBadCount + 1).toString());
+        globalThis.databases?.analytics?.put(
+          "totalBadRatings",
+          (currentBadCount + 1).toString(),
+        );
         console.log(`New total bad ratings: ${currentBadCount + 1}`);
       }
 
       // Also update total ratings
       const totalRatings = currentGoodCount + currentBadCount + 1;
-      globalThis.databases?.analytics?.put("totalRatings", totalRatings.toString());
-      
+      globalThis.databases?.analytics?.put(
+        "totalRatings",
+        totalRatings.toString(),
+      );
     } catch (analyticsError) {
-      console.error('Error updating analytics:', analyticsError);
+      console.error("Error updating analytics:", analyticsError);
     }
-
   } catch (error) {
-    console.error('Error handling button interaction:', error);
+    console.error("Error handling button interaction:", error);
   }
 };
 
-
-export const handleModalSubmit = async (interaction: ModalSubmitInteraction) => {
+export const handleModalSubmit = async (
+  interaction: ModalSubmitInteraction,
+) => {
   try {
-    if (interaction.customId === 'analytics_modal') {
+    if (interaction.customId === "analytics_modal") {
       // Get the form values
-      const startDate = interaction.fields.getTextInputValue('start_date');
-      const endDate = interaction.fields.getTextInputValue('end_date');
-      const question = interaction.fields.getTextInputValue('analytics_question');
+      const startDate = interaction.fields.getTextInputValue("start_date");
+      const endDate = interaction.fields.getTextInputValue("end_date");
+      const question =
+        interaction.fields.getTextInputValue("analytics_question");
 
       // Validate date format
       const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
@@ -94,17 +117,19 @@ export const handleModalSubmit = async (interaction: ModalSubmitInteraction) => 
         await interaction.reply({
           embeds: [
             new CustomEmbed()
-              .setDescription("❌ Invalid date format. Please use YYYY-MM-DD format.")
-              .setRed()
+              .setDescription(
+                "❌ Invalid date format. Please use YYYY-MM-DD format.",
+              )
+              .setRed(),
           ],
-          ephemeral: true
+          ephemeral: true,
         });
         return;
       }
 
       // Convert dates to timestamps
-      const startTimestamp = new Date(startDate + 'T00:00:00Z').getTime();
-      const endTimestamp = new Date(endDate + 'T23:59:59Z').getTime();
+      const startTimestamp = new Date(startDate + "T00:00:00Z").getTime();
+      const endTimestamp = new Date(endDate + "T23:59:59Z").getTime();
 
       // Validate date range
       if (startTimestamp >= endTimestamp) {
@@ -112,9 +137,9 @@ export const handleModalSubmit = async (interaction: ModalSubmitInteraction) => 
           embeds: [
             new CustomEmbed()
               .setDescription("❌ Start date must be before end date.")
-              .setRed()
+              .setRed(),
           ],
-          ephemeral: true
+          ephemeral: true,
         });
         return;
       }
@@ -122,17 +147,18 @@ export const handleModalSubmit = async (interaction: ModalSubmitInteraction) => 
       // Show loading response
       await interaction.reply({
         embeds: [
-          new CustomEmbed()
-            .setDescription("🔍 Analyzing questions... This may take a moment.")
+          new CustomEmbed().setDescription(
+            "🔍 Analyzing questions... This may take a moment.",
+          ),
         ],
-        ephemeral: true
+        ephemeral: true,
       });
 
       try {
         // Process the analytics query
         const analyticsResponse = await processAnalyticsQuery(question, {
           start: startTimestamp,
-          end: endTimestamp
+          end: endTimestamp,
         });
 
         // Split response if too long for embed
@@ -142,22 +168,44 @@ export const handleModalSubmit = async (interaction: ModalSubmitInteraction) => 
             .setTitle("📊 Question Analytics Results")
             .setDescription(analyticsResponse)
             .addFields(
-              { name: "📅 Date Range", value: `${startDate} to ${endDate}`, inline: true },
-              { name: "❓ Your Question", value: question.length > 100 ? question.substring(0, 97) + "..." : question, inline: false }
+              {
+                name: "📅 Date Range",
+                value: `${startDate} to ${endDate}`,
+                inline: true,
+              },
+              {
+                name: "❓ Your Question",
+                value:
+                  question.length > 100
+                    ? question.substring(0, 97) + "..."
+                    : question,
+                inline: false,
+              },
             );
 
           await interaction.editReply({ embeds: [embed] });
         } else {
           // Split into multiple embeds
           const chunks = chunkLLMResponse(analyticsResponse, maxLength);
-          
+
           // First embed with title and metadata
           const firstEmbed = new CustomEmbed()
             .setTitle("📊 Question Analytics Results")
             .setDescription(chunks[0])
             .addFields(
-              { name: "📅 Date Range", value: `${startDate} to ${endDate}`, inline: true },
-              { name: "❓ Your Question", value: question.length > 100 ? question.substring(0, 97) + "..." : question, inline: false }
+              {
+                name: "📅 Date Range",
+                value: `${startDate} to ${endDate}`,
+                inline: true,
+              },
+              {
+                name: "❓ Your Question",
+                value:
+                  question.length > 100
+                    ? question.substring(0, 97) + "..."
+                    : question,
+                inline: false,
+              },
             );
 
           await interaction.editReply({ embeds: [firstEmbed] });
@@ -168,24 +216,44 @@ export const handleModalSubmit = async (interaction: ModalSubmitInteraction) => 
             await interaction.followUp({ embeds: [embed], ephemeral: true });
           }
         }
-
       } catch (error) {
         console.error("Error processing analytics modal:", error);
         await interaction.editReply({
           embeds: [
             new CustomEmbed()
-              .setDescription("❌ Sorry, I encountered an error while processing your analytics request.")
-              .setRed()
-          ]
+              .setDescription(
+                "❌ Sorry, I encountered an error while processing your analytics request.",
+              )
+              .setRed(),
+          ],
         });
       }
     }
   } catch (error) {
-    console.error('Error handling modal submit:', error);
+    console.error("Error handling modal submit:", error);
+  }
+};
+
+export const handleChatInputCommand = async (
+  interaction: ChatInputCommandInteraction,
+) => {
+  try {
+    if (interaction.commandName === "mcp") {
+      await handleMCPCommand(interaction);
+      return;
+    }
+
+    if (interaction.commandName === "mcp-stats") {
+      await handleMCPStatsCommand(interaction);
+      return;
+    }
+  } catch (error) {
+    console.error("Error handling chat input command:", error);
   }
 };
 
 export default {
   handleButtonInteraction,
   handleModalSubmit,
+  handleChatInputCommand,
 };

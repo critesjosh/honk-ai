@@ -6,7 +6,7 @@ import { Client, GatewayIntentBits, Partials } from "discord.js";
 import { env } from "./env.js";
 
 import handler from "./handlers/index.js";
-console.log(env);
+
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,

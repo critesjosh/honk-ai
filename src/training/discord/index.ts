@@ -61,11 +61,10 @@ export async function TrainOnDiscordThreads(client: Client) {
       // Add the already trained threads into a new array to store the newely trained threads
       const newThreads: string[] = [...alreadyTrainedThreads];
 
-      // Check if this is first startup (empty database) and limit threads
-      const isFirstStartup = alreadyTrainedThreads.length === 0;
-      const threadsToProcess = isFirstStartup 
-        ? threadIds.slice(0, env.FIRST_STARTUP_LIMIT)
-        : threadIds;
+      // Always limit to most recent threads (TRAINING_LIMIT)
+      const threadsToProcess = threadIds.slice(0, env.TRAINING_LIMIT);
+
+      console.log(`Processing ${threadsToProcess.length} most recent threads (limit: ${env.TRAINING_LIMIT})`);
 
       for (const threadId of threadsToProcess) {
         if (newThreads.includes(threadId)) {
