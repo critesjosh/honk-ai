@@ -122,7 +122,12 @@ Notes
 - `DiscordTrainingForums`: Forum channel IDs that will be summarized into the knowledge base.
 - `ADMIN_USERS`: (optional) comma-separated Discord user IDs. Users in this list will see enhanced global analytics (total requests, unique users, averages) when running the `/mcp-stats` slash command. If not set or empty, all users see only their personal statistics.
 - `MAX_RESPONSE_TOKENS`: cap the response length. Keep within provider limits. Also consisder the fact reasoning tokens are considered in this
-- `AZTEC_DOCS_VERSION`: (optional) controls which version of aztec-packages to train on. Set to a specific release tag (e.g., `aztec-packages-v1.0.0`) or branch name. If not set, defaults to the latest official release. The bot automatically polls GitHub every hour for new releases and re-indexes when detected.
+- `AZTEC_DOCS_VERSION`: (optional) controls which version of aztec-packages to train on. Can be:
+  - A stable release tag (e.g., `"aztec-packages-v2.0.1"`)
+  - A nightly version (e.g., `"v3.0.0-nightly.20251027"`)
+  - A branch name (e.g., `"my-feature-branch"`)
+  - If not set (or empty), the bot automatically tracks the latest stable release and re-indexes hourly when new releases are detected.
+  - **When explicitly set, automatic release detection is disabled**, allowing you to pin to a specific version.
 - `MCP_ENABLED`: controls whether the MCP server starts with the bot. Set to `"false"` to run only the Discord bot.
 - `MCP_SERVER_URL`: the public URL shown in the `/mcp` Discord command. Change this to your production domain when deploying.
 
@@ -264,16 +269,25 @@ File: `src/training/index.ts`
 
 Repository sources are configured in `src/config/training.json`. GitHub issues sources are in `src/config/issues.json`.
 
-### Automatic Release Detection
+### Automatic Release Detection & Version Change Detection
 
-The bot automatically checks GitHub every hour for new aztec-packages releases (non-prerelease only). When a new release is detected:
+The bot monitors for changes every hour and automatically re-indexes when needed:
 
-1. Logs the event to the Discord logging channel
-2. Temporarily updates `AZTEC_DOCS_VERSION` to the new release tag
-3. Runs the full training pipeline (repos, Discord threads, GitHub issues)
-4. Logs success or failure to Discord
+**When `AZTEC_DOCS_VERSION` is NOT set (auto mode):**
+- Checks GitHub for new stable releases (non-prerelease only)
+- Automatically re-indexes when a new release is detected
+- Logs events to Discord
 
-This ensures the bot's knowledge base stays up-to-date with the latest stable releases without manual intervention.
+**When `AZTEC_DOCS_VERSION` IS set (manual mode):**
+- Skips automatic release polling
+- Detects when you change the configured version in `.env`
+- Automatically re-indexes when the version changes
+- Supports:
+  - Stable releases (e.g., `"aztec-packages-v2.0.1"`)
+  - Nightly builds (e.g., `"v3.0.0-nightly.20251027"`)
+  - Custom branches (e.g., `"my-feature-branch"`)
+
+**To trigger re-indexing:** Simply change `AZTEC_DOCS_VERSION` in your `.env` file and restart the bot. It will detect the change and automatically retrain on startup.
 
 ---
 

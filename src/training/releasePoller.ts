@@ -26,9 +26,63 @@ export function startReleasePoller(client: Client) {
 
 /**
  * Checks for a new release and triggers training if one is found
+ * Also checks if AZTEC_DOCS_VERSION has been manually changed
  */
 async function checkForNewRelease(client: Client) {
   try {
+    // Check if user has explicitly set a version
+    if (env.AZTEC_DOCS_VERSION) {
+      // Check if the configured version has changed since last training
+      const lastConfiguredVersion = globalThis.databases.releaseTracking.get(
+        "lastConfiguredVersion",
+      );
+
+      if (lastConfiguredVersion !== env.AZTEC_DOCS_VERSION) {
+        console.log(
+          `AZTEC_DOCS_VERSION changed from ${lastConfiguredVersion || "auto"} to ${env.AZTEC_DOCS_VERSION}`,
+        );
+
+        await logToDiscord(
+          client,
+          `🔄 AZTEC_DOCS_VERSION changed to: ${env.AZTEC_DOCS_VERSION}. Starting re-indexing...`,
+        );
+
+        try {
+          console.log(
+            `Running training pipeline for version: ${env.AZTEC_DOCS_VERSION}`,
+          );
+          await StartTrainingService();
+          await TrainOnDiscordThreads(client);
+          await TrainOnGithubIssues(client);
+
+          // Update the last configured version
+          globalThis.databases.releaseTracking.put(
+            "lastConfiguredVersion",
+            env.AZTEC_DOCS_VERSION,
+          );
+
+          await logToDiscord(
+            client,
+            `✅ Successfully re-indexed for version: ${env.AZTEC_DOCS_VERSION}`,
+          );
+          console.log(
+            `Successfully processed version: ${env.AZTEC_DOCS_VERSION}`,
+          );
+        } catch (error) {
+          await logToDiscord(
+            client,
+            `❌ Error during re-indexing for ${env.AZTEC_DOCS_VERSION}: ${error instanceof Error ? error.message : "Unknown error"}`,
+          );
+          console.error("Error during version re-indexing:", error);
+        }
+      } else {
+        console.log(
+          `AZTEC_DOCS_VERSION unchanged (${env.AZTEC_DOCS_VERSION}), skipping auto-update check`,
+        );
+      }
+      return;
+    }
+
     console.log("Checking for new aztec-packages release...");
     const latestRelease = await getLatestAztecRelease();
     const lastProcessedRelease = globalThis.databases.releaseTracking.get(
@@ -46,10 +100,6 @@ async function checkForNewRelease(client: Client) {
         client,
         `🚀 New aztec-packages release detected: ${latestRelease}. Starting re-indexing...`,
       );
-
-      // Temporarily override AZTEC_DOCS_VERSION for this training run
-      const originalVersion = env.AZTEC_DOCS_VERSION;
-      (env as any).AZTEC_DOCS_VERSION = latestRelease;
 
       try {
         // Run full training pipeline
@@ -75,9 +125,6 @@ async function checkForNewRelease(client: Client) {
           `❌ Error during re-indexing for ${latestRelease}: ${error instanceof Error ? error.message : "Unknown error"}`,
         );
         console.error("Error during release re-indexing:", error);
-      } finally {
-        // Restore original AZTEC_DOCS_VERSION
-        (env as any).AZTEC_DOCS_VERSION = originalVersion;
       }
     } else if (!lastProcessedRelease) {
       // First run - trigger initial training
@@ -89,10 +136,6 @@ async function checkForNewRelease(client: Client) {
         client,
         `🚀 Starting initial training for version: ${latestRelease}`,
       );
-
-      // Temporarily override AZTEC_DOCS_VERSION for this training run
-      const originalVersion = env.AZTEC_DOCS_VERSION;
-      (env as any).AZTEC_DOCS_VERSION = latestRelease;
 
       try {
         console.log(`Starting initial training for version: ${latestRelease}`);
@@ -119,9 +162,6 @@ async function checkForNewRelease(client: Client) {
           `❌ Error during initial training for ${latestRelease}: ${error instanceof Error ? error.message : "Unknown error"}`,
         );
         console.error("Error during initial training:", error);
-      } finally {
-        // Restore original AZTEC_DOCS_VERSION
-        (env as any).AZTEC_DOCS_VERSION = originalVersion;
       }
     } else {
       console.log("No new release detected");
