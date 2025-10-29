@@ -11,6 +11,7 @@ import {
 } from "../../utils/chroma.js";
 import { parseNoir, parseJS, Data, chunkMdxFile } from "./parsing/index.js";
 import { preprocessMarkdownIncludes } from "./preprocessing/codeInclusion.js";
+import { env } from "../../env.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -37,10 +38,26 @@ export async function StartTrainingService() {
  * Process a single repository
  */
 async function processRepository(repo: any) {
-  const repoUrl = `https://github.com/${repo.org}/${repo.name}/tree/${repo.branch || "main"}`;
+  // Determine which version/branch to use
+  let versionToCheckout = repo.branch || "main";
+
+  // If useEnvVersion is true, use AZTEC_DOCS_VERSION from env or fetch latest release
+  if (repo.useEnvVersion) {
+    if (env.AZTEC_DOCS_VERSION) {
+      versionToCheckout = env.AZTEC_DOCS_VERSION;
+      console.log(`Using version from AZTEC_DOCS_VERSION: ${versionToCheckout}`);
+    } else {
+      // Fetch latest release if AZTEC_DOCS_VERSION not set
+      const { getLatestAztecRelease } = await import("../../utils/github.js");
+      versionToCheckout = await getLatestAztecRelease();
+      console.log(`Using latest release: ${versionToCheckout}`);
+    }
+  }
+
+  const repoUrl = `https://github.com/${repo.org}/${repo.name}/tree/${versionToCheckout}`;
   const repoPath = path.join(__dirname, "temp", repo.name);
 
-  console.log(`Processing repository: ${repo.name}`);
+  console.log(`Processing repository: ${repo.name} at version ${versionToCheckout}`);
 
   try {
     // Clean up any existing repository
@@ -54,10 +71,9 @@ async function processRepository(repo: any) {
       repoPath,
     );
 
-    // Checkout specified branch
-    if (repo.branch && repo.branch !== "main") {
-      await git.cwd(repoPath).checkout(repo.branch);
-    }
+    // Checkout specified version (branch or tag)
+    console.log(`Checking out ${versionToCheckout}...`);
+    await git.cwd(repoPath).checkout(versionToCheckout);
 
     // Delete old documents for this repository
     await cleanupOldDocuments(repoUrl);

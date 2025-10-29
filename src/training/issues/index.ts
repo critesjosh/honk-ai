@@ -23,9 +23,10 @@ export async function TrainOnGithubIssues(client: Client) {
       console.log("Error fetching issues from LMDB, likely empty:", error);
     }
 
-    // Check if this is first startup (empty database) and limit issues
-    const isFirstStartup = trainedIssues.length === 0;
+    // Track how many issues we've processed
     let processedCount = 0;
+
+    console.log(`Processing up to ${env.TRAINING_LIMIT} most recent issues for ${repo}`);
 
     for await (const issue of getAllIssues(
       issuesConfig.GITHUB_REPO_OWNER,
@@ -38,9 +39,9 @@ export async function TrainOnGithubIssues(client: Client) {
           break;
         }
 
-        // Limit processing on first startup
-        if (isFirstStartup && processedCount >= env.FIRST_STARTUP_LIMIT) {
-          console.log(`Reached first startup limit of ${env.FIRST_STARTUP_LIMIT} issues`);
+        // Always limit to most recent issues (TRAINING_LIMIT)
+        if (processedCount >= env.TRAINING_LIMIT) {
+          console.log(`Reached training limit of ${env.TRAINING_LIMIT} issues`);
           break;
         }
 

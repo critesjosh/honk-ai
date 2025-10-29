@@ -2,6 +2,7 @@ import fs from "fs/promises";
 import path from "path";
 import { env } from "../../../env.js";
 import trainingConfig from "../../../config/training.json" with { type: "json" };
+import { getLatestAztecRelease } from "../../../utils/github.js";
 
 /**
  * Get line number from character index in file content
@@ -355,7 +356,10 @@ export async function processIncludeVersionDirectives(
 ): Promise<string> {
   // Derive commitTag from training.json
   const commitTag = commitTagFromTrainingConfig();
-  const testnetTag = env.DOCS_TESTNET_TAG;
+
+  // Fetch latest release dynamically for testnet tag
+  const latestRelease = await getLatestAztecRelease();
+  const testnetTag = latestRelease;
 
   // Replace aztec version placeholder with commit tag
   content = content.replaceAll(`#include_aztec_version`, commitTag);

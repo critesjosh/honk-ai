@@ -9,6 +9,9 @@ declare global {
     questions: RootDatabase;
     trainedThreads: RootDatabase;
     trainedIssues: RootDatabase;
+    releaseTracking: RootDatabase;
+    mcpTokens: RootDatabase;
+    mcpRequests: RootDatabase;
   };
 }
 
