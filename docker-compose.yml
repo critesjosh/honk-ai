@@ -1,5 +1,21 @@
 version: "3"
 services:
+  chromadb:
+    image: chromadb/chroma:latest
+    volumes:
+      - ./chromadb:/chroma/chroma
+      - ./chromadb/server.htpasswd:/chroma/server.htpasswd
+    environment:
+      - IS_PERSISTENT=TRUE
+      - PERSIST_DIRECTORY=/chroma/chroma
+      - CHROMA_SERVER_AUTHN_CREDENTIALS_FILE=/chroma/server.htpasswd
+      - CHROMA_SERVER_AUTHN_PROVIDER=chromadb.auth.basic_authn.BasicAuthenticationServerProvider
+    ports:
+      - 8001:8000
+    restart: unless-stopped
+    networks:
+      - honk-ai_net
+
   honk-ai:
     build:
       context: .
@@ -8,10 +24,26 @@ services:
     volumes:
       - ./db:/app/db
       - ./snapshots:/app/snapshots
+    ports:
+      - 3000:3000
     restart: unless-stopped
+    depends_on:
+      - chromadb
+    networks:
+      - honk-ai_net
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    command: tunnel --config /etc/cloudflared/config.yml run
+    volumes:
+      - ${CLOUDFLARED_CONFIG_PATH}:/etc/cloudflared/config.yml:ro
+      - ${CLOUDFLARED_CREDENTIALS_PATH}:/etc/cloudflared/credentials.json:ro
+    restart: unless-stopped
+    depends_on:
+      - honk-ai
     networks:
       - honk-ai_net
 
 networks:
   honk-ai_net:
-    external: true
+    driver: bridge
