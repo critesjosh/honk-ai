@@ -4,3 +4,4 @@ chromadb/
 src/training/repos/temp
 node_modules/
 dist/
+cloudflared/*
