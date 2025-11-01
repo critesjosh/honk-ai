@@ -2,6 +2,7 @@ import { ChromaClient, IncludeEnum } from "chromadb";
 import { OpenAIEmbeddingFunction } from "@chroma-core/openai";
 import { SimilaritySearchResponse } from "../types/data.js";
 import { env } from "../env.js";
+import { DocumentMetadata } from "../training/repos/parsing/common.js";
 
 let chromaClient: ChromaClient | null = null;
 let knowledgeCollection: Awaited<
@@ -44,6 +45,7 @@ export async function UpsertDocument(
   id: string,
   document: string,
   source: string,
+  metadata: Partial<DocumentMetadata> = {},
 ): Promise<boolean> {
   if (!id || !document || !source) return false;
 
@@ -55,10 +57,17 @@ export async function UpsertDocument(
     // Store document without prefix/suffix to save tokens
     const collection = await getKnowledgeCollection();
 
+    // Merge provided metadata with required fields
+    const fullMetadata: DocumentMetadata = {
+      link: source,
+      date: Date.now(),
+      ...metadata,
+    };
+
     await collection.upsert({
       documents: [document],
       ids: [id],
-      metadatas: [{ link: source, date: Date.now() }],
+      metadatas: [fullMetadata as any],
     });
 
     return true;

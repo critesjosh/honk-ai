@@ -4,6 +4,7 @@ import { similaritySearch } from "../chroma.js";
 import { generateEmbedding } from "../embeddings.js";
 import { Conversation } from "../../types/data.js";
 import prompts from "../../config/prompts.js";
+import { filterAndBoostByVersion } from "../versionFiltering.js";
 
 const openai = new OpenAI({ apiKey: env.OPEN_AI_API });
 
@@ -78,10 +79,19 @@ export async function invokeRag(
   try {
     const promptEmbedding = await generateEmbedding(prompt);
 
-    const similarDocuments = await similaritySearch({
+    let similarDocuments = await similaritySearch({
       inputEmbedding: promptEmbedding,
       params: { limit: env.AMOUNT_OF_DOCS },
     });
+
+    // Apply version filtering to prioritize current version docs
+    if (env.AZTEC_DOCS_VERSION) {
+      similarDocuments = filterAndBoostByVersion(similarDocuments, {
+        currentVersion: env.AZTEC_DOCS_VERSION,
+        boostFactor: 1.5,
+        penaltyFactor: 0.5,
+      });
+    }
 
     if (similarDocuments.documents.length === 0) {
       return {

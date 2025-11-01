@@ -9,9 +9,18 @@ import {
   returnAllDocuments,
   deleteDocument,
 } from "../../utils/chroma.js";
-import { parseNoir, parseJS, Data, chunkMdxFile } from "./parsing/index.js";
+import { parseNoir, parseJS, Data, chunkMdxFile, addOverlapToChunks, DocumentMetadata } from "./parsing/index.js";
 import { preprocessMarkdownIncludes } from "./preprocessing/codeInclusion.js";
 import { env } from "../../env.js";
+import {
+  getFileType,
+  getLanguage,
+  calculateImportance,
+  extractHeadingPath,
+  getHeadingLevel,
+  isExampleFile,
+  isDocumentationFile,
+} from "./metadataHelpers.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -80,7 +89,7 @@ async function processRepository(repo: any) {
 
     // Process files according to patterns
     if (repo.patterns?.length > 0) {
-      await processRepoFiles(repo, repoPath, repoUrl);
+      await processRepoFiles(repo, repoPath, repoUrl, versionToCheckout);
     } else {
       console.log(`No patterns defined for ${repo.name}, skipping`);
     }
@@ -98,7 +107,7 @@ async function processRepository(repo: any) {
 /**
  * Process files in a repository according to defined patterns
  */
-async function processRepoFiles(repo: any, repoPath: string, repoUrl: string) {
+async function processRepoFiles(repo: any, repoPath: string, repoUrl: string, versionTag: string) {
   const fileStats = { processed: 0, failed: 0 };
 
   for (const pattern of repo.patterns) {
@@ -115,7 +124,7 @@ async function processRepoFiles(repo: any, repoPath: string, repoUrl: string) {
       );
 
       const results = await Promise.allSettled(
-        batch.map((file) => processFile(file, repoPath, repoUrl, fileStats)),
+        batch.map((file) => processFile(file, repoPath, repoUrl, versionTag, fileStats)),
       );
 
       // Log any rejected promises for debugging
@@ -142,6 +151,7 @@ async function processFile(
   filePath: string,
   repoPath: string,
   repoUrl: string,
+  versionTag: string,
   stats: { processed: number; failed: number },
 ) {
   try {
@@ -154,6 +164,17 @@ async function processFile(
       console.log(`Skipping ${relativePath} (empty or too large)`);
       return;
     }
+
+    // Build base metadata for this file
+    const baseMetadata: Partial<DocumentMetadata> = {
+      fileType: getFileType(relativePath),
+      language: getLanguage(relativePath),
+      filePath: relativePath,
+      versionTag: versionTag,
+      isExample: isExampleFile(relativePath),
+      isDocumentation: isDocumentationFile(relativePath),
+      importance: calculateImportance(relativePath),
+    };
 
     const isMarkdown =
       relativePath.endsWith(".md") ||
@@ -169,16 +190,33 @@ async function processFile(
         console.warn(`Failed preprocessing includes for ${relativePath}:`, e);
       }
 
-      // Store whole document only (pause chunking for markdown)
-      const wholeDocTitle = `${repoUrl}/${relativePath} [FULL_DOCUMENT]`;
-      let wholeDocUrl = `${repoUrl}/${relativePath}`;
-      if (relativePath.startsWith("docs/docs/")) {
-        wholeDocUrl = convertDocsPathToWebsiteUrl(relativePath);
-      }
-      const wholeDocContent = `${wholeDocTitle}\n\n${content}`;
-      await UpsertDocument(wholeDocTitle, wholeDocContent, wholeDocUrl);
-      console.log(`Stored full markdown document for ${relativePath}`);
+      // Chunk markdown files for better retrieval
+      const chunks = await chunkMdxFile(content);
+      console.log(`Chunked markdown into ${chunks.length} sections`);
 
+      // Add 10% overlap between chunks for context continuity
+      const chunksWithOverlap = addOverlapToChunks(chunks, 0.1);
+
+      // Store each chunk with metadata
+      for (const chunk of chunksWithOverlap) {
+        const documentTitle = `${repoUrl}/${relativePath} ${chunk.title}`;
+        let documentUrl = `${repoUrl}/${relativePath}`;
+        if (relativePath.startsWith("docs/docs/")) {
+          documentUrl = convertDocsPathToWebsiteUrl(relativePath);
+        }
+        const documentContent = `${documentTitle}\n\n${chunk.content}`;
+
+        // Add markdown-specific metadata
+        const chunkMetadata: Partial<DocumentMetadata> = {
+          ...baseMetadata,
+          headingPath: extractHeadingPath(content, chunk.title),
+          headingLevel: getHeadingLevel(chunk.title),
+        };
+
+        await UpsertDocument(documentTitle, documentContent, documentUrl, chunkMetadata);
+      }
+
+      console.log(`Stored ${chunksWithOverlap.length} markdown chunks for ${relativePath}`);
       stats.processed++;
       return;
     }
@@ -196,7 +234,7 @@ async function processFile(
         const wholeFileTitle = `${repoUrl}/${relativePath} [FULL_FILE]`;
         const wholeFileUrl = `${repoUrl}/${relativePath}`;
         const wholeFileContent = `${wholeFileTitle}\n\n${content}`;
-        await UpsertDocument(wholeFileTitle, wholeFileContent, wholeFileUrl);
+        await UpsertDocument(wholeFileTitle, wholeFileContent, wholeFileUrl, baseMetadata);
         console.log(
           `Stored full Noir/Rust file (small size, ~${estimatedTokens} tokens): ${relativePath}`,
         );
@@ -220,7 +258,13 @@ async function processFile(
 
       const documentContent = `${documentTitle}\n\n${chunk.content}`;
 
-      await UpsertDocument(documentTitle, documentContent, documentUrl);
+      // Merge base metadata with chunk metadata if present
+      const chunkMetadata: Partial<DocumentMetadata> = {
+        ...baseMetadata,
+        ...chunk.metadata,
+      };
+
+      await UpsertDocument(documentTitle, documentContent, documentUrl, chunkMetadata);
     }
 
     stats.processed++;
