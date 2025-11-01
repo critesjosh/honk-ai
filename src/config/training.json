@@ -19,6 +19,7 @@
       "org": "AztecProtocol",
       "branch": "master",
       "useEnvVersion": true,
+      "docsBranch": "next",
       "paths": [],
       "patterns": [
         "noir-projects/aztec-nr/**/*.nr",
