@@ -4,4 +4,6 @@ chromadb/
 src/training/repos/temp
 node_modules/
 dist/
+cloudflared-config.yml
+cloudflared/credentials.json
 cloudflared/*

@@ -24,9 +24,23 @@ services:
     volumes:
       - ./db:/app/db
       - ./snapshots:/app/snapshots
+    ports:
+      - 3000:3000
     restart: unless-stopped
     depends_on:
       - chromadb
+    networks:
+      - honk-ai_net
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    command: tunnel --config /etc/cloudflared/config.yml run
+    volumes:
+      - ${CLOUDFLARED_CONFIG_PATH}:/etc/cloudflared/config.yml:ro
+      - ${CLOUDFLARED_CREDENTIALS_PATH}:/etc/cloudflared/credentials.json:ro
+    restart: unless-stopped
+    depends_on:
+      - honk-ai
     networks:
       - honk-ai_net
 

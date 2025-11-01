@@ -106,6 +106,9 @@ GITHUB_TOKEN="ghp_..."          # token with repo read access
 LMDB_ROUTE="./db/"              # persisted by volume when using Docker
 SNAPSHOT_ROUTE="./snapshots/"
 
+# Docs/testnet tag used in markdown processing
+DOCS_TESTNET_TAG="v1.2.0"
+
 # MCP Server (integrated with bot)
 MCP_ENABLED="true"              # set to "false" to disable the MCP server
 MCP_PORT="3000"                 # port for the MCP server
@@ -113,6 +116,10 @@ MCP_SERVER_URL="http://localhost:3000"  # public URL for Discord /mcp command
 MCP_AUTH_REQUIRED="true"        # require authentication tokens
 MCP_RATE_LIMIT_ENABLED="true"   # enable rate limiting
 MCP_RATE_LIMIT_PER_MINUTE="10"  # requests per minute per token
+
+# Cloudflare Tunnel (optional - for public MCP access)
+CLOUDFLARED_CONFIG_PATH="/home/user/.cloudflared/config.yml"
+CLOUDFLARED_CREDENTIALS_PATH="/home/user/.cloudflared/credentials.json"
 ```
 
 Notes
@@ -130,6 +137,7 @@ Notes
   - **When explicitly set, automatic release detection is disabled**, allowing you to pin to a specific version.
 - `MCP_ENABLED`: controls whether the MCP server starts with the bot. Set to `"false"` to run only the Discord bot.
 - `MCP_SERVER_URL`: the public URL shown in the `/mcp` Discord command. Change this to your production domain when deploying.
+- `CLOUDFLARED_CONFIG_PATH` & `CLOUDFLARED_CREDENTIALS_PATH`: (optional) paths to Cloudflare Tunnel configuration files. Only needed if using the cloudflared service for public MCP access. Set these to your local `.cloudflared` directory paths.
 
 ---
 
