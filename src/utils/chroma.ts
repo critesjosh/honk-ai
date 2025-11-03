@@ -64,10 +64,21 @@ export async function UpsertDocument(
       ...metadata,
     };
 
+    // ChromaDB only accepts string, number, boolean, or null
+    // Convert arrays to JSON strings
+    const serializedMetadata: Record<string, string | number | boolean | null> = {};
+    for (const [key, value] of Object.entries(fullMetadata)) {
+      if (Array.isArray(value)) {
+        serializedMetadata[key] = JSON.stringify(value);
+      } else if (value !== undefined) {
+        serializedMetadata[key] = value;
+      }
+    }
+
     await collection.upsert({
       documents: [document],
       ids: [id],
-      metadatas: [fullMetadata as any],
+      metadatas: [serializedMetadata],
     });
 
     return true;
@@ -92,7 +103,7 @@ export async function similaritySearch({
     queryEmbeddings: [inputEmbedding],
     nResults: params.limit,
     include: [
-      "embeddings",
+      // Removed "embeddings" to reduce network transfer (not used after retrieval)
       "documents",
       "metadatas",
       "distances",
@@ -101,7 +112,7 @@ export async function similaritySearch({
 
   return {
     ids: queryRes.ids[0] as string[],
-    embeddings: (queryRes.embeddings?.[0] ?? []) as number[][],
+    embeddings: [], // Empty array since we don't fetch embeddings
     documents: queryRes?.documents[0] as unknown as string[],
     metadatas: queryRes.metadatas as (Record<
       string,
@@ -125,6 +136,11 @@ export async function deleteDocument(id: string): Promise<boolean> {
     console.error(error);
     return false;
   }
+}
+
+export async function getDocumentCount(): Promise<number> {
+  const collection = await getKnowledgeCollection();
+  return await collection.count();
 }
 
 export async function returnAllDocuments(): Promise<
