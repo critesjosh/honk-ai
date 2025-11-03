@@ -25,6 +25,13 @@ import {
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 /**
+ * Helper to determine if a pattern is for documentation files
+ */
+function isDocsPattern(pattern: string): boolean {
+  return pattern.includes("docs/docs/") || pattern.includes("barretenberg/docs/");
+}
+
+/**
  * Main training service that processes repositories and trains the AI on code
  */
 export async function StartTrainingService() {
@@ -47,7 +54,7 @@ export async function StartTrainingService() {
  * Process a single repository
  */
 async function processRepository(repo: any) {
-  // Determine which version/branch to use
+  // Determine which version/branch to use for code
   let versionToCheckout = repo.branch || "main";
 
   // If useEnvVersion is true, use AZTEC_DOCS_VERSION from env or fetch latest release
@@ -63,16 +70,15 @@ async function processRepository(repo: any) {
     }
   }
 
-  const repoUrl = `https://github.com/${repo.org}/${repo.name}/tree/${versionToCheckout}`;
   const repoPath = path.join(__dirname, "temp", repo.name);
 
-  console.log(`Processing repository: ${repo.name} at version ${versionToCheckout}`);
+  console.log(`Processing repository: ${repo.name}`);
 
   try {
     // Clean up any existing repository
     await cleanupRepository(repoPath);
 
-    // Clone the repository
+    // Clone the repository once
     const git: SimpleGit = simpleGit();
     console.log(`Cloning ${repo.org}/${repo.name}...`);
     await git.clone(
@@ -80,18 +86,55 @@ async function processRepository(repo: any) {
       repoPath,
     );
 
-    // Checkout specified version (branch or tag)
-    console.log(`Checking out ${versionToCheckout}...`);
-    await git.cwd(repoPath).checkout(versionToCheckout);
+    // Separate patterns into docs and code patterns
+    const docsPatterns = repo.patterns?.filter((p: string) => isDocsPattern(p)) || [];
+    const codePatterns = repo.patterns?.filter((p: string) => !isDocsPattern(p)) || [];
 
-    // Delete old documents for this repository
-    await cleanupOldDocuments(repoUrl);
+    // If docsBranch is specified, process docs from that branch first
+    if (repo.docsBranch && docsPatterns.length > 0) {
+      console.log(`Processing docs from branch: ${repo.docsBranch}`);
 
-    // Process files according to patterns
-    if (repo.patterns?.length > 0) {
-      await processRepoFiles(repo, repoPath, repoUrl, versionToCheckout);
-    } else {
-      console.log(`No patterns defined for ${repo.name}, skipping`);
+      // Checkout docs branch
+      await git.cwd(repoPath).checkout(repo.docsBranch);
+
+      const docsRepoUrl = `https://github.com/${repo.org}/${repo.name}/tree/${repo.docsBranch}`;
+
+      // Delete old docs documents for this repository
+      await cleanupOldDocuments(docsRepoUrl);
+
+      // Process only docs patterns
+      await processRepoFiles(
+        { ...repo, patterns: docsPatterns },
+        repoPath,
+        docsRepoUrl,
+        repo.docsBranch
+      );
+    }
+
+    // Process code from the main version
+    if (codePatterns.length > 0 || !repo.docsBranch) {
+      console.log(`Processing code from version: ${versionToCheckout}`);
+
+      // Checkout code version (branch or tag)
+      await git.cwd(repoPath).checkout(versionToCheckout);
+
+      const codeRepoUrl = `https://github.com/${repo.org}/${repo.name}/tree/${versionToCheckout}`;
+
+      // Delete old code documents for this repository
+      await cleanupOldDocuments(codeRepoUrl);
+
+      // Process code patterns (or all patterns if no docsBranch)
+      const patternsToProcess = repo.docsBranch ? codePatterns : repo.patterns;
+      if (patternsToProcess?.length > 0) {
+        await processRepoFiles(
+          { ...repo, patterns: patternsToProcess },
+          repoPath,
+          codeRepoUrl,
+          versionToCheckout
+        );
+      } else {
+        console.log(`No patterns defined for ${repo.name}, skipping`);
+      }
     }
 
     // Clean up cloned repository
