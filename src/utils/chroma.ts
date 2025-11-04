@@ -14,6 +14,11 @@ const embeddingFunction = new OpenAIEmbeddingFunction({
   modelName: env.EMBEDDING_MODEL,
 });
 
+// OpenAI embedding token limits
+const MAX_EMBEDDING_TOKENS = 8192;
+const CHARS_PER_TOKEN_ESTIMATE = 4; // Conservative estimate for English text
+const MAX_EMBEDDING_CHARS = MAX_EMBEDDING_TOKENS * CHARS_PER_TOKEN_ESTIMATE; // ~32,768 chars
+
 async function getChromaInstance() {
   if (!chromaClient) {
     chromaClient = new ChromaClient({
@@ -41,6 +46,41 @@ async function getKnowledgeCollection() {
   return knowledgeCollection;
 }
 
+/**
+ * Split a large document into smaller chunks that fit within embedding token limits
+ */
+function splitLargeDocument(document: string, maxChars: number): string[] {
+  if (document.length <= maxChars) {
+    return [document];
+  }
+
+  const chunks: string[] = [];
+  let currentChunk = "";
+  const lines = document.split("\n");
+
+  for (const line of lines) {
+    // If adding this line would exceed the limit
+    if (currentChunk.length + line.length + 1 > maxChars) {
+      // Save current chunk if it has content
+      if (currentChunk.trim()) {
+        chunks.push(currentChunk.trim());
+      }
+      // Start new chunk with current line
+      currentChunk = line + "\n";
+    } else {
+      // Add line to current chunk
+      currentChunk += line + "\n";
+    }
+  }
+
+  // Add final chunk
+  if (currentChunk.trim()) {
+    chunks.push(currentChunk.trim());
+  }
+
+  return chunks;
+}
+
 export async function UpsertDocument(
   id: string,
   document: string,
@@ -54,7 +94,6 @@ export async function UpsertDocument(
   if (typeof source !== "string") return false;
 
   try {
-    // Store document without prefix/suffix to save tokens
     const collection = await getKnowledgeCollection();
 
     // Merge provided metadata with required fields
@@ -66,7 +105,8 @@ export async function UpsertDocument(
 
     // ChromaDB only accepts string, number, boolean, or null
     // Convert arrays to JSON strings
-    const serializedMetadata: Record<string, string | number | boolean | null> = {};
+    const serializedMetadata: Record<string, string | number | boolean | null> =
+      {};
     for (const [key, value] of Object.entries(fullMetadata)) {
       if (Array.isArray(value)) {
         serializedMetadata[key] = JSON.stringify(value);
@@ -75,6 +115,39 @@ export async function UpsertDocument(
       }
     }
 
+    // Check if document exceeds token limit
+    if (document.length > MAX_EMBEDDING_CHARS) {
+      console.warn(
+        `Document too large (${document.length} chars), splitting into chunks...`,
+      );
+
+      // Split document into smaller chunks
+      const chunks = splitLargeDocument(document, MAX_EMBEDDING_CHARS);
+
+      // Store each chunk with a sequential ID
+      for (let i = 0; i < chunks.length; i++) {
+        const chunkId = chunks.length > 1 ? `${id}__chunk${i + 1}` : id;
+        const chunkMetadata = {
+          ...serializedMetadata,
+          chunkIndex: i + 1,
+          totalChunks: chunks.length,
+        };
+
+        await collection.upsert({
+          documents: [chunks[i]],
+          ids: [chunkId],
+          metadatas: [chunkMetadata],
+        });
+
+        console.log(
+          `Stored chunk ${i + 1}/${chunks.length} for ${id} (${chunks[i].length} chars)`,
+        );
+      }
+
+      return true;
+    }
+
+    // Document fits in one chunk - store normally
     await collection.upsert({
       documents: [document],
       ids: [id],
