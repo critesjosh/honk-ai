@@ -239,6 +239,27 @@ SAGEMAKER_REGION=us-east-1
 
 Your IAM user needs these permissions on the bucket: `s3:PutObject`, `s3:GetObject`, `s3:DeleteObject`, `s3:ListBucket`, `s3:HeadObject`.
 
+## MCP Key Provisioning Settings
+
+These settings enable automated API key provisioning via the Discord `/mcp-key` slash command. They are used by the internal endpoint `POST /api/internal/create_mcp_key`.
+
+| Setting | Purpose | Default |
+| --- | --- | --- |
+| `MCP_PROVISIONING_KEY` | Dedicated authentication key for the MCP key provisioning endpoint. This is separate from `INTERNAL_KEY` to limit the blast radius if a bot is compromised. | `""` (disabled) |
+| `AZTEC_SOURCE_IDS` | Comma-separated MongoDB ObjectId strings for the document sources to attach to provisioned agents. Each ID must exist in the `sources` collection. | `""` (disabled) |
+
+```env
+MCP_PROVISIONING_KEY=your-provisioning-secret
+AZTEC_SOURCE_IDS=69daee984c26dda81455c426,69db0a724c26dda81455c42a
+```
+
+The Discord bot also requires these env vars in `extensions/discord/.env`:
+
+| Setting | Purpose |
+| --- | --- |
+| `MCP_PROVISIONING_KEY` | Must match the backend setting above |
+| `NOIR_GUILD_ID` | Discord guild ID to restrict `/mcp-key` to a specific server |
+
 ## Exploring More Settings
 
 These are just the basic settings to get you started. The `settings.py` file contains many more advanced options that you can explore to further customize DocsGPT, such as:

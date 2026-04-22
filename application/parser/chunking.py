@@ -73,7 +73,14 @@ class Chunker:
                 processed_docs.append(doc)
                 i += 1
             elif token_count < self.min_tokens:
-  
+                if token_count < 50:
+                    logger.debug(
+                        "Discarding stub chunk (%d tokens): %s",
+                        token_count,
+                        doc.doc_id,
+                    )
+                    i += 1
+                    continue
                 doc.extra_info = doc.extra_info or {}
                 doc.extra_info["token_count"] = token_count
                 processed_docs.append(doc)

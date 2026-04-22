@@ -64,3 +64,66 @@ For OAuth in production, `MCP_OAUTH_REDIRECT_URI` must be a publicly accessible 
 - **403 Forbidden** — Check credentials and permissions.
 - **Timed out** — Default is 30s; increase timeout in tool config (max 300s).
 - **OAuth "needs_auth" persists** — Verify `MCP_OAUTH_REDIRECT_URI` is correct and Redis is running.
+
+---
+
+## DocsGPT as an MCP Server
+
+In addition to consuming external MCP servers (above), DocsGPT can also **expose its knowledge base as an MCP server**. This lets LLM clients like Claude Desktop, Cursor, and Claude Code query your DocsGPT-trained documents directly.
+
+The MCP server is a standalone TypeScript package located at `extensions/mcp-server/`.
+
+### Available Tools
+
+| Tool | Description |
+|------|-------------|
+| `ask_aztec` | Full RAG Q&A — sends a question through the DocsGPT pipeline and returns an AI-synthesized answer with source references |
+| `search_aztec` | Raw vector search — returns full-text document chunks without LLM synthesis, useful for reading original source material |
+
+### Setup
+
+<Steps>
+
+### Step 1: Get an API Key
+
+If your DocsGPT instance has the Discord bot configured, run `/mcp-key` in the designated Discord server to get a personal API key. Alternatively, [create an agent in the DocsGPT UI](/Extensions/api-key-guide) and use its API key.
+
+### Step 2: Build the MCP Server
+
+```bash
+cd extensions/mcp-server
+npm install && npm run build
+```
+
+### Step 3: Configure Your LLM Client
+
+Add the MCP server to your client's configuration. For Claude Desktop, add to `claude_desktop_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "aztec-docs": {
+      "command": "node",
+      "args": ["/path/to/extensions/mcp-server/dist/index.js"],
+      "env": {
+        "API_URL": "http://your-docsgpt:7091",
+        "API_KEY": "your-key"
+      }
+    }
+  }
+}
+```
+
+</Steps>
+
+<Callout type="info">
+For full configuration details (Cursor, Claude Code, npx usage), see `extensions/mcp-server/README.md`.
+</Callout>
+
+### Environment Variables
+
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `API_KEY` | Yes | — | Agent API key from `/mcp-key` or the DocsGPT UI |
+| `API_URL` | No | `http://localhost:7091` | URL of the DocsGPT backend |
+| `REQUEST_TIMEOUT` | No | `60000` | HTTP request timeout in milliseconds |

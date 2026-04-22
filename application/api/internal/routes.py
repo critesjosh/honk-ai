@@ -1,9 +1,12 @@
 import os
 import datetime
 import json
+import uuid
 from flask import Blueprint, request, send_from_directory, jsonify
 from werkzeug.utils import secure_filename
 from bson.objectid import ObjectId
+from bson.dbref import DBRef
+from pymongo import ReturnDocument
 import logging
 from application.core.mongo_db import MongoDB
 from application.core.settings import settings
@@ -15,6 +18,7 @@ mongo = MongoDB.get_client()
 db = mongo[settings.MONGO_DB_NAME]
 conversations_collection = db["conversations"]
 sources_collection = db["sources"]
+agents_collection = db["agents"]
 
 current_dir = os.path.dirname(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -24,12 +28,18 @@ current_dir = os.path.dirname(
 internal = Blueprint("internal", __name__)
 
 
+SELF_AUTHENTICATED_ROUTES = {"/api/internal/create_mcp_key"}
+
+
 @internal.before_request
 def verify_internal_key():
     """Verify INTERNAL_KEY for all internal endpoint requests.
 
     Deny by default: if INTERNAL_KEY is not configured, reject all requests.
+    Routes in SELF_AUTHENTICATED_ROUTES handle their own authentication.
     """
+    if request.path in SELF_AUTHENTICATED_ROUTES:
+        return None
     if not settings.INTERNAL_KEY:
         logger.warning(
             f"Internal API request rejected from {request.remote_addr}: "
@@ -154,3 +164,116 @@ def upload_index_files():
             insert_doc["file_name_map"] = file_name_map
         sources_collection.insert_one(insert_doc)
     return {"status": "ok"}
+
+
+@internal.route("/api/internal/create_mcp_key", methods=["POST"])
+def create_mcp_key():
+    """Create or retrieve a personal MCP API key for a Discord user.
+
+    Uses a dedicated provisioning key (not INTERNAL_KEY) to limit blast radius.
+    Atomic upsert prevents race conditions on concurrent requests.
+    """
+    provisioning_key = request.headers.get("X-Provisioning-Key")
+    if (
+        not settings.MCP_PROVISIONING_KEY
+        or not provisioning_key
+        or provisioning_key != settings.MCP_PROVISIONING_KEY
+    ):
+        return jsonify({"error": "Unauthorized"}), 401
+
+    data = request.get_json(silent=True)
+    if not data:
+        return jsonify({"error": "Request body is required"}), 400
+
+    discord_user_id = data.get("discord_user_id", "").strip()
+    discord_username = data.get("discord_username", "").strip()
+
+    if not discord_user_id:
+        return jsonify({"error": "discord_user_id is required"}), 400
+    if not discord_username:
+        return jsonify({"error": "discord_username is required"}), 400
+
+    # Sanitize display name (mutable, user-controlled)
+    sanitized_username = discord_username[:50]
+
+    # Validate and load Aztec source IDs
+    if not settings.AZTEC_SOURCE_IDS:
+        logger.error("AZTEC_SOURCE_IDS is not configured")
+        return jsonify({"error": "Aztec sources not configured"}), 500
+
+    source_id_strings = [
+        s.strip() for s in settings.AZTEC_SOURCE_IDS.split(",") if s.strip()
+    ]
+    if not source_id_strings:
+        logger.error("AZTEC_SOURCE_IDS is empty")
+        return jsonify({"error": "Aztec sources not configured"}), 500
+
+    # Validate each source exists and build DBRefs
+    aztec_source_dbrefs = []
+    for sid in source_id_strings:
+        try:
+            oid = ObjectId(sid)
+        except Exception:
+            logger.warning(f"Invalid ObjectId in AZTEC_SOURCE_IDS: {sid}")
+            continue
+        if sources_collection.find_one({"_id": oid}):
+            aztec_source_dbrefs.append(DBRef("sources", oid))
+        else:
+            logger.warning(f"Source not found for ObjectId: {sid}")
+
+    if not aztec_source_dbrefs:
+        logger.error("No valid Aztec sources found")
+        return jsonify({"error": "No valid Aztec sources found"}), 500
+
+    # Ensure unique index exists (idempotent)
+    agents_collection.create_index(
+        [("provider", 1), ("provider_user_id", 1), ("purpose", 1)],
+        unique=True,
+        sparse=True,
+    )
+
+    now = datetime.datetime.now(datetime.timezone.utc)
+
+    # Atomic upsert: find existing or insert new
+    result = agents_collection.find_one_and_update(
+        {
+            "provider": "discord",
+            "provider_user_id": discord_user_id,
+            "purpose": "aztec_mcp",
+        },
+        {
+            "$setOnInsert": {
+                "user": f"discord:{discord_user_id}",
+                "name": f"Aztec MCP - {sanitized_username}",
+                "description": "Aztec knowledge base access via MCP",
+                "agent_type": "classic",
+                "status": "published",
+                "key": str(uuid.uuid4()),
+                "sources": aztec_source_dbrefs,
+                "chunks": "2",
+                "retriever": "classic",
+                "prompt_id": "default",
+                "tools": [],
+                "limited_request_mode": True,
+                "request_limit": 1000,
+                "limited_token_mode": True,
+                "token_limit": 500000,
+                "provider": "discord",
+                "provider_user_id": discord_user_id,
+                "purpose": "aztec_mcp",
+                "createdAt": now,
+            },
+            "$set": {
+                "updatedAt": now,
+            },
+        },
+        upsert=True,
+        return_document=ReturnDocument.AFTER,
+    )
+
+    created = result.get("createdAt") == now and result.get("updatedAt") == now
+
+    return jsonify({
+        "api_key": result["key"],
+        "created": created,
+    }), 200

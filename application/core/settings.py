@@ -68,6 +68,8 @@ class Settings(BaseSettings):
     API_URL: str = "http://localhost:7091"  # backend url for celery worker
     MCP_OAUTH_REDIRECT_URI: Optional[str] = None  # public callback URL for MCP OAuth
     INTERNAL_KEY: Optional[str] = None  # internal api key for worker-to-backend auth
+    MCP_PROVISIONING_KEY: Optional[str] = None  # dedicated key for MCP key provisioning endpoint
+    AZTEC_SOURCE_IDS: Optional[str] = None  # comma-separated source ObjectId strings for Aztec MCP agents
 
     API_KEY: Optional[str] = None  # LLM api key (used by LLM_PROVIDER)
 
@@ -169,6 +171,7 @@ class Settings(BaseSettings):
         "QDRANT_API_KEY",
         "ELEVENLABS_API_KEY",
         "INTERNAL_KEY",
+        "MCP_PROVISIONING_KEY",
         mode="before",
     )
     @classmethod

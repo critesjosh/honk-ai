@@ -537,7 +537,7 @@ def ingest_worker(
                 chunking_strategy="classic_chunk",
                 max_tokens=MAX_TOKENS,
                 min_tokens=MIN_TOKENS,
-                duplicate_headers=False,
+                duplicate_headers=True,
             )
             raw_docs = chunker.chunk(documents=raw_docs)
 
@@ -782,7 +782,7 @@ def reingest_source_worker(self, source_id, user):
                                 chunking_strategy="classic_chunk",
                                 max_tokens=MAX_TOKENS,
                                 min_tokens=MIN_TOKENS,
-                                duplicate_headers=False,
+                                duplicate_headers=True,
                             )
                             chunked_new = chunker_new.chunk(documents=raw_docs_new)
 
@@ -923,7 +923,7 @@ def remote_worker(
             chunking_strategy="classic_chunk",
             max_tokens=MAX_TOKENS,
             min_tokens=MIN_TOKENS,
-            duplicate_headers=False,
+            duplicate_headers=True,
         )
         docs = chunker.chunk(documents=raw_docs)
         docs = [Document.to_langchain_format(raw_doc) for raw_doc in raw_docs]
@@ -1342,7 +1342,7 @@ def ingest_connector(
                 chunking_strategy="classic_chunk",
                 max_tokens=MAX_TOKENS,
                 min_tokens=MIN_TOKENS,
-                duplicate_headers=False,
+                duplicate_headers=True,
             )
             raw_docs = chunker.chunk(documents=raw_docs)
 

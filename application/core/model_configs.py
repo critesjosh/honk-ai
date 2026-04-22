@@ -172,6 +172,65 @@ GROQ_MODELS = [
 
 OPENROUTER_MODELS = [
     AvailableModel(
+        id="qwen/qwen3.5-397b-a17b",
+        provider=ModelProvider.OPENROUTER,
+        display_name="Qwen 3.5 397B",
+        description="Large MoE model with strong coding and reasoning capabilities",
+        capabilities=ModelCapabilities(
+            supports_tools=True,
+            context_window=131072,
+            supported_attachment_types=OPENROUTER_ATTACHMENTS,
+        ),
+    ),
+    AvailableModel(
+        id="anthropic/claude-sonnet-4.6",
+        provider=ModelProvider.OPENROUTER,
+        display_name="Claude Sonnet 4.6",
+        description="Balanced performance and capability from Anthropic",
+        capabilities=ModelCapabilities(
+            supports_tools=True,
+            supports_structured_output=True,
+            context_window=200000,
+            supported_attachment_types=OPENROUTER_ATTACHMENTS,
+        ),
+    ),
+    AvailableModel(
+        id="anthropic/claude-opus-4.6",
+        provider=ModelProvider.OPENROUTER,
+        display_name="Claude Opus 4.6",
+        description="Most capable Claude model from Anthropic",
+        capabilities=ModelCapabilities(
+            supports_tools=True,
+            supports_structured_output=True,
+            context_window=200000,
+            supported_attachment_types=OPENROUTER_ATTACHMENTS,
+        ),
+    ),
+    AvailableModel(
+        id="moonshotai/kimi-k2.5",
+        provider=ModelProvider.OPENROUTER,
+        display_name="Kimi K2.5",
+        description="MoE model with function calling, structured output, and reasoning",
+        capabilities=ModelCapabilities(
+            supports_tools=True,
+            supports_structured_output=True,
+            context_window=262144,
+            supported_attachment_types=OPENROUTER_ATTACHMENTS,
+        ),
+    ),
+    AvailableModel(
+        id="openai/gpt-5.3-codex",
+        provider=ModelProvider.OPENROUTER,
+        display_name="GPT-5.3 Codex",
+        description="OpenAI code-optimized model with strong agentic capabilities",
+        capabilities=ModelCapabilities(
+            supports_tools=True,
+            supports_structured_output=True,
+            context_window=200000,
+            supported_attachment_types=OPENROUTER_ATTACHMENTS,
+        ),
+    ),
+    AvailableModel(
         id="qwen/qwen3-coder:free",
         provider=ModelProvider.OPENROUTER,
         display_name="Qwen 3 Coder",

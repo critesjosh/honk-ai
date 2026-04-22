@@ -45,6 +45,7 @@ Authentication:
 
 - `POST /api/answer` (non-streaming)
 - `POST /stream` (SSE streaming)
+- `POST /api/search` (vector search without LLM synthesis)
 - `POST /api/store_attachment` (multipart upload)
 - `GET /api/task_status?task_id=...` (Celery task polling)
 
@@ -344,3 +345,116 @@ curl -X POST http://localhost:7091/stream \
 - If the selected model/provider does not support a file type natively, DocsGPT falls back to parsed text content.
 - For providers that support images but not native PDF file attachments, DocsGPT can convert PDF pages to images (synthetic PDF support).
 - Attachments are user-scoped. Upload and query must be done under the same user context (same API key owner or same JWT user).
+
+---
+
+## Search API (`/api/search`)
+
+`/api/search` performs a fast vector search across your agent's configured sources **without LLM synthesis**. It returns raw document chunks, making it useful for retrieving original source material or verifying details.
+
+### Request Parameters
+
+| Field | Type | Required | Notes |
+| --- | --- | --- | --- |
+| `question` | `string` | Yes | Search query. |
+| `api_key` | `string` | Yes | Agent API key. Determines which sources are searched. |
+| `chunks` | `number` | No | Number of results to return (default: 5). |
+
+### Response
+
+Returns a JSON array of matching document chunks:
+
+```json
+[
+  {
+    "text": "Full text content of the matching chunk...",
+    "title": "Document title or filename",
+    "source": "Source identifier"
+  }
+]
+```
+
+Returns an empty array `[]` if no sources are configured for the agent or no matches are found.
+
+### Examples
+
+<Tabs items={['cURL', 'Python', 'JavaScript']}>
+  <Tabs.Tab>
+    ```bash
+    curl -X POST http://localhost:7091/api/search \
+    -H "Content-Type: application/json" \
+    -d '{"question":"PrivateContext struct","api_key":"your_agent_api_key","chunks":5}'
+    ```
+  </Tabs.Tab>
+  <Tabs.Tab>
+    ```python
+    import requests
+
+    response = requests.post(
+        "http://localhost:7091/api/search",
+        json={
+            "question": "PrivateContext struct",
+            "api_key": "your_agent_api_key",
+            "chunks": 5
+        }
+    )
+
+    for result in response.json():
+        print(f"--- {result['title']} ---")
+        print(result['text'][:200])
+    ```
+  </Tabs.Tab>
+  <Tabs.Tab>
+    ```javascript
+    const response = await fetch('http://localhost:7091/api/search', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        question: 'PrivateContext struct',
+        api_key: 'your_agent_api_key',
+        chunks: 5
+      })
+    });
+
+    const results = await response.json();
+    results.forEach(r => console.log(`${r.title}: ${r.text.slice(0, 200)}`));
+    ```
+  </Tabs.Tab>
+</Tabs>
+
+---
+
+## Internal API: MCP Key Provisioning
+
+<Callout type="warning">
+This endpoint is intended for automated key provisioning (e.g., from a Discord bot). It is not part of the public API.
+</Callout>
+
+`POST /api/internal/create_mcp_key` creates or retrieves a personal agent API key for a user identified by an external provider (e.g., Discord).
+
+### Authentication
+
+Uses a dedicated `X-Provisioning-Key` header (configured via the `MCP_PROVISIONING_KEY` environment variable). This is separate from the `INTERNAL_KEY` used by workers.
+
+### Request
+
+```json
+{
+  "discord_user_id": "123456789",
+  "discord_username": "alice"
+}
+```
+
+### Response
+
+```json
+{
+  "api_key": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+  "created": true
+}
+```
+
+- `created: true` — a new agent was created
+- `created: false` — an existing agent key was returned (idempotent)
+
+The provisioned agent is pre-configured with sources specified by the `AZTEC_SOURCE_IDS` environment variable and includes default rate limits (1000 requests, 500k tokens).
