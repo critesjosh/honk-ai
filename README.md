@@ -6,6 +6,17 @@
   <strong>Private AI for agents, assistants and enterprise search</strong>
 </p>
 
+> **Aztec fork notice.** This repository is an Aztec fork of upstream
+> [`arc53/DocsGPT`](https://github.com/arc53/DocsGPT) pinned to tag
+> `0.17.0` with Aztec-specific extensions: an MCP key-provisioning
+> endpoint (`/api/internal/create_mcp_key`), a Discord `/mcp-key`
+> slash command, a standalone TypeScript MCP server
+> (`extensions/mcp-server/`), and a chunking filter for small stubs.
+> For deployment on the Aztec company server, follow
+> [`AZTEC_SETUP.md`](./AZTEC_SETUP.md). For development and architecture
+> guidance, see [`CLAUDE.md`](./CLAUDE.md). The rest of this README
+> reflects upstream documentation.
+
 <p align="left">
   <strong><a href="https://www.docsgpt.cloud/">DocsGPT</a></strong> is an open-source AI platform for building intelligent agents and assistants. Features Agent Builder, deep research tools, document analysis (PDF, Office, web content, and audio), Multi-model support (choose your provider or run locally), and rich API connectivity for agents with actionable tools and integrations. Deploy anywhere with complete privacy control.
 </p>

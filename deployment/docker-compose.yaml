@@ -65,7 +65,7 @@ services:
       - 6379:6379
 
   postgres:
-    image: postgres:16-alpine
+    image: pgvector/pgvector:pg16
     environment:
       - POSTGRES_USER=docsgpt
       - POSTGRES_PASSWORD=docsgpt
@@ -74,6 +74,7 @@ services:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+      - ./postgres-init:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U docsgpt -d docsgpt"]
       interval: 5s

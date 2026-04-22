@@ -85,7 +85,8 @@ class Settings(BaseSettings):
     MCP_OAUTH_REDIRECT_URI: Optional[str] = None  # public callback URL for MCP OAuth
     INTERNAL_KEY: Optional[str] = None  # internal api key for worker-to-backend auth
     MCP_PROVISIONING_KEY: Optional[str] = None  # dedicated key for MCP key provisioning endpoint
-    AZTEC_SOURCE_IDS: Optional[str] = None  # comma-separated source ObjectId strings for Aztec MCP agents
+    AZTEC_SOURCE_IDS: Optional[str] = None  # comma-separated Postgres source UUIDs for Aztec MCP agents
+    CORS_ALLOWED_ORIGINS: Optional[str] = None  # comma-separated origin URLs; empty = same-origin only; "*" = any (insecure)
 
     API_KEY: Optional[str] = None  # LLM api key (used by LLM_PROVIDER)
 

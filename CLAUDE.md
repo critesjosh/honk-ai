@@ -1,119 +1,95 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+This file provides guidance to Claude Code (claude.ai/code) when working in this repository.
 
-## What is DocsGPT
+## What is DocsGPT (Aztec fork)
 
-DocsGPT is an open-source AI platform for building intelligent agents and assistants with document-grounded Q&A. It features an Agent Builder, deep research tools, document analysis, multi-model LLM support, and rich API connectivity. The stack is: Flask backend (Python), React frontend (TypeScript/Vite), MongoDB, Redis, Celery workers, and pluggable vector stores.
+Open-source AI platform for document-grounded Q&A. Upstream is `arc53/DocsGPT`; this is an Aztec fork at `0.17.0+aztec`. Stack: Flask backend (Python 3.12), React 19 + TypeScript frontend (Vite), **PostgreSQL** (user data + vectors via pgvector), Redis (Celery broker), Celery workers.
 
-## Development Environment
+Aztec-specific additions on top of upstream:
+- **MCP key provisioning endpoint** at `POST /api/internal/create_mcp_key` (self-authenticated via `MCP_PROVISIONING_KEY`, not `INTERNAL_KEY`) that upserts one agent per Discord identity.
+- **Discord `/mcp-key` command** (`extensions/discord/bot.py`) that calls the endpoint.
+- **TypeScript MCP server** (`extensions/mcp-server/`) that exposes DocsGPT agents via MCP.
+- **Chunking filter** (`application/parser/chunking.py`) that discards chunks with `token_count < 50`.
+- **Custom settings**: `MCP_PROVISIONING_KEY`, `AZTEC_SOURCE_IDS`, `CORS_ALLOWED_ORIGINS`.
 
-**Always run services via Docker.** Do not install MongoDB, Redis, or app dependencies natively. The compose file used is `deployment/docker-compose-hub.yaml` which pulls pre-built images and uses `network_mode: host` so all ports are on localhost. Configuration lives in `.env` at the repo root.
+## Development environment
+
+**Always run services via Docker.** Do not install Postgres, Redis, or app dependencies natively.
+
+Two composes at `deployment/`:
+- `docker-compose.yaml` — **dev compose**. Builds from source, exposes ports on localhost (frontend 5173, backend 7091, Redis 6379, Postgres 5432). Use this in dev / smoke-test.
+- `docker-compose-hub.yaml` — **production compose**. Builds from source, publishes only Caddy's 80/443, uses Let's Encrypt, loads secrets from `.env`. Use this on the company server.
+
+Configuration lives in `.env` at repo root. It is gitignored. `.env-template` holds placeholders and secret-generation instructions.
 
 Before starting services, check if containers are already running (`docker compose ... ps`). If they show as exited, just bring them back up — do not recreate from scratch.
 
-## Common Commands
+## Common commands
 
-### Running services (Docker)
+### Dev / smoke test (builds from source)
 ```bash
-docker compose -f deployment/docker-compose-hub.yaml up -d     # Start all services (detached)
-docker compose -f deployment/docker-compose-hub.yaml ps         # Check status
-docker compose -f deployment/docker-compose-hub.yaml logs -f    # Tail logs
-docker compose -f deployment/docker-compose-hub.yaml down       # Stop all services
-docker compose -f deployment/docker-compose-hub.yaml restart backend  # Restart a single service
+docker compose -f deployment/docker-compose.yaml up -d postgres
+docker compose -f deployment/docker-compose.yaml run --rm backend python scripts/db/init_postgres.py
+docker compose -f deployment/docker-compose.yaml up -d
+docker compose -f deployment/docker-compose.yaml logs -f backend worker
+docker compose -f deployment/docker-compose.yaml down
 ```
 
-Services (all on localhost via host networking): frontend (:5173), backend (:7091), Celery worker, Redis (:6379), MongoDB (:27017).
+First-time Postgres bootstrap:
+1. Start only `postgres` first so the initdb scripts (including `postgres-init/01-pgvector.sql` which enables the `vector` extension) can run.
+2. Run `python scripts/db/init_postgres.py` — thin wrapper around `alembic upgrade head` that creates all tables including the Aztec `agents.mcp_*` columns.
+3. Then bring up the rest.
 
-The backend and worker containers volume-mount `application/core/model_configs.py`, `application/indexes/`, `application/inputs/`, and `application/vectors/` from the host, so edits to those paths take effect on container restart.
+### Production (company server)
+Identical sequence but `-f deployment/docker-compose-hub.yaml` and `.env` must set `PUBLIC_HOSTNAME`, `ACME_EMAIL`, `POSTGRES_PASSWORD`, `JWT_SECRET_KEY`, `ENCRYPTION_SECRET_KEY`, `INTERNAL_KEY`, `MCP_PROVISIONING_KEY`, `AZTEC_SOURCE_IDS`. See `.env-template` for the full list and generation commands (`openssl rand -hex 32`).
 
 ### Tests & linting (from repo root)
 ```bash
-python -m pytest                          # Run all unit tests (integration tests excluded by default)
-python -m pytest tests/api/               # Run tests for a specific module
-python -m pytest tests/api/test_routes.py::TestClassName::test_method  # Run a single test
-python -m pytest -m unit                  # Run only unit-marked tests
-python -m pytest -m integration           # Run integration tests (excluded by default)
-ruff check .                              # Lint Python code
-ruff format .                             # Format Python code
+python -m pytest                          # unit tests
+python -m pytest -m integration           # integration tests (may need Postgres)
+ruff check .                              # lint
+ruff format .                             # format
 ```
-
-### Frontend linting/build (from `frontend/`)
-```bash
-npm run lint                # ESLint check
-npm run lint-fix            # ESLint auto-fix + Prettier
-npm run build               # TypeScript check + production build
-```
+Frontend (from `frontend/`): `npm run lint`, `npm run build`.
 
 ## Architecture
 
 ### Backend (`application/`)
-
-**Entry points:** `app.py` (Flask app), `wsgi.py` (WSGI), `worker.py` (Celery worker).
-
-**Flask blueprints registered in `app.py`:**
-- `user` (`/api/user/*`) — agents, sources, conversations, prompts, tools
-- `answer` (`/api/answer`) — main Q&A streaming endpoint
-- `internal` (`/api/internal/*`) — admin operations
-- `connector` (`/api/connectors/*`) — Google Drive, SharePoint connectors
-- `v1` (`/v1/*`) — OpenAI-compatible chat completions API
-
-**Factory pattern is used pervasively** — each subsystem has a Creator class:
-- `LLMCreator` (`llm/llm_creator.py`) — instantiates LLM providers (OpenAI, Anthropic, Google, Groq, OpenRouter, Novita, llama_cpp, SageMaker, etc.)
-- `AgentCreator` (`agents/agent_creator.py`) — classic (basic RAG), agentic (tool-calling loop), research (multi-turn plan/execute/report), workflow (sequential/conditional)
-- `VectorCreator` (`vectorstore/vector_creator.py`) — FAISS (default), Elasticsearch, Qdrant, MongoDB Atlas, Milvus, LanceDB, PGVector
-- `RetrieverCreator` (`retriever/retriever_creator.py`) — classic RAG with vector similarity search
-- `StorageCreator` (`storage/storage_creator.py`) — local filesystem or S3
-
-**Configuration:** `core/settings.py` uses Pydantic BaseSettings loading from `.env`. Model metadata lives in `core/model_configs.py`.
-
-**Celery tasks** (`api/user/tasks.py`): document ingestion (`ingest`), remote source ingestion (`ingest_remote`), re-indexing (`reingest_source_task`), periodic syncs (`schedule_syncs`), attachment storage, webhooks. Broker and result backend are both Redis.
-
-**Document parsing pipeline** (`parser/`): file parsers (PDF with Docling OCR, DOCX, XLSX, EPUB, HTML, Markdown, images, audio) -> chunking (`chunking.py`) -> embedding (`embedding_pipeline.py`) -> vector store insertion.
-
-**Auth:** JWT-based (`simple_jwt` or `session_jwt` mode), configured via `AUTH_TYPE` env var.
+- Entry points: `app.py` (Flask), `wsgi.py` (gunicorn), `worker.py` (Celery).
+- Blueprints: `user` (`/api/user/*`), `answer` (`/api/answer`), `internal` (`/api/internal/*`, includes the MCP endpoint), `connector`, `v1`.
+- Factory pattern (`LLMCreator`, `AgentCreator`, `VectorCreator`, `RetrieverCreator`, `StorageCreator`).
+- **Storage layer**: `application/storage/db/` — SQLAlchemy Core with thin repositories per table. `session.py` provides `db_session()` context manager. `models.py` holds the schema. Migrations in `application/alembic/versions/NNNN_description.py` (hand-written SQL, not autogenerate). Add new migrations by creating the next-numbered file.
+- **Auth**: `AUTH_TYPE` env var (`session_jwt`, `simple_jwt`). The built-in JWT is **not** a real access boundary — anyone can call `/api/generate_token`. Real auth lives at the reverse proxy (Cloudflare Access in our production deploy).
+- **Vector store**: `VECTOR_STORE=pgvector` uses `application/vectorstore/pgvector.py`, which creates its own `documents` table with an IVFFlat cosine index in the same Postgres instance. `CREATE EXTENSION vector` runs both via the initdb script and inside `pgvector.py`'s init.
 
 ### Frontend (`frontend/`)
+React 19 + TypeScript + Vite 8. Redux Toolkit (`store.ts`). Radix UI + Tailwind v4.
 
-React 19 + TypeScript + Vite 8. State management via Redux Toolkit (`store.ts`). Routing via React Router.
+Vite bakes env vars at build time. Production uses `frontend/Dockerfile.prod` (multi-stage: Vite build → nginx static) with `VITE_API_HOST` passed as a build ARG matching `PUBLIC_HOSTNAME`. The upstream `frontend/Dockerfile` (running `npm run dev --host`) is dev-only.
 
-**Key areas in `src/`:**
-- `conversation/` — chat interface and message rendering
-- `agents/` — agent management, workflow builder (React Flow)
-- `settings/` — settings pages (General, Analytics, Sources, Tools, Prompts, Logs)
-- `api/services/` — API client layer
-- `components/ui/` — Radix UI + shadcn/ui pattern components
-- `locale/` — i18n translations (i18next)
+### Deployment specifics
+- Postgres image: `pgvector/pgvector:pg16` (not plain postgres). Holds agents, sources, conversations, etc., AND the vector embeddings.
+- Reverse proxy: Caddy (`deployment/Caddyfile`). Terminates Let's Encrypt TLS, propagates `Cf-Access-Authenticated-User-Email` to the backend as `X-Auth-Email`, trusts Cloudflare as its upstream proxy.
+- SSO: **Cloudflare Access** gates traffic before it reaches Caddy. The origin should be behind a Cloudflare Tunnel or IP-restricted to Cloudflare's ranges.
+- No host port publishing for postgres/redis/backend/frontend in prod — only Caddy's 80/443 face the network.
 
-**Styling:** Tailwind CSS v4 with CSS custom properties for theming/dark mode.
+## CI/CD (upstream)
+`.github/workflows/`: `pytest.yml`, `lint.yml`, `bandit.yaml`, `docker-*-build.yml`, `ci.yml`, `zizmor.yml`. Our fork inherits these.
 
-### Extensions (`extensions/`)
+## Code style
+- **Python:** Ruff, 120 char line length. PEP 8. Type hints expected. Google-style docstrings.
+- **Frontend:** ESLint + Prettier, 80 char print width, single quotes, semicolons.
 
-Discord bot, Slack bot, Chatwoot integration, React widget (npm package), web widget (vanilla JS), Chrome extension.
+## PR readiness
+Before opening a PR: run `ruff check .`, `python -m pytest`, `npm run lint && npm run build` in `frontend/`. Smoke-test the dev compose. Note any config, dependency, or deployment implications (especially anything affecting `.env` or the compose).
 
-## CI/CD
-
-GitHub Actions workflows in `.github/workflows/`:
-- **pytest.yml** — Python tests with coverage, uploads to Codecov
-- **lint.yml** — Ruff linting via chartboost/ruff-action
-- **bandit.yaml** — Python security scanning on `application/`
-- **docker-develop-build.yml / docker-develop-fe-build.yml** — Docker image builds on push to main
-- **ci.yml** — Multi-arch release builds to DockerHub + ghcr.io
-
-## Code Style
-
-- **Python:** Ruff with 120 char line length (`.ruff.toml`). PEP 8. Type hints expected. Google-style docstrings. Keep changes narrow in `api`, `auth`, `security`, `parser`, `retriever`, and `storage` areas.
-- **Frontend:** ESLint + Prettier. 80 char print width. Single quotes. Semicolons. Tailwind CSS plugin for class sorting. Husky pre-commit hooks run lint-staged on `.{js,jsx,ts,tsx}` files. Prefer small, reusable functional components and hooks. Use Redux for shared state — do not introduce new global state libraries. Avoid broad UI refactors unless explicitly asked. Do not re-create components that already exist in the app.
-
-## Test Setup
-
-- **Python:** pytest with `pytest-cov`. Coverage target is `application/`. Tests use `mongomock`. Config in `pytest.ini`. Test fixtures/structure mirrors `application/` layout under `tests/`.
-- **Frontend:** No test runner configured (no Jest/Vitest).
-
-## PR Readiness
-
-Before opening a PR:
-- Run the relevant validation commands (ruff/pytest for backend, lint/build for frontend)
-- Confirm backend changes work end-to-end after ingesting sample data when applicable
-- Summarize user-visible behavior changes
-- Note any config, dependency, or deployment implications
+## Key files when working on the upgrade or deployment
+- `deployment/docker-compose-hub.yaml` — production compose
+- `deployment/Caddyfile` — TLS + reverse proxy + Cloudflare integration
+- `deployment/postgres-init/01-pgvector.sql` — creates the `vector` extension
+- `frontend/Dockerfile.prod` + `frontend/nginx.conf` — production frontend
+- `application/alembic/versions/0003_mcp_provisioning.py` — adds MCP columns to `agents`
+- `application/storage/db/repositories/agents.py:upsert_mcp_key` — the repo method for the MCP upsert
+- `application/api/internal/routes.py:create_mcp_key` — the endpoint handler
+- `.env-template` — all production secrets and their generation commands

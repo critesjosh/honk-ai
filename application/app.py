@@ -150,11 +150,31 @@ def authenticate_request():
 
 @app.after_request
 def after_request(response):
-    response.headers.add("Access-Control-Allow-Origin", "*")
-    response.headers.add("Access-Control-Allow-Headers", "Content-Type, Authorization")
-    response.headers.add(
-        "Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS"
-    )
+    """Emit CORS headers based on CORS_ALLOWED_ORIGINS.
+
+    - Empty/unset: same-origin only (no CORS headers emitted). Correct
+      default for a reverse-proxy fronted deployment where browser and
+      API share an origin.
+    - "*": permissive; allows any origin. Insecure with credentials; only
+      use for public read-only demos.
+    - Comma-separated origin list: echoes the request's Origin back only
+      if it matches, and adds Vary: Origin for correct caching.
+    """
+    allowed = (settings.CORS_ALLOWED_ORIGINS or "").strip()
+    if not allowed:
+        return response
+
+    if allowed == "*":
+        response.headers["Access-Control-Allow-Origin"] = "*"
+    else:
+        origin = request.headers.get("Origin", "")
+        allowlist = {o.strip() for o in allowed.split(",") if o.strip()}
+        if origin in allowlist:
+            response.headers["Access-Control-Allow-Origin"] = origin
+            response.headers["Vary"] = "Origin"
+
+    response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
+    response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
     return response
 
 

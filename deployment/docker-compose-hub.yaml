@@ -1,45 +1,83 @@
-name: docsgpt-oss
+# Production compose for the Aztec fork of DocsGPT.
+#
+# Differences from upstream:
+#  - builds images from local source (not :develop pulls)
+#  - postgres uses pgvector (user data + vector store in one database)
+#  - only Caddy publishes host ports; postgres/redis/backend/frontend
+#    stay on the internal compose network
+#  - secrets come from ../.env (generate via: openssl rand -hex 32)
+#
+# First-boot bootstrap (see AZTEC_SETUP.md):
+#   docker compose -f deployment/docker-compose-hub.yaml up -d postgres
+#   docker compose -f deployment/docker-compose-hub.yaml run --rm backend python scripts/db/init_postgres.py
+#   docker compose -f deployment/docker-compose-hub.yaml up -d
+
+name: docsgpt-aztec
 services:
 
-  frontend:
-    image: arc53/docsgpt-fe:develop
-    environment:
-      - VITE_API_HOST=http://localhost:7091
-      - VITE_API_STREAMING=${VITE_API_STREAMING:-true}
-      - VITE_GOOGLE_CLIENT_ID=${VITE_GOOGLE_CLIENT_ID:-}
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
     ports:
-      - "5173:5173"
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    environment:
+      - PUBLIC_HOSTNAME=${PUBLIC_HOSTNAME:?PUBLIC_HOSTNAME must be set in .env}
+      - ACME_EMAIL=${ACME_EMAIL:?ACME_EMAIL must be set in .env}
+    depends_on:
+      - backend
+      - frontend
+
+  frontend:
+    build:
+      context: ../frontend
+      dockerfile: Dockerfile.prod
+      args:
+        VITE_API_HOST: https://${PUBLIC_HOSTNAME}
+        VITE_API_STREAMING: "${VITE_API_STREAMING:-true}"
+    image: aztec/docsgpt-fe:${IMAGE_TAG:-0.17.0-aztec.1}
+    restart: unless-stopped
+    # No host port; Caddy reaches frontend:80 on the internal network.
     depends_on:
       - backend
 
-
   backend:
-    user: root
-    image: arc53/docsgpt:develop
+    build:
+      context: ../application
+    image: aztec/docsgpt:${IMAGE_TAG:-0.17.0-aztec.1}
+    restart: unless-stopped
     env_file:
       - ../.env
     environment:
       - CELERY_BROKER_URL=redis://redis:6379/0
       - CELERY_RESULT_BACKEND=redis://redis:6379/1
       - CACHE_REDIS_URL=redis://redis:6379/2
-      - POSTGRES_URI=postgresql://docsgpt:docsgpt@postgres:5432/docsgpt
-    ports:
-      - "7091:7091"
+      - POSTGRES_URI=postgresql://docsgpt:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}@postgres:5432/docsgpt
+      - PGVECTOR_CONNECTION_STRING=postgresql://docsgpt:${POSTGRES_PASSWORD}@postgres:5432/docsgpt
+      - VECTOR_STORE=${VECTOR_STORE:-pgvector}
+      - TIKTOKEN_CACHE_DIR=/tmp/tiktoken_cache
+      - FLASK_DEBUG=false
     volumes:
-      - ../application/indexes:/app/indexes
-      - ../application/inputs:/app/inputs
-      - ../application/vectors:/app/vectors
+      # Persist raw uploads across container recreation.
+      - uploads:/app/application/inputs
+      # Live-mount model config so operators can tune model settings without rebuild.
+      - ../application/core/model_configs.py:/app/application/core/model_configs.py:ro
     depends_on:
       redis:
         condition: service_started
       postgres:
         condition: service_healthy
 
-
   worker:
-    user: root
-    image: arc53/docsgpt:develop
-    command: celery -A application.app.celery worker -l INFO -B
+    build:
+      context: ../application
+    image: aztec/docsgpt:${IMAGE_TAG:-0.17.0-aztec.1}
+    restart: unless-stopped
+    command: celery -A application.app.celery worker -l INFO -B -c 2
     env_file:
       - ../.env
     environment:
@@ -47,11 +85,13 @@ services:
       - CELERY_RESULT_BACKEND=redis://redis:6379/1
       - API_URL=http://backend:7091
       - CACHE_REDIS_URL=redis://redis:6379/2
-      - POSTGRES_URI=postgresql://docsgpt:docsgpt@postgres:5432/docsgpt
+      - POSTGRES_URI=postgresql://docsgpt:${POSTGRES_PASSWORD}@postgres:5432/docsgpt
+      - PGVECTOR_CONNECTION_STRING=postgresql://docsgpt:${POSTGRES_PASSWORD}@postgres:5432/docsgpt
+      - VECTOR_STORE=${VECTOR_STORE:-pgvector}
+      - TIKTOKEN_CACHE_DIR=/tmp/tiktoken_cache
     volumes:
-      - ../application/indexes:/app/indexes
-      - ../application/inputs:/app/inputs
-      - ../application/vectors:/app/vectors
+      - uploads:/app/application/inputs
+      - ../application/core/model_configs.py:/app/application/core/model_configs.py:ro
     depends_on:
       redis:
         condition: service_started
@@ -60,19 +100,19 @@ services:
 
   redis:
     image: redis:6-alpine
-    ports:
-      - 6379:6379
+    restart: unless-stopped
+    # Internal-only; no host port publishing.
 
   postgres:
-    image: postgres:16-alpine
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
     environment:
       - POSTGRES_USER=docsgpt
-      - POSTGRES_PASSWORD=docsgpt
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
       - POSTGRES_DB=docsgpt
-    ports:
-      - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+      - ./postgres-init:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U docsgpt -d docsgpt"]
       interval: 5s
@@ -81,3 +121,6 @@ services:
 
 volumes:
   postgres_data:
+  uploads:
+  caddy_data:
+  caddy_config:

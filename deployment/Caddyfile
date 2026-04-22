@@ -1,0 +1,82 @@
+# Caddyfile for Aztec DocsGPT production deployment.
+#
+# Deployment model:
+#   Users → Cloudflare Access (auth gate) → Cloudflare Tunnel or public IP
+#        → this Caddy → backend:7091 / frontend:80
+#
+# Cloudflare Access enforces authentication. This Caddy terminates TLS
+# (via Let's Encrypt), trusts Cloudflare's JWT in the
+# `Cf-Access-Authenticated-User-Email` header, and forwards to the
+# appropriate internal service. Postgres, Redis, backend, and frontend
+# have no host-level port exposure — traffic only enters via this proxy.
+#
+# Hardening checklist (operator-side, not in this file):
+#   - Enable Cloudflare Access policy on $PUBLIC_HOSTNAME requiring SSO
+#   - Run `cloudflared` as a tunnel (preferred) OR restrict origin to
+#     Cloudflare IP ranges at the firewall (14 IPv4 + 7 IPv6 blocks,
+#     see https://www.cloudflare.com/ips/)
+#   - Cloudflare Access → Service Tokens for the Discord bot / CI if
+#     they need to hit the API programmatically
+#
+# The `{$PUBLIC_HOSTNAME}` and `{$ACME_EMAIL}` values come from .env via
+# the compose service's `environment:` block.
+
+{
+	email {$ACME_EMAIL}
+	# Cloudflare sits in front and sets X-Forwarded-For correctly;
+	# trust its IPs so Caddy's logs show the real client.
+	servers {
+		trusted_proxies cloudflare
+	}
+}
+
+{$PUBLIC_HOSTNAME} {
+	# Automatic HTTPS via Let's Encrypt.
+	# If using a Cloudflare Tunnel, this still terminates TLS inside
+	# the tunnel — Cloudflare handles the public TLS separately.
+
+	# Security headers.
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		# Don't leak Caddy version.
+		-Server
+	}
+
+	# Propagate the Cloudflare Access identity to the backend so
+	# request logs and audit trails can attribute actions. The backend
+	# does not validate this JWT itself — Cloudflare Access + the
+	# trusted_proxies block above are the trust boundary.
+	request_header X-Auth-Email {http.request.header.Cf-Access-Authenticated-User-Email}
+
+	# Backend API: Flask + Celery consumer endpoints. Use `handle` (not
+	# `handle_path`) so the /api/ prefix is preserved — Flask registers
+	# routes as /api/answer, /api/internal/create_mcp_key, etc.
+	handle /api/* {
+		reverse_proxy backend:7091 {
+			header_up Host {upstream_hostport}
+			# Streaming endpoints (answer, stream): disable buffering
+			# so chunked responses reach the client as they're produced.
+			flush_interval -1
+		}
+	}
+	handle /stream {
+		reverse_proxy backend:7091 {
+			flush_interval -1
+		}
+	}
+
+	# Everything else is the SPA served by the nginx frontend container.
+	handle {
+		reverse_proxy frontend:80
+	}
+
+	# Access + error logs to stdout so `docker compose logs caddy`
+	# shows them. Structured JSON for easy parsing if you add a log
+	# collector later.
+	log {
+		output stdout
+		format json
+	}
+}

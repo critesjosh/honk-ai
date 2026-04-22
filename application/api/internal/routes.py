@@ -1,12 +1,15 @@
 import os
 import datetime
 import json
+import uuid
 from flask import Blueprint, request, send_from_directory, jsonify
+from sqlalchemy import text
 from werkzeug.utils import secure_filename
 import logging
 
 from application.core.settings import settings
 from application.storage.db.base_repository import looks_like_uuid
+from application.storage.db.repositories.agents import AgentsRepository
 from application.storage.db.repositories.sources import SourcesRepository
 from application.storage.db.session import db_session
 from application.storage.storage_creator import StorageCreator
@@ -22,12 +25,20 @@ current_dir = os.path.dirname(
 internal = Blueprint("internal", __name__)
 
 
+SELF_AUTHENTICATED_ROUTES = {"/api/internal/create_mcp_key"}
+
+
 @internal.before_request
 def verify_internal_key():
     """Verify INTERNAL_KEY for all internal endpoint requests.
 
     Deny by default: if INTERNAL_KEY is not configured, reject all requests.
+    Routes listed in ``SELF_AUTHENTICATED_ROUTES`` authenticate themselves
+    (e.g. MCP key provisioning uses MCP_PROVISIONING_KEY so the Discord
+    bot never holds the full INTERNAL_KEY).
     """
+    if request.path in SELF_AUTHENTICATED_ROUTES:
+        return None
     if not settings.INTERNAL_KEY:
         logger.warning(
             f"Internal API request rejected from {request.remote_addr}: "
@@ -154,3 +165,91 @@ def upload_index_files():
                 legacy_mongo_id=None if looks_like_uuid(source_id) else str(source_id),
             )
     return {"status": "ok"}
+
+
+@internal.route("/api/internal/create_mcp_key", methods=["POST"])
+def create_mcp_key():
+    """Create or retrieve an MCP API key for a Discord user.
+
+    Self-authenticates via ``X-Provisioning-Key`` against
+    ``MCP_PROVISIONING_KEY`` — a key dedicated to this endpoint so that
+    a compromise of the Discord bot does not leak ``INTERNAL_KEY``.
+    Atomic upsert on (mcp_provider, mcp_provider_user_id, mcp_purpose)
+    prevents races on concurrent calls for the same Discord user.
+    """
+    provisioning_key = request.headers.get("X-Provisioning-Key")
+    if (
+        not settings.MCP_PROVISIONING_KEY
+        or not provisioning_key
+        or provisioning_key != settings.MCP_PROVISIONING_KEY
+    ):
+        return jsonify({"error": "Unauthorized"}), 401
+
+    data = request.get_json(silent=True) or {}
+    discord_user_id = (data.get("discord_user_id") or "").strip()
+    discord_username = (data.get("discord_username") or "").strip()
+    if not discord_user_id:
+        return jsonify({"error": "discord_user_id is required"}), 400
+    if not discord_username:
+        return jsonify({"error": "discord_username is required"}), 400
+
+    sanitized_username = discord_username[:50]
+
+    if not settings.AZTEC_SOURCE_IDS:
+        logger.error("AZTEC_SOURCE_IDS is not configured")
+        return jsonify({"error": "Aztec sources not configured"}), 500
+
+    raw_source_ids = [s.strip() for s in settings.AZTEC_SOURCE_IDS.split(",") if s.strip()]
+    candidate_uuids = [sid for sid in raw_source_ids if looks_like_uuid(sid)]
+    for sid in raw_source_ids:
+        if sid not in candidate_uuids:
+            logger.warning(f"Invalid UUID in AZTEC_SOURCE_IDS: {sid}")
+
+    try:
+        with db_session() as conn:
+            if candidate_uuids:
+                existing = conn.execute(
+                    text(
+                        "SELECT id FROM sources WHERE id = ANY(CAST(:ids AS uuid[]))"
+                    ),
+                    {"ids": candidate_uuids},
+                )
+                valid_source_ids = [str(row[0]) for row in existing.fetchall()]
+            else:
+                valid_source_ids = []
+
+            missing = set(candidate_uuids) - set(valid_source_ids)
+            for sid in missing:
+                logger.warning(f"Source not found for UUID: {sid}")
+
+            if not valid_source_ids:
+                logger.error("No valid Aztec sources found")
+                return jsonify({"error": "No valid Aztec sources found"}), 500
+
+            primary = valid_source_ids[0]
+            extras = valid_source_ids[1:]
+
+            agent = AgentsRepository(conn).upsert_mcp_key(
+                mcp_provider="discord",
+                mcp_provider_user_id=discord_user_id,
+                mcp_purpose="aztec_mcp",
+                user_id=f"discord:{discord_user_id}",
+                name=f"Aztec MCP - {sanitized_username}",
+                description="Aztec knowledge base access via MCP",
+                key=str(uuid.uuid4()),
+                source_id=primary,
+                extra_source_ids=extras,
+            )
+    except Exception:
+        logger.exception("Failed to upsert MCP key")
+        return jsonify({"error": "Internal server error"}), 500
+
+    created_at = agent.get("created_at")
+    updated_at = agent.get("updated_at")
+    created = (
+        created_at is not None
+        and updated_at is not None
+        and created_at == updated_at
+    )
+
+    return jsonify({"api_key": agent["key"], "created": created}), 200

@@ -118,6 +118,62 @@ class AgentsRepository:
         row = result.fetchone()
         return row_to_dict(row) if row is not None else None
 
+    def upsert_mcp_key(
+        self,
+        *,
+        mcp_provider: str,
+        mcp_provider_user_id: str,
+        mcp_purpose: str,
+        user_id: str,
+        name: str,
+        description: str,
+        key: str,
+        source_id: Optional[str],
+        extra_source_ids: list[str],
+        chunks: int = 2,
+        retriever: str = "classic",
+        agent_type: str = "classic",
+        status: str = "published",
+        request_limit: int = 1000,
+        token_limit: int = 500000,
+    ) -> dict:
+        """Atomically upsert one agent per (mcp_provider, mcp_provider_user_id, mcp_purpose).
+
+        Insert: populate every field; `key` is the generated API key.
+        Update: only refresh `name` (Discord usernames change) and `updated_at`.
+        Caller distinguishes create vs update by comparing `created_at` and
+        `updated_at` on the returned row.
+        """
+        values = {
+            "user_id": user_id,
+            "name": name,
+            "description": description,
+            "agent_type": agent_type,
+            "status": status,
+            "key": key,
+            "extra_source_ids": [str(x) for x in extra_source_ids],
+            "chunks": int(chunks),
+            "retriever": retriever,
+            "limited_request_mode": True,
+            "request_limit": int(request_limit),
+            "limited_token_mode": True,
+            "token_limit": int(token_limit),
+            "mcp_provider": mcp_provider,
+            "mcp_provider_user_id": mcp_provider_user_id,
+            "mcp_purpose": mcp_purpose,
+        }
+        if source_id is not None:
+            values["source_id"] = str(source_id)
+
+        stmt = pg_insert(agents_table).values(**values)
+        stmt = stmt.on_conflict_do_update(
+            index_elements=["mcp_provider", "mcp_provider_user_id", "mcp_purpose"],
+            index_where=agents_table.c.mcp_provider.is_not(None),
+            set_={"name": stmt.excluded.name, "updated_at": func.now()},
+        ).returning(agents_table)
+        result = self._conn.execute(stmt)
+        return row_to_dict(result.fetchone())
+
     def find_by_shared_token(self, token: str) -> Optional[dict]:
         """Resolve a publicly-shared agent by its rotating share token.
 

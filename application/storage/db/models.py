@@ -201,6 +201,9 @@ agents_table = Table(
     Column("updated_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
     Column("last_used_at", DateTime(timezone=True)),
     Column("legacy_mongo_id", Text),
+    Column("mcp_provider", Text),
+    Column("mcp_provider_user_id", Text),
+    Column("mcp_purpose", Text),
 )
 
 attachments_table = Table(
