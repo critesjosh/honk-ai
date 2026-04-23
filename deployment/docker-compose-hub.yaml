@@ -15,19 +15,28 @@
 name: docsgpt-aztec
 services:
 
+  # Outbound-only Cloudflare Tunnel. No host port publishing anywhere —
+  # cloudflared reaches caddy:80 on the internal compose network and
+  # Cloudflare terminates TLS at the edge.
+  cloudflared:
+    image: cloudflare/cloudflared:2026.3.0
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run
+    environment:
+      - TUNNEL_TOKEN=${CLOUDFLARE_TUNNEL_TOKEN:?CLOUDFLARE_TUNNEL_TOKEN must be set in .env}
+    depends_on:
+      - caddy
+
   caddy:
     image: caddy:2-alpine
     restart: unless-stopped
-    ports:
-      - "80:80"
-      - "443:443"
+    # No host ports. cloudflared reaches caddy:80 via the compose network.
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
       - caddy_config:/config
     environment:
       - PUBLIC_HOSTNAME=${PUBLIC_HOSTNAME:?PUBLIC_HOSTNAME must be set in .env}
-      - ACME_EMAIL=${ACME_EMAIL:?ACME_EMAIL must be set in .env}
     depends_on:
       - backend
       - frontend
@@ -50,6 +59,9 @@ services:
       context: ../application
     image: aztec/docsgpt:${IMAGE_TAG:-0.17.0-aztec.1}
     restart: unless-stopped
+    # Allow Gunicorn --graceful-timeout 30 to actually drain long SSE
+    # streams on `up -d --force-recreate backend`. Compose default is 10s.
+    stop_grace_period: 40s
     env_file:
       - ../.env
     environment:
@@ -97,6 +109,26 @@ services:
         condition: service_started
       postgres:
         condition: service_healthy
+
+  # Discord bot. Reaches backend:7091 internally so it bypasses
+  # Cloudflare Access entirely (no service token needed). The bot calls
+  # /stream for chat and /api/internal/create_mcp_key for the /mcp-key
+  # slash command (self-auth via MCP_PROVISIONING_KEY).
+  discord-bot:
+    build:
+      context: ../extensions/discord
+    image: aztec/docsgpt-discord-bot:${IMAGE_TAG:-0.17.0-aztec.1}
+    restart: unless-stopped
+    environment:
+      - DISCORD_TOKEN=${DISCORD_TOKEN:?DISCORD_TOKEN must be set in .env}
+      - API_BASE=http://backend:7091
+      - PUBLIC_HOSTNAME=${PUBLIC_HOSTNAME}
+      - API_KEY=${API_KEY}
+      - MCP_PROVISIONING_KEY=${MCP_PROVISIONING_KEY}
+      - NOIR_GUILD_ID=${NOIR_GUILD_ID:-0}
+      - BOT_ROLE_ID=${BOT_ROLE_ID:-}
+    depends_on:
+      - backend
 
   redis:
     image: redis:6-alpine

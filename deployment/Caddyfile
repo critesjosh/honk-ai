@@ -1,39 +1,29 @@
 # Caddyfile for Aztec DocsGPT production deployment.
 #
-# Deployment model:
-#   Users → Cloudflare Access (auth gate) → Cloudflare Tunnel or public IP
-#        → this Caddy → backend:7091 / frontend:80
+# Deployment model (Cloudflare Tunnel path):
+#   Users → Cloudflare edge (TLS + Access SSO) → Tunnel → cloudflared
+#        → this Caddy (HTTP, internal) → backend:7091 / frontend:80
 #
-# Cloudflare Access enforces authentication. This Caddy terminates TLS
-# (via Let's Encrypt), trusts Cloudflare's JWT in the
-# `Cf-Access-Authenticated-User-Email` header, and forwards to the
-# appropriate internal service. Postgres, Redis, backend, and frontend
-# have no host-level port exposure — traffic only enters via this proxy.
+# TLS is terminated at Cloudflare's edge. cloudflared opens an outbound
+# tunnel and forwards decrypted HTTP to Caddy on the internal compose
+# network. Nothing on this host faces the public internet.
+#
+# Caddy's job here is path routing (/api/* and /stream → backend, rest →
+# frontend), streaming buffering (flush_interval -1 for SSE), security
+# headers, and propagating Cf-Access-Authenticated-User-Email → X-Auth-Email.
 #
 # Hardening checklist (operator-side, not in this file):
-#   - Enable Cloudflare Access policy on $PUBLIC_HOSTNAME requiring SSO
-#   - Run `cloudflared` as a tunnel (preferred) OR restrict origin to
-#     Cloudflare IP ranges at the firewall (14 IPv4 + 7 IPv6 blocks,
-#     see https://www.cloudflare.com/ips/)
-#   - Cloudflare Access → Service Tokens for the Discord bot / CI if
-#     they need to hit the API programmatically
-#
-# The `{$PUBLIC_HOSTNAME}` and `{$ACME_EMAIL}` values come from .env via
-# the compose service's `environment:` block.
+#   - Cloudflare Access self-hosted application on $PUBLIC_HOSTNAME
+#     with SSO policy. Tunnel alone is NOT authentication.
+#   - Tunnel ingress: Additional application settings → Access →
+#     "Protect with Access" bound to the Access application AUD.
+#   - Host firewall can block all inbound (tunnel is outbound only).
 
-{
-	email {$ACME_EMAIL}
-	# Cloudflare sits in front and sets X-Forwarded-For correctly;
-	# trust its IPs so Caddy's logs show the real client.
-	servers {
-		trusted_proxies cloudflare
-	}
-}
-
-{$PUBLIC_HOSTNAME} {
-	# Automatic HTTPS via Let's Encrypt.
-	# If using a Cloudflare Tunnel, this still terminates TLS inside
-	# the tunnel — Cloudflare handles the public TLS separately.
+http://{$PUBLIC_HOSTNAME} {
+	# HTTP-only: the Cloudflare Tunnel carries plaintext from the edge
+	# to cloudflared → Caddy over the internal network. TLS lives at
+	# the CF edge. Leaving off the scheme would make Caddy try to issue
+	# a Let's Encrypt cert; `http://` keeps it on port 80 only.
 
 	# Security headers.
 	header {
@@ -46,8 +36,10 @@
 
 	# Propagate the Cloudflare Access identity to the backend so
 	# request logs and audit trails can attribute actions. The backend
-	# does not validate this JWT itself — Cloudflare Access + the
-	# trusted_proxies block above are the trust boundary.
+	# does not validate this JWT itself — Cloudflare Access (enforced
+	# at the edge + on the tunnel ingress via Access AUD) is the trust
+	# boundary. Under Tunnel, Caddy's immediate peer is cloudflared, so
+	# client IPs here are internal hops, not end-user IPs.
 	request_header X-Auth-Email {http.request.header.Cf-Access-Authenticated-User-Email}
 
 	# Backend API: Flask + Celery consumer endpoints. Use `handle` (not

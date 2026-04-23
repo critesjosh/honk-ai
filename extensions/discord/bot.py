@@ -26,6 +26,14 @@ MCP_PROVISIONING_KEY = os.getenv("MCP_PROVISIONING_KEY", "")
 NOIR_GUILD_ID = int(os.getenv("NOIR_GUILD_ID", "0"))
 BOT_ROLE_ID = os.getenv("BOT_ROLE_ID", "1492704234842493050")
 
+# Public URL users hit from their MCP clients. Prefer PUBLIC_HOSTNAME
+# (set on the hub compose) and construct the https URL; fall back to a
+# placeholder so the instructions still read sensibly in dev.
+_public_host = os.getenv("PUBLIC_HOSTNAME", "").strip()
+MCP_PUBLIC_URL = (
+    f"https://{_public_host}" if _public_host else "https://your-docsgpt.example.com"
+)
+
 intents = discord.Intents.default()
 intents.message_content = True
 
@@ -194,9 +202,13 @@ async def mcp_key(interaction: discord.Interaction):
     )
 
     # Message 2: Setup instructions (no secret in this message)
-    await interaction.followup.send(
-        "**Setup Instructions:**\n"
-        "Add this to your Claude Desktop `claude_desktop_config.json`:\n"
+    instructions = (
+        "**Aztec MCP — setup**\n"
+        f"Connection details:\n"
+        f"• `API_URL` = `{MCP_PUBLIC_URL}`\n"
+        "• `API_KEY` = the key from the previous message\n"
+        "\n"
+        "__Claude Desktop__ — add to `claude_desktop_config.json`:\n"
         "```json\n"
         "{\n"
         '  "mcpServers": {\n'
@@ -204,15 +216,30 @@ async def mcp_key(interaction: discord.Interaction):
         '      "command": "npx",\n'
         '      "args": ["docsgpt-mcp-server"],\n'
         '      "env": {\n'
-        '        "API_URL": "http://your-docsgpt:7091",\n'
+        f'        "API_URL": "{MCP_PUBLIC_URL}",\n'
         '        "API_KEY": "<paste your key here>"\n'
         "      }\n"
         "    }\n"
         "  }\n"
         "}\n"
-        "```",
-        ephemeral=True,
+        "```\n"
+        "__Claude Code__ — run:\n"
+        "```bash\n"
+        "claude mcp add aztec-docs \\\n"
+        f"  -e API_URL={MCP_PUBLIC_URL} \\\n"
+        "  -e API_KEY=<paste your key here> \\\n"
+        "  -- npx docsgpt-mcp-server\n"
+        "```\n"
+        "__Codex__ — add to `~/.codex/config.toml`:\n"
+        "```toml\n"
+        "[mcp_servers.aztec-docs]\n"
+        'command = "npx"\n'
+        'args = ["docsgpt-mcp-server"]\n'
+        f'env = {{ API_URL = "{MCP_PUBLIC_URL}", '
+        'API_KEY = "<paste your key here>" }\n'
+        "```"
     )
+    await interaction.followup.send(instructions, ephemeral=True)
 
 
 async def generate_answer(question, messages, conversation_id):
