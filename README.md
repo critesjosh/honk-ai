@@ -6,16 +6,82 @@
   <strong>Private AI for agents, assistants and enterprise search</strong>
 </p>
 
-> **Aztec fork notice.** This repository is an Aztec fork of upstream
-> [`arc53/DocsGPT`](https://github.com/arc53/DocsGPT) pinned to tag
-> `0.17.0` with Aztec-specific extensions: an MCP key-provisioning
-> endpoint (`/api/internal/create_mcp_key`), a Discord `/mcp-key`
-> slash command, a standalone TypeScript MCP server
-> (`extensions/mcp-server/`), and a chunking filter for small stubs.
-> For deployment on the Aztec company server, follow
-> [`AZTEC_SETUP.md`](./AZTEC_SETUP.md). For development and architecture
-> guidance, see [`CLAUDE.md`](./CLAUDE.md). The rest of this README
-> reflects upstream documentation.
+> **Aztec Labs fork.** Internal knowledge-base assistant for the Aztec Network,
+> built on upstream [`arc53/DocsGPT`](https://github.com/arc53/DocsGPT) starting
+> at tag `0.17.0`. Corpus pinned to [`aztec-packages@v4.2.0`](https://github.com/AztecProtocol/aztec-packages/tree/v4.2.0).
+> Live at **[aztec.adjacentpossible.dev](https://aztec.adjacentpossible.dev)**
+> (Cloudflare Access SSO). The rest of this README is upstream documentation.
+
+## Aztec fork overview
+
+### Access paths
+- **Web chat UI** — `https://aztec.adjacentpossible.dev`. Log in via Cloudflare
+  Access (email SSO). The default `Aztec 4.2.0` agent is scoped to all 9
+  corpora (Developer Docs, Network Docs, Aztec.nr, Example Contracts, Protocol
+  Circuits, aztec.js SDK, CLI, E2E Tests, L1 Contracts).
+- **Discord** — run `/mcp-key` in the Noir Discord to provision a personal
+  MCP API key. `@`-mention the Aztec DocsGPT bot in any channel (or DM it)
+  to chat directly. Responses are formatted for Discord (no Mermaid, no
+  Markdown tables) via a custom system prompt.
+- **MCP clients** (Claude Desktop, Claude Code, Codex) — paste the key from
+  `/mcp-key` with `API_URL=https://aztec.adjacentpossible.dev`. The bot
+  response includes ready-to-paste config snippets for each client and
+  exposes a `search_aztec` tool backed by this deployment's `/api/search`.
+
+### What this fork adds on top of upstream 0.17.0
+
+- **MCP key provisioning** — `POST /api/internal/create_mcp_key`
+  self-authenticates via `MCP_PROVISIONING_KEY` and upserts a per-Discord-user
+  agent row (`agents.mcp_provider`, `mcp_provider_user_id`, `mcp_purpose`).
+- **Discord bot** (`extensions/discord/`) — containerized and bundled into
+  the production compose. Implements the `/mcp-key` slash command and
+  @-mention chat passthrough. Reaches the backend on the internal compose
+  network (bypasses Cloudflare Access).
+- **Standalone TypeScript MCP server** (`extensions/mcp-server/`) — stdio
+  MCP server that end users install locally (`npx docsgpt-mcp-server`).
+  Exposes a `search_aztec` tool that hits `/api/search` with the user's key.
+- **Ingest deny-list** (`application/parser/file/bulk.py:_IGNORED_PATH_SEGMENTS`)
+  skips `fixtures/`, `dumps/`, `node_modules/`, `target/`, `dist/`, `build/`,
+  `_out/`, `__pycache__/`, and `.git/` directories during corpus ingest —
+  prevents blockchain-state test fixtures from burning OpenAI embedding credit.
+- **Chunking filter** (`application/parser/chunking.py`) drops chunks with
+  `token_count < 50`.
+- **Cloudflare Tunnel deployment topology** — `deployment/docker-compose-hub.yaml`
+  runs cloudflared as an outbound-only connector; no public IP required.
+  Caddy (`deployment/Caddyfile`) sits behind it in HTTP-only mode and
+  handles path routing, streaming (`flush_interval -1` for SSE), security
+  headers, and `Cf-Access-Authenticated-User-Email → X-Auth-Email`
+  propagation.
+- **Slim backend image (1.34 GB)** — `application/Dockerfile` drops torch,
+  transformers, sentence-transformers, docling, rapidocr, onnxruntime, and
+  the bundled mpnet model in favor of remote OpenAI embeddings. The
+  upstream image is ~12 GB.
+- **Gunicorn + SSE hardening** — gthread workers (2 × 8), 75 s keep-alive,
+  30 s graceful shutdown (paired with compose `stop_grace_period: 40s`), and
+  a 15 s `: ping` heartbeat in `application/api/answer/routes/base.py` so
+  Cloudflare doesn't idle-close long SSE streams during multi-hop retrieval.
+- **Custom settings** — `MCP_PROVISIONING_KEY`, `AZTEC_SOURCE_IDS`,
+  `CORS_ALLOWED_ORIGINS`, `EMBEDDINGS_DIMENSION`.
+
+### Repository map (fork-specific)
+
+- [`CLAUDE.md`](./CLAUDE.md) — architecture and ops guide for this fork
+  (read first for any code or deploy work).
+- [`AZTEC_SETUP.md`](./AZTEC_SETUP.md) — end-to-end production deployment
+  walkthrough (bootstrap, secrets, corpus ingest, verification, rollback).
+- [`deployment/docker-compose-hub.yaml`](./deployment/docker-compose-hub.yaml) —
+  production compose (cloudflared + Caddy + backend + worker + frontend +
+  discord-bot + postgres/pgvector + redis).
+- [`deployment/Caddyfile`](./deployment/Caddyfile) — reverse-proxy config,
+  HTTP-only for the tunnel path.
+- [`.env-template`](./.env-template) — every required env var with generation
+  commands (`openssl rand -hex 32` for each `*_KEY`).
+- [`extensions/discord/`](./extensions/discord/) — Discord bot source +
+  Dockerfile.
+- [`extensions/mcp-server/`](./extensions/mcp-server/) — TypeScript MCP
+  server (end users run this locally).
+
+---
 
 <p align="left">
   <strong><a href="https://www.docsgpt.cloud/">DocsGPT</a></strong> is an open-source AI platform for building intelligent agents and assistants. Features Agent Builder, deep research tools, document analysis (PDF, Office, web content, and audio), Multi-model support (choose your provider or run locally), and rich API connectivity for agents with actionable tools and integrations. Deploy anywhere with complete privacy control.
