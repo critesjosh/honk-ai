@@ -1,92 +1,83 @@
-# Builder Stage
-FROM ubuntu:24.04 as builder
+# Builder stage — installs Python deps into a venv.
+#
+# This fork is for deployments that use REMOTE embeddings (OpenAI or similar
+# via EMBEDDINGS_BASE_URL). torch / transformers / sentence-transformers have
+# been removed, which drops ~5GB of CUDA/triton wheels and the 400MB
+# mpnet-base-v2 model the upstream image bundled for local embeddings.
+FROM python:3.12-slim-bookworm AS builder
 
-ENV DEBIAN_FRONTEND=noninteractive
+ENV DEBIAN_FRONTEND=noninteractive \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PIP_NO_CACHE_DIR=1
 
+# Build-only toolchain (dropped from the final image).
+# gcc/g++/libc6-dev: some pure-Python wheels need a C compiler if no wheel
+# is published for python 3.12 bookworm — defensive but cheap.
 RUN apt-get update && \
-    apt-get install -y software-properties-common && \
-    add-apt-repository ppa:deadsnakes/ppa && \
-    apt-get update && \
-    apt-get install -y --no-install-recommends gcc g++ wget unzip libc6-dev python3.12 python3.12-venv python3.12-dev && \
-    rm -rf /var/lib/apt/lists/* 
+    apt-get install -y --no-install-recommends \
+        gcc g++ libc6-dev \
+    && rm -rf /var/lib/apt/lists/*
 
-# Verify Python installation and setup symlink
-RUN if [ -f /usr/bin/python3.12 ]; then \
-        ln -s /usr/bin/python3.12 /usr/bin/python; \
-    else \
-        echo "Python 3.12 not found"; exit 1; \
-    fi
-
-# Download and unzip the model
-RUN wget https://d3dg1063dc54p9.cloudfront.net/models/embeddings/mpnet-base-v2.zip && \
-    unzip mpnet-base-v2.zip -d models && \
-    rm mpnet-base-v2.zip
-
-# Install Rust
-RUN wget -q -O - https://sh.rustup.rs | sh -s -- -y
-
-# Clean up to reduce container size
-RUN apt-get remove --purge -y wget unzip && apt-get autoremove -y && rm -rf /var/lib/apt/lists/*
-
-# Copy requirements.txt
 COPY requirements.txt .
 
-# Setup Python virtual environment
-RUN python3.12 -m venv /venv
+RUN python -m venv /venv && \
+    /venv/bin/pip install --upgrade pip && \
+    /venv/bin/pip install -r requirements.txt
 
-# Activate virtual environment and install Python packages
-ENV PATH="/venv/bin:$PATH"
 
-# Install Python packages
-RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir tiktoken && \
-    pip install --no-cache-dir -r requirements.txt
+# Final stage — runtime only.
+FROM python:3.12-slim-bookworm AS final
 
-# Final Stage
-FROM ubuntu:24.04 as final
+ENV DEBIAN_FRONTEND=noninteractive \
+    PATH=/venv/bin:$PATH \
+    FLASK_APP=app.py \
+    FLASK_DEBUG=false
 
+# Runtime system libs:
+# - poppler-utils: used by pdf2image / PDFParser for PDF text extraction.
+# libgl1 / libglib2.0-0 dropped: they were transitive opencv deps pulled
+# by docling/rapidocr, which are no longer in this image.
 RUN apt-get update && \
-    apt-get install -y software-properties-common && \
-    add-apt-repository ppa:deadsnakes/ppa && \
-    apt-get update && apt-get install -y --no-install-recommends \
-        python3.12 \
-        libgl1 \
-        libglib2.0-0 \
+    apt-get install -y --no-install-recommends \
         poppler-utils \
-        && \
-    ln -s /usr/bin/python3.12 /usr/bin/python && \
-    rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/*
 
-# Set working directory
 WORKDIR /app
 
-# Create a non-root user: `appuser` (Feel free to choose a name)
 RUN groupadd -r appuser && \
     useradd -r -g appuser -d /app -s /sbin/nologin -c "Docker image user" appuser
 
-# Copy the virtual environment and model from the builder stage
 COPY --from=builder /venv /venv
 
-COPY --from=builder /models /app/models
+# --chown in the COPY avoids the ~475MB duplicate layer that a separate
+# `RUN chown -R` would create (every file gets a new metadata record).
+COPY --chown=appuser:appuser . /app/application
 
-# Copy your application code
-COPY . /app/application
+RUN mkdir -p /app/application/inputs/local && \
+    chown appuser:appuser /app/application/inputs/local
 
-# Change the ownership of the /app directory to the appuser
-	
-RUN mkdir -p /app/application/inputs/local
-RUN chown -R appuser:appuser /app
-
-# Set environment variables
-ENV FLASK_APP=app.py \
-    FLASK_DEBUG=true \
-    PATH="/venv/bin:$PATH"
-
-# Expose the port the app runs on
 EXPOSE 7091
 
-# Switch to non-root user
 USER appuser
 
-# Start Gunicorn
-CMD ["gunicorn", "-w", "1", "--timeout", "120", "--bind", "0.0.0.0:7091", "--preload", "application.wsgi:app"]
+# gthread with 2 workers × 8 threads → 16 concurrent requests. The workload
+# is I/O-bound (Postgres, OpenAI, pgvector retrieval), so threads fit well
+# and avoid the monkey-patching risk of gevent/eventlet. Celery runs
+# heavy/long work out-of-band — the Gunicorn process just serves API + SSE.
+#
+# --keep-alive 75: governs the Caddy→Gunicorn connection reuse window.
+# --graceful-timeout 30: drain in-flight SSE on SIGTERM. Requires a
+#   matching stop_grace_period on the backend compose service; default
+#   Compose SIGKILL at 10s would otherwise cut streams short.
+# --timeout 120: worker-stall detection (not stream duration). Long
+#   streams stay healthy because the SSE heartbeat yields every ~15s.
+CMD ["gunicorn", \
+     "-k", "gthread", \
+     "-w", "2", \
+     "--threads", "8", \
+     "--timeout", "120", \
+     "--graceful-timeout", "30", \
+     "--keep-alive", "75", \
+     "--bind", "0.0.0.0:7091", \
+     "--preload", \
+     "application.wsgi:app"]

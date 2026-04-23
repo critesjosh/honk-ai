@@ -1,7 +1,9 @@
 import datetime
 import json
 import logging
-from typing import Any, Dict, Generator, List, Optional
+import queue
+import threading
+from typing import Any, Dict, Generator, Iterable, List, Optional, Tuple
 
 from flask import jsonify, make_response, Response
 from flask_restx import Namespace
@@ -27,6 +29,51 @@ logger = logging.getLogger(__name__)
 
 
 answer_ns = Namespace("answer", description="Answer related operations", path="/")
+
+
+_HEARTBEAT_INTERVAL_SECONDS = 15.0
+
+
+def _iter_with_heartbeat(
+    source_iter: Iterable[Any],
+    interval: float = _HEARTBEAT_INTERVAL_SECONDS,
+) -> Generator[Tuple[str, Any], None, None]:
+    """Wrap a blocking iterator, inserting a heartbeat sentinel on silence.
+
+    A single producer thread consumes ``source_iter`` and pushes items into
+    a queue. The consumer pulls with a timeout; if the source has been
+    silent for ``interval`` seconds it yields ``("heartbeat", None)``.
+    Real items are yielded as ``("item", value)``; errors from the
+    producer are re-raised on the consumer.
+
+    The producer thread must not touch Flask request context.
+    """
+    q: "queue.Queue[Tuple[str, Any]]" = queue.Queue(maxsize=64)
+
+    def _producer() -> None:
+        try:
+            for item in source_iter:
+                q.put(("item", item))
+        except BaseException as exc:  # noqa: BLE001 — re-raised on consumer
+            q.put(("error", exc))
+        else:
+            q.put(("done", None))
+
+    t = threading.Thread(target=_producer, daemon=True, name="sse-producer")
+    t.start()
+
+    while True:
+        try:
+            kind, payload = q.get(timeout=interval)
+        except queue.Empty:
+            yield ("heartbeat", None)
+            continue
+        if kind == "item":
+            yield ("item", payload)
+        elif kind == "done":
+            return
+        elif kind == "error":
+            raise payload  # type: ignore[misc]
 
 
 class BaseAnswerResource:
@@ -220,7 +267,14 @@ class BaseAnswerResource:
             else:
                 gen_iter = agent.gen(query=question)
 
-            for line in gen_iter:
+            for kind, line in _iter_with_heartbeat(gen_iter):
+                if kind == "heartbeat":
+                    # SSE comment line — clients discard it. Keeps the
+                    # connection active across long silent gaps (tool
+                    # calls, retrieval) so Cloudflare/Caddy don't close
+                    # the stream and the frontend stays responsive.
+                    yield ": ping\n\n"
+                    continue
                 if "metadata" in line:
                     query_metadata.update(line["metadata"])
                 elif "answer" in line:

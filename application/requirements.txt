@@ -7,9 +7,14 @@ celery==5.6.3
 cryptography==46.0.7
 dataclasses-json==0.6.7
 defusedxml==0.7.1
-docling>=2.16.0
-rapidocr>=1.4.0
-onnxruntime>=1.19.0
+# docling / rapidocr / onnxruntime removed for this fork. docling
+# transitively required torch + torchvision, which re-dragged in the
+# CUDA stack we were trying to drop. Ingest falls back to the stock
+# parsers (PDFParser/DocxParser/PandasCSVParser/…) via the
+# try/except ImportError branch in parser/file/bulk.py. Our corpus is
+# markdown + source code, so docling's layout/OCR features weren't
+# meaningfully exercised. Reinstate if you start ingesting scanned
+# PDFs or image-heavy docs.
 docx2txt==0.9
 ddgs>=8.0.0
 fast-ebook
@@ -60,6 +65,7 @@ portalocker>=2.7.0,<4.0.0
 prompt-toolkit==3.0.52
 protobuf==7.34.1
 psycopg[binary,pool]>=3.1,<4
+pgvector>=0.3,<1
 py==1.11.0
 pydantic
 pydantic-core
@@ -74,13 +80,15 @@ referencing>=0.28.0,<0.38.0
 regex==2026.4.4
 requests==2.33.1
 retry==0.9.2
-sentence-transformers==5.3.0
+# Removed for this fork: sentence-transformers, torch, transformers,
+# tokenizers. Embeddings are computed by a remote provider
+# (EMBEDDINGS_BASE_URL / EMBEDDINGS_NAME / EMBEDDINGS_KEY), never locally.
+# Dropping these saves ~5GB of CUDA/torch/triton wheels in the backend image.
+# If you need local embeddings (HuggingFace SentenceTransformer / mpnet),
+# reinstate them — and pin torch to the CPU wheel index for GPU-less hosts.
 sqlalchemy>=2.0,<3
 tiktoken==0.12.0
-tokenizers==0.22.2
-torch==2.11.0
 tqdm==4.67.3
-transformers==5.4.0
 typing-extensions==4.15.0
 typing-inspect==0.9.0
 tzdata==2026.1
