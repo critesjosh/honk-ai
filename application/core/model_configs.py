@@ -60,10 +60,45 @@ OPENAI_MODELS = [
 
 ANTHROPIC_MODELS = [
     AvailableModel(
+        id="claude-sonnet-4-6",
+        provider=ModelProvider.ANTHROPIC,
+        display_name="Claude Sonnet 4.6",
+        description="Default Aztec model. Balanced performance and capability.",
+        capabilities=ModelCapabilities(
+            supports_tools=True,
+            supports_structured_output=True,
+            supported_attachment_types=ANTHROPIC_ATTACHMENTS,
+            context_window=200000,
+        ),
+    ),
+    AvailableModel(
+        id="claude-opus-4-7",
+        provider=ModelProvider.ANTHROPIC,
+        display_name="Claude Opus 4.7",
+        description="Most capable Claude model for hard reasoning and long-form tasks.",
+        capabilities=ModelCapabilities(
+            supports_tools=True,
+            supports_structured_output=True,
+            supported_attachment_types=ANTHROPIC_ATTACHMENTS,
+            context_window=200000,
+        ),
+    ),
+    AvailableModel(
+        id="claude-haiku-4-5",
+        provider=ModelProvider.ANTHROPIC,
+        display_name="Claude Haiku 4.5",
+        description="Fast, cost-effective Claude model for short tasks and high-throughput usage.",
+        capabilities=ModelCapabilities(
+            supports_tools=True,
+            supported_attachment_types=ANTHROPIC_ATTACHMENTS,
+            context_window=200000,
+        ),
+    ),
+    AvailableModel(
         id="claude-3-5-sonnet-20241022",
         provider=ModelProvider.ANTHROPIC,
         display_name="Claude 3.5 Sonnet (Latest)",
-        description="Latest Claude 3.5 Sonnet with enhanced capabilities",
+        description="Previous-generation Claude 3.5 Sonnet.",
         capabilities=ModelCapabilities(
             supports_tools=True,
             supported_attachment_types=ANTHROPIC_ATTACHMENTS,
@@ -74,7 +109,7 @@ ANTHROPIC_MODELS = [
         id="claude-3-5-sonnet",
         provider=ModelProvider.ANTHROPIC,
         display_name="Claude 3.5 Sonnet",
-        description="Balanced performance and capability",
+        description="Previous-generation balanced Claude model.",
         capabilities=ModelCapabilities(
             supports_tools=True,
             supported_attachment_types=ANTHROPIC_ATTACHMENTS,
@@ -85,7 +120,7 @@ ANTHROPIC_MODELS = [
         id="claude-3-opus",
         provider=ModelProvider.ANTHROPIC,
         display_name="Claude 3 Opus",
-        description="Most capable Claude model",
+        description="Previous-generation Opus.",
         capabilities=ModelCapabilities(
             supports_tools=True,
             supported_attachment_types=ANTHROPIC_ATTACHMENTS,
@@ -96,7 +131,7 @@ ANTHROPIC_MODELS = [
         id="claude-3-haiku",
         provider=ModelProvider.ANTHROPIC,
         display_name="Claude 3 Haiku",
-        description="Fastest Claude model",
+        description="Previous-generation Haiku.",
         capabilities=ModelCapabilities(
             supports_tools=True,
             supported_attachment_types=ANTHROPIC_ATTACHMENTS,
@@ -171,6 +206,18 @@ GROQ_MODELS = [
 
 
 OPENROUTER_MODELS = [
+    AvailableModel(
+        id="z-ai/glm-4.6",
+        provider=ModelProvider.OPENROUTER,
+        display_name="GLM 4.6",
+        description="Default Aztec model. Z.AI GLM 4.6 — strong general + coding, cost-effective, 200k context.",
+        capabilities=ModelCapabilities(
+            supports_tools=True,
+            supports_structured_output=True,
+            context_window=200000,
+            supported_attachment_types=OPENROUTER_ATTACHMENTS,
+        ),
+    ),
     AvailableModel(
         id="qwen/qwen3.5-397b-a17b",
         provider=ModelProvider.OPENROUTER,

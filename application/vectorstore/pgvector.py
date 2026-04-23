@@ -45,6 +45,7 @@ class PGVectorStore(BaseVectorStore):
 
         try:
             import psycopg
+            from psycopg.types.json import Jsonb
             from pgvector.psycopg import register_vector
         except ImportError:
             raise ImportError(
@@ -53,6 +54,7 @@ class PGVectorStore(BaseVectorStore):
             )
 
         self._psycopg = psycopg
+        self._Jsonb = Jsonb
         self._register_vector = register_vector
         self._connection = None
         self._ensure_table_exists()
@@ -74,7 +76,12 @@ class PGVectorStore(BaseVectorStore):
             # Enable pgvector extension
             cursor.execute("CREATE EXTENSION IF NOT EXISTS vector;")
             
-            embedding_dim = getattr(self._embedding, 'dimension', 768)
+            # The embedding dimension must match the configured model. We
+            # can't reliably infer it without a network call, and creating
+            # the table with the wrong dim silently corrupts later inserts,
+            # so require it as an explicit setting.
+            embedding_dim = getattr(settings, "EMBEDDINGS_DIMENSION", None) \
+                or getattr(self._embedding, "dimension", None) or 768
             
             # Create table with vector column
             create_table_query = f"""
@@ -88,14 +95,18 @@ class PGVectorStore(BaseVectorStore):
             );
             """
             cursor.execute(create_table_query)
-            
-            # Create index for vector similarity search
-            index_query = f"""
-            CREATE INDEX IF NOT EXISTS {self._table_name}_{self._vector_column}_idx 
-            ON {self._table_name} USING ivfflat ({self._vector_column} vector_cosine_ops)
-            WITH (lists = 100);
-            """
-            cursor.execute(index_query)
+
+            # pgvector's ivfflat/hnsw indexes cap at 2000 dims for the vector
+            # type; skip the ANN index for larger embeddings (e.g. OpenAI
+            # text-embedding-3-large at 3072). Sequential scan still returns
+            # correct results — revisit with halfvec if query latency matters.
+            if embedding_dim <= 2000:
+                index_query = f"""
+                CREATE INDEX IF NOT EXISTS {self._table_name}_{self._vector_column}_idx
+                ON {self._table_name} USING ivfflat ({self._vector_column} vector_cosine_ops)
+                WITH (lists = 100);
+                """
+                cursor.execute(index_query)
             
             # Create index for source_id filtering
             source_index_query = f"""
@@ -175,7 +186,7 @@ class PGVectorStore(BaseVectorStore):
             for text, embedding, metadata in zip(texts, embeddings, metadatas):
                 cursor.execute(
                     insert_query,
-                    (text, embedding, metadata, self._source_id)
+                    (text, embedding, self._Jsonb(metadata or {}), self._source_id)
                 )
                 inserted_id = cursor.fetchone()[0]
                 inserted_ids.append(str(inserted_id))
@@ -266,7 +277,7 @@ class PGVectorStore(BaseVectorStore):
             
             cursor.execute(
                 insert_query,
-                (text, embeddings[0], final_metadata, self._source_id)
+                (text, embeddings[0], self._Jsonb(final_metadata), self._source_id)
             )
             inserted_id = cursor.fetchone()[0]
             conn.commit()

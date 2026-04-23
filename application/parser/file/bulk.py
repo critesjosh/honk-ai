@@ -21,6 +21,30 @@ from application.utils import num_tokens_from_string
 from application.core.settings import settings
 
 
+# Aztec-fork ingest guard. Skip directories whose entire contents are blob /
+# fixture / generated artefact data — including them pumps embedding cost and
+# buries useful content in the vector store. A full e2e test zip ingested
+# without this filter embedded ~12k chunks from `end-to-end/fixtures/`
+# blockchain-state blobs (~$1.50 of OpenAI text-embedding-3-large calls) which
+# were never going to be retrieved as answers.
+#
+# Match happens against any path segment under the input root, so the guard
+# catches fixtures/dumps wherever they sit in the tree.
+_IGNORED_PATH_SEGMENTS = frozenset(
+    {
+        "fixtures",
+        "dumps",
+        "node_modules",
+        "target",
+        "dist",
+        "build",
+        "_out",
+        "__pycache__",
+        ".git",
+    }
+)
+
+
 def _build_audio_parser_mapping() -> Dict[str, BaseParser]:
     return {extension: AudioParser() for extension in SUPPORTED_AUDIO_EXTENSIONS}
 
@@ -178,12 +202,25 @@ class SimpleDirectoryReader(BaseReader):
         self.file_extractor = file_extractor or DEFAULT_FILE_EXTRACTOR
         self.file_metadata = file_metadata
 
+    def _is_ignored_path(self, path: Path) -> bool:
+        """True if any segment of ``path`` (relative to input_dir) is on the
+        Aztec-fork ignore list — keeps fixture/dump/artefact dirs out of
+        the vector store."""
+        base = getattr(self, "input_dir", None)
+        try:
+            rel_parts = path.relative_to(base).parts if base else path.parts
+        except ValueError:
+            rel_parts = path.parts
+        return any(seg in _IGNORED_PATH_SEGMENTS for seg in rel_parts)
+
     def _add_files(self, input_dir: Path) -> List[Path]:
         """Add files."""
         input_files = sorted(input_dir.iterdir())
         new_input_files = []
         dirs_to_explore = []
         for input_file in input_files:
+            if self._is_ignored_path(input_file):
+                continue
             if input_file.is_dir():
                 if self.recursive:
                     dirs_to_explore.append(input_file)
@@ -310,7 +347,9 @@ class SimpleDirectoryReader(BaseReader):
             for item in path.iterdir():
                 if self.exclude_hidden and item.name.startswith('.'):
                     continue
-                    
+                if self._is_ignored_path(item):
+                    continue
+
                 if item.is_dir():
                     subtree = build_tree(item)
                     if subtree:

@@ -11,6 +11,7 @@ Aztec-specific additions on top of upstream:
 - **Discord `/mcp-key` command** (`extensions/discord/bot.py`) that calls the endpoint.
 - **TypeScript MCP server** (`extensions/mcp-server/`) that exposes DocsGPT agents via MCP.
 - **Chunking filter** (`application/parser/chunking.py`) that discards chunks with `token_count < 50`.
+- **Path ignore list** (`application/parser/file/bulk.py` → `_IGNORED_PATH_SEGMENTS`) that skips any file under a `fixtures/`, `dumps/`, `node_modules/`, `target/`, `dist/`, `build/`, `_out/`, `__pycache__/` or `.git/` directory during ingest. Prevents blockchain-state test fixtures and build artefacts from burning embedding credits. Add new deny-list directory names here.
 - **Custom settings**: `MCP_PROVISIONING_KEY`, `AZTEC_SOURCE_IDS`, `CORS_ALLOWED_ORIGINS`.
 
 ## Development environment
@@ -73,6 +74,75 @@ Vite bakes env vars at build time. Production uses `frontend/Dockerfile.prod` (m
 - Reverse proxy: Caddy (`deployment/Caddyfile`). Terminates Let's Encrypt TLS, propagates `Cf-Access-Authenticated-User-Email` to the backend as `X-Auth-Email`, trusts Cloudflare as its upstream proxy.
 - SSO: **Cloudflare Access** gates traffic before it reaches Caddy. The origin should be behind a Cloudflare Tunnel or IP-restricted to Cloudflare's ranges.
 - No host port publishing for postgres/redis/backend/frontend in prod — only Caddy's 80/443 face the network.
+
+## Current production deployment (josh-box)
+
+**Prod compose is live** on this host and reachable externally via Cloudflare Tunnel. Both composes run side-by-side — check container names to know which backend you're hitting:
+
+| Compose | Project / container prefix | Images | Purpose |
+|---|---|---|---|
+| `deployment/docker-compose-hub.yaml` | `docsgpt-aztec-*` | `aztec/docsgpt:0.17.0-aztec.1`, `aztec/docsgpt-fe:0.17.0-aztec.1` | **production** — Cloudflare Tunnel → Caddy → frontend/backend; discord-bot container; no host ports |
+| `deployment/docker-compose.yaml` | `docsgpt-oss-*` | `docsgpt-oss-backend:latest`, `docsgpt-oss-worker:latest`, `docsgpt-oss-frontend:latest` | dev smoke-test — publishes 5173/7091/5432/6379 on localhost |
+
+Production config (in `.env`, shared by both composes):
+- `PUBLIC_HOSTNAME=aztec.adjacentpossible.dev`
+- `CLOUDFLARE_TUNNEL_TOKEN=<set>` — cloudflared connector registered to the Zero Trust dashboard; tunnel ingress routes `$PUBLIC_HOSTNAME` → `caddy:80`
+- `LLM_PROVIDER=openrouter`, `LLM_NAME=z-ai/glm-4.6` — default model served by both composes
+- `POSTGRES_PASSWORD=docsgpt` (TODO: rotate to `openssl rand -hex 32` before opening to real users; the `.env` comment flags this)
+- `EMBEDDINGS_*` via OpenAI `text-embedding-3-large` (3072-dim)
+- `AZTEC_SOURCE_IDS` points at all 9 v4.2.0 corpora (see "Data sources" above)
+
+### Critical gotcha — source edits don't cross composes
+
+Each compose builds its **own** images. Editing `application/*.py` and rebuilding the dev compose does NOT update the hub compose, and vice-versa. To apply source changes to production:
+
+```bash
+docker compose -f deployment/docker-compose-hub.yaml --env-file .env build backend worker frontend
+docker compose -f deployment/docker-compose-hub.yaml --env-file .env up -d --force-recreate backend worker frontend
+```
+
+Before iterating on a bug someone's reporting, run `docker ps` and check whether the bug repro path is `docsgpt-aztec-*` (hub) or `docsgpt-oss-*` (dev). Iterating on the wrong compose is silent and wastes an hour.
+
+### `.env` change propagation
+
+`.env` is read at container startup via `env_file:` in each compose. A plain `docker compose restart` re-uses the old container's env — edits to `.env` only take effect after `up -d --force-recreate`. This bit us with `AZTEC_SOURCE_IDS` and `LLM_NAME` during the initial deploy.
+
+## Data sources (knowledge base corpus)
+
+All indexed content comes from the sibling **`aztec-packages` repo** pinned at the `v4.2.0` git tag. On the dev host the repo lives at `/mnt/user-data/josh/aztec-packages/`; the worktree used for ingest is typically checked out at `/tmp/aztec-v4.2.0`:
+
+```bash
+git -C ../aztec-packages worktree add --detach /tmp/aztec-v4.2.0 v4.2.0
+```
+
+**Nine corpora** are ingested into the `sources` table (one row per corpus, UUID auto-generated) and `documents` table (one row per chunk, pgvector 3072-dim embeddings via OpenAI `text-embedding-3-large`). UUIDs for the ones the MCP bot should serve go into `AZTEC_SOURCE_IDS` in `.env`:
+
+| Source (display name) | Path in aztec-packages | File ext | Count |
+|---|---|---|---|
+| Aztec Developer Docs v4.2.0 | `docs/developer_versioned_docs/version-v4.2.0/` | .md .mdx .json | 96 |
+| Aztec Network Docs v4.2.0 | `docs/network_versioned_docs/version-v4.2.0/` | .md | 39 |
+| Aztec.nr Framework v4.2.0 | `noir-projects/aztec-nr/` | .nr → .txt | 223 |
+| Aztec Example Contracts v4.2.0 | `noir-projects/noir-contracts/contracts/` | .nr → .txt | 207 |
+| Aztec Protocol Circuits v4.2.0 | `noir-projects/noir-protocol-circuits/` | .nr → .txt | 454 |
+| aztec.js SDK v4.2.0 | `yarn-project/aztec.js/src/` | .ts → .txt | 73 |
+| Aztec CLI v4.2.0 | `yarn-project/cli/src/` + `yarn-project/cli-wallet/src/` | .ts → .txt | 93 |
+| Aztec E2E Tests v4.2.0 | `yarn-project/end-to-end/src/` | .ts → .txt | 245 |
+| Aztec L1 Contracts v4.2.0 | `l1-contracts/` | .sol → .txt | 347 |
+
+### Why `.txt` rename?
+The backend's `SUPPORTED_SOURCE_EXTENSIONS` allowlist (in `application/parser/file/constants.py`) accepts `.md .mdx .rst .pdf .txt .docx .csv .epub .html .json .xlsx .pptx` plus a few media types. Source-code extensions (`.nr .ts .sol .hpp .cpp`) are silently skipped. The ingest scripts zip source files with a `.txt` suffix appended — e.g. `Token.nr` → `aztec-nr/token/Token.nr.txt` — so the ingest pipeline indexes them. The original path is preserved in each chunk's `metadata.source`.
+
+### How ingest runs
+1. Zip a corpus locally (Python's `zipfile`, preserving relative paths, appending `.txt` to code extensions).
+2. `POST /api/upload` with `user`, `name`, and the zip file. Backend extracts the zip into `application/inputs/{user}/{safe_name}/` and enqueues a Celery `ingest` task.
+3. Worker walks the extracted tree, chunks each file, drops chunks with `token_count < 50` (`application/parser/chunking.py`), embeds survivors via OpenAI, writes to `documents`.
+4. Poll `GET /api/task_status?task_id=<id>` until `SUCCESS`.
+5. `SELECT id FROM sources ORDER BY created_at` → paste UUIDs into `AZTEC_SOURCE_IDS` → restart backend + worker (`docker compose … up -d --force-recreate backend worker` — a plain `restart` does not reload env_file).
+
+Re-ingest: today the endpoint has **no idempotency**. Re-uploading the same zip with the same name creates a duplicate `sources` row and duplicate `documents` chunks — burning OpenAI credits. To cleanly re-ingest, first wipe the old source: `DELETE FROM sources WHERE name = '...';` then `PGVectorStore.delete_index()` (or `DELETE FROM documents WHERE source_id = '<uuid>';`) before POSTing again. An idempotent `?replace=true` path is scoped in `TODO.md` post-deploy items.
+
+### What is NOT indexed
+Intentionally excluded (per MCP resource scope): current-unversioned docs under `docs/docs-developers/`, Barretenberg (`barretenberg/` C++/Rust/TS, ~2.4k files), patterns/howto guides that don't yet exist as a distinct folder in v4.2.0.
 
 ## CI/CD (upstream)
 `.github/workflows/`: `pytest.yml`, `lint.yml`, `bandit.yaml`, `docker-*-build.yml`, `ci.yml`, `zizmor.yml`. Our fork inherits these.

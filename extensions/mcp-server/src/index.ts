@@ -22,7 +22,7 @@ server.tool(
   "Search the Aztec Network knowledge base for relevant document chunks. " +
     "Returns raw text excerpts from developer docs, Aztec.nr framework, " +
     "aztec.js SDK, example contracts, protocol circuits, and more. " +
-    "The knowledge base is pinned to Aztec v4.2.0-aztecnr-rc.2.",
+    "The knowledge base is pinned to Aztec v4.2.0.",
   {
     query: z.string().describe("Search query for Aztec documentation and source code"),
     chunks: z
@@ -46,19 +46,21 @@ server.resource(
       {
         uri: "aztec://knowledge-base",
         text:
-          "Aztec Network Knowledge Base (v4.2.0-aztecnr-rc.2)\n\n" +
-          "Sources:\n" +
-          "- Developer Docs: 94 versioned + 114 current .md/.mdx files\n" +
-          "- Operator Docs: 40 setup/operations docs\n" +
-          "- Application Patterns & Smart Contract Patterns guides\n" +
-          "- Aztec.nr Framework: ~100 Noir contract library files\n" +
-          "- Example Contracts: ~200 reference implementations\n" +
-          "- Protocol Circuits: 454 internal circuit logic files\n" +
-          "- aztec.js SDK: 71 TypeScript files\n" +
+          "Aztec Network Knowledge Base (v4.2.0)\n\n" +
+          "Sources indexed:\n" +
+          "- Developer Docs: 96 versioned .md/.mdx files\n" +
+          "- Operator Docs: 39 setup/operations docs\n" +
+          "- Aztec.nr Framework: 223 Noir contract library files\n" +
+          "- Example Contracts: 207 reference Noir contracts\n" +
+          "- Protocol Circuits: 454 Noir circuit logic files\n" +
+          "- aztec.js SDK: 73 TypeScript files\n" +
           "- Aztec CLI + Wallet CLI: 93 TypeScript files\n" +
-          "- E2E Tests: 243 integration test files\n" +
-          "- L1 Contracts: 347 Solidity files\n" +
-          "- Barretenberg: 2421 C++/Rust/TS crypto backend files\n\n" +
+          "- E2E Tests: 245 TypeScript integration tests\n" +
+          "- L1 Contracts: 347 Solidity files\n\n" +
+          "Source-code files (.nr/.ts/.sol) are indexed with a .txt suffix so the\n" +
+          "DocsGPT ingest recognizes them; the original filename + path is\n" +
+          "preserved in each chunk's metadata. Pinned to aztec-packages tag\n" +
+          "v4.2.0.\n\n" +
           "Use search_aztec to retrieve raw documentation and code excerpts.\n",
       },
     ],

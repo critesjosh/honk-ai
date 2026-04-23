@@ -1,7 +1,7 @@
 import base64
 import logging
 
-from anthropic import AI_PROMPT, Anthropic, HUMAN_PROMPT
+from anthropic import Anthropic
 
 from application.core.settings import settings
 from application.llm.base import BaseLLM
@@ -24,9 +24,39 @@ class AnthropicLLM(BaseLLM):
         else:
             self.anthropic = Anthropic(api_key=self.api_key)
 
-        self.HUMAN_PROMPT = HUMAN_PROMPT
-        self.AI_PROMPT = AI_PROMPT
         self.storage = StorageCreator.get_storage()
+
+    def _split_messages(self, messages):
+        """Split an OpenAI-style messages list into Anthropic Messages-API form.
+
+        Anthropic's ``/v1/messages`` endpoint expects the system prompt as a
+        top-level ``system=`` arg and only ``user``/``assistant`` roles in
+        ``messages=``. We peel the first ``system`` message into ``system`` and
+        pass the rest through. If no ``user`` turns survive (legacy callers
+        that pass a context+question pair with no roles), fall back to the
+        pre-Messages-API concatenation so retrieval answers still work.
+        """
+        system = None
+        convo = []
+        for m in messages or []:
+            role = m.get("role")
+            content = m.get("content", "")
+            if role == "system" and system is None:
+                system = content
+            elif role in ("user", "assistant"):
+                convo.append({"role": role, "content": content})
+
+        if not convo and messages:
+            context = messages[0].get("content", "")
+            user = messages[-1].get("content", "")
+            convo = [
+                {
+                    "role": "user",
+                    "content": f"### Context\n{context}\n\n### Question\n{user}",
+                }
+            ]
+
+        return system, convo
 
     def _raw_gen(
         self,
@@ -35,21 +65,22 @@ class AnthropicLLM(BaseLLM):
         messages,
         stream=False,
         tools=None,
-        max_tokens=300,
+        max_tokens=4096,
         **kwargs,
     ):
-        context = messages[0]["content"]
-        user_question = messages[-1]["content"]
-        prompt = f"### Context \n {context} \n ### Question \n {user_question}"
         if stream:
-            return self.gen_stream(model, prompt, stream, max_tokens, **kwargs)
-        completion = self.anthropic.completions.create(
+            return self._raw_gen_stream(
+                baseself, model, messages, stream=True, tools=tools,
+                max_tokens=max_tokens, **kwargs,
+            )
+        system, convo = self._split_messages(messages)
+        response = self.anthropic.messages.create(
             model=model,
-            max_tokens_to_sample=max_tokens,
-            stream=stream,
-            prompt=f"{self.HUMAN_PROMPT} {prompt}{self.AI_PROMPT}",
+            max_tokens=max_tokens,
+            system=system or "",
+            messages=convo,
         )
-        return completion.completion
+        return response.content[0].text if response.content else ""
 
     def _raw_gen_stream(
         self,
@@ -58,25 +89,18 @@ class AnthropicLLM(BaseLLM):
         messages,
         stream=True,
         tools=None,
-        max_tokens=300,
+        max_tokens=4096,
         **kwargs,
     ):
-        context = messages[0]["content"]
-        user_question = messages[-1]["content"]
-        prompt = f"### Context \n {context} \n ### Question \n {user_question}"
-        stream_response = self.anthropic.completions.create(
+        system, convo = self._split_messages(messages)
+        with self.anthropic.messages.stream(
             model=model,
-            prompt=f"{self.HUMAN_PROMPT} {prompt}{self.AI_PROMPT}",
-            max_tokens_to_sample=max_tokens,
-            stream=True,
-        )
-
-        try:
-            for completion in stream_response:
-                yield completion.completion
-        finally:
-            if hasattr(stream_response, "close"):
-                stream_response.close()
+            max_tokens=max_tokens,
+            system=system or "",
+            messages=convo,
+        ) as s:
+            for text in s.text_stream:
+                yield text
 
     def get_supported_attachment_types(self):
         """

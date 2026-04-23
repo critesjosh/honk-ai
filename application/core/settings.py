@@ -23,6 +23,13 @@ class Settings(BaseSettings):
     EMBEDDINGS_NAME: str = "huggingface_sentence-transformers/all-mpnet-base-v2"
     EMBEDDINGS_BASE_URL: Optional[str] = None  # Remote embeddings API URL (OpenAI-compatible)
     EMBEDDINGS_KEY: Optional[str] = None  # api key for embeddings (if using openai, just copy API_KEY)
+    # Output dimensionality of the embedding model. Only consulted by the
+    # pgvector backend when creating the documents table — it must match the
+    # configured EMBEDDINGS_NAME or inserts will fail.
+    #   mpnet-base-v2:            768 (default)
+    #   text-embedding-3-small:  1536
+    #   text-embedding-3-large:  3072
+    EMBEDDINGS_DIMENSION: int = 768
 
     CELERY_BROKER_URL: str = "redis://localhost:6379/0"
     CELERY_RESULT_BACKEND: str = "redis://localhost:6379/1"

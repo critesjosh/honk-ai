@@ -39,7 +39,7 @@ services:
   worker:
     user: root
     build: ../application
-    command: celery -A application.app.celery worker -l INFO -B
+    command: celery -A application.app.celery worker -l INFO -B -c 2
     env_file:
       - ../.env
     environment:
