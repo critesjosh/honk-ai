@@ -22,19 +22,24 @@ def _should_disable_reasoning(model_id: str) -> bool:
 
 
 def _inject_no_reasoning(model, kwargs):
-    """Mutate kwargs in place to suppress reasoning for flagged models.
+    """Mutate kwargs in place to disable reasoning for flagged models.
 
-    ``reasoning.enabled: false`` disables the feature entirely so the model
-    produces answer tokens. ``reasoning.exclude: true`` belt-and-braces
-    hides any reasoning that still runs. Sent together because provider
-    compatibility at OpenRouter varies. The OpenAI Python SDK forwards
-    ``extra_body`` into the JSON request body verbatim, so OpenRouter sees
-    these as top-level request fields.
+    Per OpenRouter's reasoning spec, ``enabled``, ``effort``, and
+    ``max_tokens`` are mutually exclusive — pick ONE. We use
+    ``enabled: false`` to turn the feature off entirely so the model
+    emits normal answer tokens instead of chain-of-thought.
+
+    (``exclude: true`` is a separate knob that still *runs* reasoning
+    and merely hides it; setting it here would be redundant and, worse,
+    would conflict with ``enabled`` on some providers.)
+
+    The OpenAI Python SDK forwards ``extra_body`` into the JSON request
+    body verbatim, so OpenRouter sees ``reasoning`` as a top-level field.
     """
     if not _should_disable_reasoning(model):
         return
     eb = kwargs.pop("extra_body", None) or {}
-    eb.setdefault("reasoning", {"enabled": False, "exclude": True})
+    eb.setdefault("reasoning", {"enabled": False})
     kwargs["extra_body"] = eb
 
 
