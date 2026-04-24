@@ -25,8 +25,11 @@ jobs:
 
       - name: Run zizmor 🌈
         uses: zizmorcore/zizmor-action@71321a20a9ded102f6e9ce5718a2fcec2c4f70d8 # v0.5.2
+        # Advisory only: upstream runs this action with SARIF upload, which
+        # swallows zizmor's non-zero exit when findings exist. Code Scanning
+        # requires GHAS on private repos, which this fork doesn't have, so
+        # we turn the upload off and let the audit run without gating merges
+        # on pre-existing findings in inherited upstream workflows.
+        continue-on-error: true
         with:
-          # Skip SARIF upload — Code Scanning requires GitHub Advanced Security
-          # on private repos, which this fork doesn't have. Findings still
-          # surface as annotations in the job log.
           advanced-security: false
