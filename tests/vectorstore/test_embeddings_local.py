@@ -2,6 +2,11 @@ from unittest.mock import MagicMock, Mock, patch
 
 import pytest
 
+# The Aztec fork ships without sentence-transformers (remote embeddings only).
+# application/vectorstore/embeddings_local.py is still present as a lazy-loaded
+# fallback in case the dep is reinstated, but its tests can't run without it.
+pytest.importorskip("sentence_transformers")
+
 
 @pytest.mark.unit
 class TestEmbeddingsWrapper:

@@ -377,20 +377,20 @@ class TestPromptRendererGap:
 @pytest.mark.unit
 class TestAnthropicLLMStreamBranch:
     def test_raw_gen_stream_path(self):
-        """Cover line 45: _raw_gen calls gen_stream when stream=True."""
+        """_raw_gen delegates to _raw_gen_stream when stream=True."""
         with patch("application.llm.anthropic.Anthropic"):
             with patch("application.llm.anthropic.StorageCreator") as MockStorage:
                 MockStorage.get_storage.return_value = MagicMock()
                 from application.llm.anthropic import AnthropicLLM
 
                 llm = AnthropicLLM(api_key="test_key")
-                llm.gen_stream = MagicMock(return_value="streamed")
+                llm._raw_gen_stream = MagicMock(return_value="streamed")
                 messages = [
                     {"role": "system", "content": "context"},
                     {"role": "user", "content": "question"},
                 ]
                 result = llm._raw_gen(None, "claude-2", messages, stream=True)
-                llm.gen_stream.assert_called_once()
+                llm._raw_gen_stream.assert_called_once()
                 assert result == "streamed"
 
 
@@ -704,18 +704,16 @@ class TestBaseParserConfigProperty:
 class TestGetEmbeddingsWrapper:
     def test_get_embeddings_wrapper_returns_class(self):
         """Cover lines 88-90: _get_embeddings_wrapper lazy import."""
+        # The Aztec fork ships without sentence-transformers; the lazy
+        # embeddings_local module is unimportable without that dep.
+        pytest.importorskip("sentence_transformers")
         from application.vectorstore.base import _get_embeddings_wrapper
 
-        # This may fail if sentence_transformers is not installed,
-        # so mock the import
         with patch(
             "application.vectorstore.embeddings_local.EmbeddingsWrapper",
             create=True,
         ):
-            try:
-                _get_embeddings_wrapper()
-            except ImportError:
-                pytest.skip("EmbeddingsWrapper not available")
+            _get_embeddings_wrapper()
 
     def test_base_vectorstore_search_abstract(self):
         """Cover line 137: BaseVectorStore.search is abstract."""
