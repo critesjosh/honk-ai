@@ -212,6 +212,24 @@ class TestClassicRAGRephraseQuery:
         assert rag.question == "original"
 
 
+def _mock_global_docsearch(pairs):
+    """Build a mock vectorstore whose search_by_vector_with_score returns
+    ``pairs`` (list of (doc, distance) tuples). Also wires up the embedding
+    client so _get_data can call embed_query without blowing up.
+    """
+    mock = MagicMock()
+    mock._embedding.embed_query = Mock(return_value=[0.1, 0.2, 0.3])
+    mock.search_by_vector_with_score = Mock(return_value=pairs)
+    return mock
+
+
+def _mock_doc(content, **metadata):
+    m = MagicMock()
+    m.page_content = content
+    m.metadata = metadata
+    return m
+
+
 @pytest.mark.unit
 class TestClassicRAGGetData:
     def test_chunks_zero_returns_empty(self, _patch_llm_creator):
@@ -225,16 +243,13 @@ class TestClassicRAGGetData:
     @patch("application.retriever.classic_rag.VectorCreator")
     @patch("application.retriever.classic_rag.num_tokens_from_string", return_value=10)
     def test_returns_docs_with_metadata(self, mock_tokens, mock_vc, _patch_llm_creator):
-        mock_docsearch = MagicMock()
-        mock_doc = MagicMock()
-        mock_doc.page_content = "content here"
-        mock_doc.metadata = {
-            "title": "path/to/Title",
-            "filename": "/docs/file.txt",
-            "source": "http://example.com",
-        }
-        mock_docsearch.search.return_value = [mock_doc]
-        mock_vc.create_vectorstore.return_value = mock_docsearch
+        doc = _mock_doc(
+            "content here",
+            title="path/to/Title",
+            filename="/docs/file.txt",
+            source="http://example.com",
+        )
+        mock_vc.create_vectorstore.return_value = _mock_global_docsearch([(doc, 0.1)])
 
         rag = _make_rag(source={"question": "q", "active_docs": ["vs1"]})
         docs = rag._get_data()
@@ -248,11 +263,8 @@ class TestClassicRAGGetData:
     @patch("application.retriever.classic_rag.VectorCreator")
     @patch("application.retriever.classic_rag.num_tokens_from_string", return_value=10)
     def test_dict_style_docs(self, mock_tokens, mock_vc, _patch_llm_creator):
-        mock_docsearch = MagicMock()
-        mock_docsearch.search.return_value = [
-            {"text": "dict content", "metadata": {"title": "Dict Title"}}
-        ]
-        mock_vc.create_vectorstore.return_value = mock_docsearch
+        pair = ({"text": "dict content", "metadata": {"title": "Dict Title"}}, 0.1)
+        mock_vc.create_vectorstore.return_value = _mock_global_docsearch([pair])
 
         rag = _make_rag(source={"question": "q", "active_docs": ["vs1"]})
         docs = rag._get_data()
@@ -263,52 +275,130 @@ class TestClassicRAGGetData:
     @patch("application.retriever.classic_rag.VectorCreator")
     @patch("application.retriever.classic_rag.num_tokens_from_string", return_value=100000)
     def test_token_budget_respected(self, mock_tokens, mock_vc, _patch_llm_creator):
-        mock_docsearch = MagicMock()
-        mock_doc = MagicMock()
-        mock_doc.page_content = "big content"
-        mock_doc.metadata = {"title": "t"}
-        mock_docsearch.search.return_value = [mock_doc, mock_doc, mock_doc]
-        mock_vc.create_vectorstore.return_value = mock_docsearch
+        # 3 distinct docs so dedup doesn't eat them; each claims 100000 tokens
+        # which blows the 90-token budget so none should land.
+        pairs = [
+            (_mock_doc(f"big content {i}", title="t", source=f"s{i}"), 0.1)
+            for i in range(3)
+        ]
+        mock_vc.create_vectorstore.return_value = _mock_global_docsearch(pairs)
 
         rag = _make_rag(
             source={"question": "q", "active_docs": ["vs1"]},
             doc_token_limit=100,
         )
-        docs = rag._get_data()
-        # tokens (100000) exceed budget (90), so no docs should be added
-        assert len(docs) == 0
+        assert len(rag._get_data()) == 0
 
     @patch("application.retriever.classic_rag.VectorCreator")
-    def test_vectorstore_error_continues(self, mock_vc, _patch_llm_creator):
+    def test_vectorstore_create_error_returns_empty(self, mock_vc, _patch_llm_creator):
         mock_vc.create_vectorstore.side_effect = RuntimeError("connection failed")
 
         rag = _make_rag(source={"question": "q", "active_docs": ["vs1"]})
-        docs = rag._get_data()
-        assert docs == []
+        assert rag._get_data() == []
+
+    @patch("application.retriever.classic_rag.VectorCreator")
+    def test_backend_without_global_search_returns_empty(
+        self, mock_vc, _patch_llm_creator
+    ):
+        # Simulate a backend (e.g. legacy Faiss) without the new primitive.
+        # The spec=[] argument forbids attribute access, so hasattr() returns
+        # False for search_by_vector_with_score.
+        mock_docsearch = MagicMock(spec=[])
+        mock_vc.create_vectorstore.return_value = mock_docsearch
+
+        rag = _make_rag(source={"question": "q", "active_docs": ["vs1"]})
+        assert rag._get_data() == []
 
     @patch("application.retriever.classic_rag.VectorCreator")
     @patch("application.retriever.classic_rag.num_tokens_from_string", return_value=10)
-    def test_multiple_vectorstores(self, mock_tokens, mock_vc, _patch_llm_creator):
-        mock_docsearch = MagicMock()
-        mock_doc = MagicMock()
-        mock_doc.page_content = "content"
-        mock_doc.metadata = {"title": "t", "source": "s"}
-        mock_docsearch.search.return_value = [mock_doc]
-        mock_vc.create_vectorstore.return_value = mock_docsearch
+    def test_global_rerank_packs_in_score_order(
+        self, mock_tokens, mock_vc, _patch_llm_creator
+    ):
+        # Lower distance = better match. Verify retriever returns docs in
+        # the SAME order the search returns them (which is score order).
+        pairs = [
+            (_mock_doc("best match",   source="src-a", title="a"), 0.05),
+            (_mock_doc("middle match", source="src-b", title="b"), 0.20),
+            (_mock_doc("weak match",   source="src-c", title="c"), 0.80),
+        ]
+        mock_vc.create_vectorstore.return_value = _mock_global_docsearch(pairs)
 
-        rag = _make_rag(source={"question": "q", "active_docs": ["vs1", "vs2"]})
+        rag = _make_rag(source={"question": "q", "active_docs": ["vs1", "vs2", "vs3"]})
+        docs = rag._get_data()
+        assert [d["text"] for d in docs] == ["best match", "middle match", "weak match"]
+
+    @patch("application.retriever.classic_rag.VectorCreator")
+    @patch("application.retriever.classic_rag.num_tokens_from_string", return_value=10)
+    def test_embeds_question_once_across_all_sources(
+        self, mock_tokens, mock_vc, _patch_llm_creator
+    ):
+        # Previously embedded the query once per source. Now must be ONE
+        # embed call per user question regardless of source count.
+        mock_ds = _mock_global_docsearch([
+            (_mock_doc("c", source="s", title="t"), 0.1),
+        ])
+        mock_vc.create_vectorstore.return_value = mock_ds
+
+        rag = _make_rag(
+            source={"question": "q", "active_docs": [f"vs{i}" for i in range(12)]}
+        )
+        rag._get_data()
+
+        assert mock_ds._embedding.embed_query.call_count == 1
+        # Confirm we only created one vectorstore, not one per source.
+        assert mock_vc.create_vectorstore.call_count == 1
+
+    @patch("application.retriever.classic_rag.VectorCreator")
+    @patch("application.retriever.classic_rag.num_tokens_from_string", return_value=10)
+    def test_invariant_to_source_order(
+        self, mock_tokens, mock_vc, _patch_llm_creator
+    ):
+        # Same candidates, different active_docs orderings: results should
+        # match — global rerank shouldn't care about AZTEC_SOURCE_IDS order.
+        pairs = [
+            (_mock_doc("alpha", source="src-a", title="A"), 0.05),
+            (_mock_doc("beta",  source="src-b", title="B"), 0.15),
+            (_mock_doc("gamma", source="src-c", title="C"), 0.25),
+        ]
+        mock_vc.create_vectorstore.return_value = _mock_global_docsearch(pairs)
+
+        rag1 = _make_rag(source={"question": "q", "active_docs": ["a", "b", "c"]})
+        rag2 = _make_rag(source={"question": "q", "active_docs": ["c", "a", "b"]})
+        assert rag1._get_data() == rag2._get_data()
+
+    @patch("application.retriever.classic_rag.VectorCreator")
+    @patch("application.retriever.classic_rag.num_tokens_from_string", return_value=10)
+    def test_dedup_near_identical_chunks(
+        self, mock_tokens, mock_vc, _patch_llm_creator
+    ):
+        # Two chunks from the same source with the same leading text should
+        # collapse to one, so we don't waste budget on adjacent dupes.
+        dup_text = (
+            "This is a duplicated chunk that starts identically for the "
+            "first 200 characters but may diverge much later on in the "
+            "body. The retriever should collapse duplicates keyed on "
+            "(source_path, leading 200 chars) to avoid wasting the token "
+            "budget on near-identical neighbours within the same document."
+        )
+        pairs = [
+            (_mock_doc(dup_text,             source="same.md", title="x"), 0.05),
+            (_mock_doc(dup_text + " trail",  source="same.md", title="x"), 0.06),
+            (_mock_doc("distinct chunk",     source="other.md", title="y"), 0.10),
+        ]
+        mock_vc.create_vectorstore.return_value = _mock_global_docsearch(pairs)
+
+        rag = _make_rag(source={"question": "q", "active_docs": ["vs1"]})
         docs = rag._get_data()
         assert len(docs) == 2
+        assert {d["source"] for d in docs} == {"same.md", "other.md"}
 
     @patch("application.retriever.classic_rag.VectorCreator")
     @patch("application.retriever.classic_rag.num_tokens_from_string", return_value=10)
-    def test_doc_missing_filename_uses_title(self, mock_tokens, mock_vc, _patch_llm_creator):
-        mock_docsearch = MagicMock()
-        mock_doc = MagicMock()
-        mock_doc.page_content = "content"
-        mock_doc.metadata = {"title": "MyTitle"}
-        mock_docsearch.search.return_value = [mock_doc]
-        mock_vc.create_vectorstore.return_value = mock_docsearch
+    def test_doc_missing_filename_uses_title(
+        self, mock_tokens, mock_vc, _patch_llm_creator
+    ):
+        doc = _mock_doc("content", title="MyTitle")
+        mock_vc.create_vectorstore.return_value = _mock_global_docsearch([(doc, 0.1)])
 
         rag = _make_rag(source={"question": "q", "active_docs": ["vs1"]})
         docs = rag._get_data()
@@ -316,30 +406,41 @@ class TestClassicRAGGetData:
 
     @patch("application.retriever.classic_rag.VectorCreator")
     @patch("application.retriever.classic_rag.num_tokens_from_string", return_value=10)
-    def test_non_string_title_converted(self, mock_tokens, mock_vc, _patch_llm_creator):
-        mock_docsearch = MagicMock()
-        mock_doc = MagicMock()
-        mock_doc.page_content = "content"
-        mock_doc.metadata = {"title": 42}
-        mock_docsearch.search.return_value = [mock_doc]
-        mock_vc.create_vectorstore.return_value = mock_docsearch
+    def test_non_string_title_converted(
+        self, mock_tokens, mock_vc, _patch_llm_creator
+    ):
+        doc = _mock_doc("content", title=42)
+        mock_vc.create_vectorstore.return_value = _mock_global_docsearch([(doc, 0.1)])
 
         rag = _make_rag(source={"question": "q", "active_docs": ["vs1"]})
         docs = rag._get_data()
         assert docs[0]["title"] == "42"
+
+    @patch("application.retriever.classic_rag.VectorCreator")
+    @patch("application.retriever.classic_rag.num_tokens_from_string", return_value=10)
+    def test_uses_source_id_fallback_when_source_missing(
+        self, mock_tokens, mock_vc, _patch_llm_creator
+    ):
+        # When metadata.source is absent, the retriever should fall back to
+        # the _source_id the vectorstore stamps into metadata so URL
+        # rewriting downstream still has something to key on.
+        doc = _mock_doc("content", title="t", _source_id="src-uuid-xyz")
+        mock_vc.create_vectorstore.return_value = _mock_global_docsearch([(doc, 0.1)])
+
+        rag = _make_rag(source={"question": "q", "active_docs": ["vs1"]})
+        docs = rag._get_data()
+        assert docs[0]["source"] == "src-uuid-xyz"
 
 
 @pytest.mark.unit
 class TestClassicRAGSearch:
     @patch("application.retriever.classic_rag.VectorCreator")
     @patch("application.retriever.classic_rag.num_tokens_from_string", return_value=10)
-    def test_search_with_query_override(self, mock_tokens, mock_vc, _patch_llm_creator, mock_llm):
-        mock_docsearch = MagicMock()
-        mock_doc = MagicMock()
-        mock_doc.page_content = "result"
-        mock_doc.metadata = {"title": "t"}
-        mock_docsearch.search.return_value = [mock_doc]
-        mock_vc.create_vectorstore.return_value = mock_docsearch
+    def test_search_with_query_override(
+        self, mock_tokens, mock_vc, _patch_llm_creator, mock_llm
+    ):
+        doc = _mock_doc("result", title="t")
+        mock_vc.create_vectorstore.return_value = _mock_global_docsearch([(doc, 0.1)])
         mock_llm.gen = Mock(return_value="")
 
         rag = _make_rag(source={"question": "original", "active_docs": ["vs1"]})

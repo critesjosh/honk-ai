@@ -110,7 +110,91 @@ class ClassicRAG(BaseRetriever):
             logging.error(f"Error rephrasing query: {e}", exc_info=True)
             return self.original_question
 
+    def _extract_doc_fields(self, doc):
+        """Normalise page_content + metadata + derived fields from a Document
+        or dict-shaped result into the fields the retrieval output uses."""
+        if hasattr(doc, "page_content") and hasattr(doc, "metadata"):
+            page_content = doc.page_content
+            metadata = doc.metadata or {}
+        else:
+            page_content = doc.get("text", doc.get("page_content", ""))
+            metadata = doc.get("metadata", {}) or {}
+
+        title = metadata.get("title", metadata.get("post_title", page_content))
+        if not isinstance(title, str):
+            title = str(title)
+        title = title.split("/")[-1]
+
+        filename = (
+            metadata.get("filename")
+            or metadata.get("file_name")
+            or metadata.get("source")
+        )
+        if isinstance(filename, str):
+            filename = os.path.basename(filename) or filename
+        else:
+            filename = title
+        if not filename:
+            filename = title
+
+        source_path = (
+            metadata.get("source")
+            or metadata.get("_source_id")
+            or "unknown"
+        )
+        return page_content, metadata, title, filename, source_path
+
+    def _pack_into_budget(self, ranked_pairs, token_budget):
+        """Greedy-pack docs (ordered by ascending cosine distance) into the
+        token budget, deduplicating near-identical chunks so a single
+        document with several adjacent chunks does not starve other sources.
+        """
+        seen_keys = set()
+        all_docs = []
+        cumulative_tokens = 0
+
+        for doc, _distance in ranked_pairs:
+            if cumulative_tokens >= token_budget:
+                break
+
+            page_content, _md, title, filename, source_path = (
+                self._extract_doc_fields(doc)
+            )
+
+            # Dedup: near-identical chunks from the same source often surface
+            # together when pgvector walks a document linearly. Key on
+            # (source_path, leading text) — cheap enough, and a duplicate
+            # by this key genuinely duplicates retrieval value.
+            dedup_key = (source_path, (page_content or "")[:200])
+            if dedup_key in seen_keys:
+                continue
+            seen_keys.add(dedup_key)
+
+            doc_text_with_header = f"{filename}\n{page_content}"
+            doc_tokens = num_tokens_from_string(doc_text_with_header)
+            if cumulative_tokens + doc_tokens < token_budget:
+                all_docs.append(
+                    {
+                        "title": title,
+                        "text": page_content,
+                        "source": source_path,
+                        "filename": filename,
+                    }
+                )
+                cumulative_tokens += doc_tokens
+
+        return all_docs, cumulative_tokens
+
     def _get_data(self):
+        """Retrieve chunks for the question across ``self.vectorstores``.
+
+        Strategy: embed the question once, then run a SINGLE global vector
+        search across all configured sources sorted by cosine distance, and
+        greedy-pack the top results into the token budget. This replaces
+        an older per-source FIFO loop that caused the first few sources in
+        ``AZTEC_SOURCE_IDS`` to greedily consume the budget while later
+        sources contributed zero documents regardless of relevance.
+        """
         if self.chunks == 0 or not self.vectorstores:
             logging.info(
                 f"ClassicRAG._get_data: Skipping retrieval - chunks={self.chunks}, "
@@ -118,79 +202,56 @@ class ClassicRAG(BaseRetriever):
             )
             return []
 
-        all_docs = []
-        chunks_per_source = max(1, self.chunks // len(self.vectorstores))
+        # Global candidate pool size. Scales modestly with the number of
+        # configured sources so a 20-source deployment still has enough
+        # headroom after dedup + token-budget packing. 100 fits the current
+        # 12-source prod setup comfortably.
+        candidate_k = max(100, len(self.vectorstores) * 8)
         token_budget = max(int(self.doc_token_limit * 0.9), 100)
-        cumulative_tokens = 0
 
-        for vectorstore_id in self.vectorstores:
-            if vectorstore_id:
-                try:
-                    docsearch = VectorCreator.create_vectorstore(
-                        settings.VECTOR_STORE, vectorstore_id, settings.EMBEDDINGS_KEY
-                    )
-                    docs_temp = docsearch.search(
-                        self.question, k=max(chunks_per_source * 2, 20)
-                    )
+        # One vectorstore instance drives the whole search. We pass all
+        # source_ids to search_by_vector_with_score, so the instance's own
+        # _source_id is ignored — we just need it for its embedding client
+        # and the DB connection.
+        try:
+            docsearch = VectorCreator.create_vectorstore(
+                settings.VECTOR_STORE,
+                self.vectorstores[0],
+                settings.EMBEDDINGS_KEY,
+            )
+        except Exception as e:
+            logging.error(
+                f"Error creating vectorstore: {e}", exc_info=True
+            )
+            return []
 
-                    for doc in docs_temp:
-                        if cumulative_tokens >= token_budget:
-                            break
+        if not hasattr(docsearch, "search_by_vector_with_score"):
+            logging.error(
+                f"Vector backend {type(docsearch).__name__} does not implement "
+                "search_by_vector_with_score — retrieval cannot run global "
+                "rerank. Implement the method on this backend or switch to "
+                "pgvector."
+            )
+            return []
 
-                        if hasattr(doc, "page_content") and hasattr(doc, "metadata"):
-                            page_content = doc.page_content
-                            metadata = doc.metadata
-                        else:
-                            page_content = doc.get("text", doc.get("page_content", ""))
-                            metadata = doc.get("metadata", {})
+        try:
+            query_vector = docsearch._embedding.embed_query(self.question)
+        except Exception as e:
+            logging.error(f"Error embedding question: {e}", exc_info=True)
+            return []
 
-                        title = metadata.get(
-                            "title", metadata.get("post_title", page_content)
-                        )
-                        if not isinstance(title, str):
-                            title = str(title)
-                        title = title.split("/")[-1]
-
-                        filename = (
-                            metadata.get("filename")
-                            or metadata.get("file_name")
-                            or metadata.get("source")
-                        )
-                        if isinstance(filename, str):
-                            filename = os.path.basename(filename) or filename
-                        else:
-                            filename = title
-                        if not filename:
-                            filename = title
-                        source_path = metadata.get("source") or vectorstore_id
-
-                        doc_text_with_header = f"{filename}\n{page_content}"
-                        doc_tokens = num_tokens_from_string(doc_text_with_header)
-
-                        if cumulative_tokens + doc_tokens < token_budget:
-                            all_docs.append(
-                                {
-                                    "title": title,
-                                    "text": page_content,
-                                    "source": source_path,
-                                    "filename": filename,
-                                }
-                            )
-                            cumulative_tokens += doc_tokens
-
-                    if cumulative_tokens >= token_budget:
-                        break
-
-                except Exception as e:
-                    logging.error(
-                        f"Error searching vectorstore {vectorstore_id}: {e}",
-                        exc_info=True,
-                    )
-                    continue
-
+        pairs = docsearch.search_by_vector_with_score(
+            query_vector,
+            k=candidate_k,
+            source_ids=list(self.vectorstores),
+        )
+        all_docs, cumulative_tokens = self._pack_into_budget(
+            pairs, token_budget
+        )
         logging.info(
-            f"ClassicRAG._get_data: Retrieval complete - retrieved {len(all_docs)} documents "
-            f"(requested chunks={self.chunks}, chunks_per_source={chunks_per_source}, "
+            f"ClassicRAG._get_data: Retrieval complete - retrieved "
+            f"{len(all_docs)} documents (global rerank over "
+            f"{len(self.vectorstores)} sources, candidate_k={candidate_k}, "
             f"cumulative_tokens={cumulative_tokens}/{token_budget})"
         )
         return all_docs

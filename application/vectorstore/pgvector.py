@@ -1,5 +1,6 @@
 import logging
-from typing import List, Optional, Any, Dict
+from typing import Any, Dict, List, Optional, Tuple
+
 from application.core.settings import settings
 from application.vectorstore.base import BaseVectorStore
 from application.vectorstore.document_class import Document
@@ -123,40 +124,88 @@ class PGVectorStore(BaseVectorStore):
         finally:
             cursor.close()
 
-    def search(self, question: str, k: int = 2, *args, **kwargs) -> List[Document]:
-        """Search for similar documents using vector similarity"""
-        query_vector = self._embedding.embed_query(question)
-        
+    def search_by_vector_with_score(
+        self,
+        vector: List[float],
+        k: int = 2,
+        source_ids: Optional[List[str]] = None,
+    ) -> List[Tuple[Document, float]]:
+        """Search by a precomputed query vector across one or many sources.
+
+        Returns ``(Document, cosine_distance)`` pairs ordered by ascending
+        distance (lower = more similar under cosine). Each Document has
+        ``metadata['_source_id']`` populated so callers can tell which
+        source a chunk came from without a second round trip.
+
+        When ``source_ids`` is provided, all listed sources are searched
+        in a SINGLE SQL query (``WHERE source_id = ANY(...) ORDER BY
+        embedding <=> $1 LIMIT k``). This is deliberately one query rather
+        than N fanout queries: for approximate vector indexes, filtering
+        after an ANN scan reduces recall, so per-source ``LIMIT k`` with a
+        tight ``k`` is a recall trap. With the current 3072-dim embeddings
+        the table uses a sequential scan (pgvector's ivfflat/hnsw cap at
+        2000 dims), so a single global scan is also cheaper than N of them.
+
+        ``source_ids=None`` falls back to the instance's own
+        ``_source_id`` — preserves backward compatibility for callers that
+        construct a store bound to one source and call search directly.
+        """
+        if source_ids is not None:
+            cleaned = [
+                str(s).strip() for s in source_ids if s and str(s).strip()
+            ]
+        else:
+            cleaned = [self._source_id] if self._source_id else []
+        if not cleaned:
+            return []
+
         conn = self._get_connection()
         cursor = conn.cursor()
-        
+
         try:
-            # Use cosine distance for similarity search with proper vector formatting
+            # Ordering tiebreak (source_id, id) makes results deterministic
+            # when distances are equal — matters for order-invariance tests
+            # and reproducible retrieval under the same query.
             search_query = f"""
-            SELECT {self._text_column}, {self._metadata_column}, 
-                   ({self._vector_column} <=> %s::vector) as distance
+            SELECT {self._text_column}, {self._metadata_column},
+                   ({self._vector_column} <=> %s::vector) as distance,
+                   source_id, id
             FROM {self._table_name}
-            WHERE source_id = %s
-            ORDER BY {self._vector_column} <=> %s::vector
+            WHERE source_id = ANY(%s)
+            ORDER BY {self._vector_column} <=> %s::vector, source_id, id
             LIMIT %s;
             """
-            
-            cursor.execute(search_query, (query_vector, self._source_id, query_vector, k))
+            cursor.execute(search_query, (vector, cleaned, vector, k))
             results = cursor.fetchall()
-            
-            
-            documents = []
-            for text, metadata, distance in results:
-                metadata = metadata or {}
-                documents.append(Document(page_content=text, metadata=metadata))
-            
-            return documents
-            
+
+            out: List[Tuple[Document, float]] = []
+            for text, metadata, distance, source_id, _row_id in results:
+                md = dict(metadata or {})
+                md.setdefault("_source_id", source_id)
+                out.append(
+                    (Document(page_content=text, metadata=md), float(distance))
+                )
+            return out
+
         except Exception as e:
-            logging.error(f"Error searching documents: {e}", exc_info=True)
+            logging.error(
+                f"Error searching documents (by vector): {e}", exc_info=True
+            )
             return []
         finally:
             cursor.close()
+
+    def search(self, question: str, k: int = 2, *args, **kwargs) -> List[Document]:
+        """Legacy single-source search. Embeds the question and delegates to
+        ``search_by_vector_with_score`` so the SQL path is shared.
+        """
+        try:
+            query_vector = self._embedding.embed_query(question)
+        except Exception as e:
+            logging.error(f"Error embedding question: {e}", exc_info=True)
+            return []
+        pairs = self.search_by_vector_with_score(query_vector, k=k)
+        return [doc for doc, _ in pairs]
 
     def add_texts(
         self,

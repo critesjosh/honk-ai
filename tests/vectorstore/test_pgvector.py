@@ -84,9 +84,10 @@ class TestPGVectorStoreInit:
 class TestPGVectorStoreSearch:
     def test_search_returns_documents(self):
         store, mock_conn, mock_cursor, mock_emb = _make_store()
+        # Columns: text, metadata, distance, source_id, id
         mock_cursor.fetchall.return_value = [
-            ("hello world", {"source": "test.txt"}, 0.1),
-            ("foo bar", {"source": "test2.txt"}, 0.2),
+            ("hello world", {"source": "test.txt"}, 0.1, "test-source", 1),
+            ("foo bar", {"source": "test2.txt"}, 0.2, "test-source", 2),
         ]
 
         results = store.search("query", k=2)
@@ -94,7 +95,7 @@ class TestPGVectorStoreSearch:
         mock_emb.embed_query.assert_called_once_with("query")
         assert len(results) == 2
         assert results[0].page_content == "hello world"
-        assert results[0].metadata == {"source": "test.txt"}
+        assert results[0].metadata["source"] == "test.txt"
 
     def test_search_returns_empty_on_error(self):
         store, mock_conn, mock_cursor, _ = _make_store()
@@ -105,11 +106,100 @@ class TestPGVectorStoreSearch:
 
     def test_search_handles_null_metadata(self):
         store, _, mock_cursor, _ = _make_store()
-        mock_cursor.fetchall.return_value = [("text", None, 0.5)]
+        mock_cursor.fetchall.return_value = [
+            ("text", None, 0.5, "test-source", 3),
+        ]
 
         results = store.search("query")
         assert len(results) == 1
-        assert results[0].metadata == {}
+        # _source_id gets stamped into metadata by the global search path.
+        assert results[0].metadata.get("_source_id") == "test-source"
+
+
+@pytest.mark.unit
+class TestPGVectorStoreSearchByVectorWithScore:
+    def test_returns_doc_distance_pairs(self):
+        store, _, mock_cursor, mock_emb = _make_store(source_id="src-1")
+        mock_cursor.fetchall.return_value = [
+            ("t1", {"source": "a"}, 0.05, "src-1", 10),
+            ("t2", {"source": "b"}, 0.20, "src-2", 11),
+        ]
+
+        pairs = store.search_by_vector_with_score(
+            [0.1, 0.2, 0.3], k=5, source_ids=["src-1", "src-2"]
+        )
+
+        # Primitive takes a precomputed vector — must NOT re-embed.
+        mock_emb.embed_query.assert_not_called()
+        assert len(pairs) == 2
+        doc0, dist0 = pairs[0]
+        assert doc0.page_content == "t1"
+        assert dist0 == 0.05
+
+    def test_stamps_source_id_in_metadata(self):
+        store, _, mock_cursor, _ = _make_store()
+        mock_cursor.fetchall.return_value = [
+            ("t", {"source": "file.md"}, 0.1, "src-xyz", 1),
+        ]
+        pairs = store.search_by_vector_with_score(
+            [0.0], k=1, source_ids=["src-xyz"]
+        )
+        assert pairs[0][0].metadata["_source_id"] == "src-xyz"
+        # Existing metadata preserved.
+        assert pairs[0][0].metadata["source"] == "file.md"
+
+    def test_uses_source_id_any_filter_for_multiple_sources(self):
+        store, _, mock_cursor, _ = _make_store()
+        mock_cursor.fetchall.return_value = []
+
+        store.search_by_vector_with_score(
+            [0.0], k=5, source_ids=["a", "b", "c"]
+        )
+
+        # Confirm the SQL uses ANY() — one query, not three.
+        sql, params = mock_cursor.execute.call_args[0]
+        assert "source_id = ANY" in sql
+        assert params[1] == ["a", "b", "c"]
+
+    def test_falls_back_to_instance_source_id(self):
+        store, _, mock_cursor, _ = _make_store(source_id="instance-src")
+        mock_cursor.fetchall.return_value = []
+
+        store.search_by_vector_with_score([0.0], k=1, source_ids=None)
+
+        _, params = mock_cursor.execute.call_args[0]
+        assert params[1] == ["instance-src"]
+
+    def test_empty_source_list_returns_empty(self):
+        store, _, mock_cursor, _ = _make_store(source_id="")
+        # source_ids=[] AND no fallback source → no query issued.
+        assert store.search_by_vector_with_score([0.0], k=5, source_ids=[]) == []
+        mock_cursor.execute.assert_not_called()
+
+    def test_returns_empty_on_sql_error(self):
+        store, _, mock_cursor, _ = _make_store(source_id="src")
+        mock_cursor.execute.side_effect = Exception("conn lost")
+        assert store.search_by_vector_with_score([0.0], k=5) == []
+
+    def test_results_ordered_by_distance_ascending(self):
+        # Confirm the SQL orders by distance (lower = closer under cosine)
+        # and the primitive preserves that order.
+        store, _, mock_cursor, _ = _make_store()
+        mock_cursor.fetchall.return_value = [
+            ("closest",  {}, 0.05, "s", 1),
+            ("middle",   {}, 0.25, "s", 2),
+            ("farthest", {}, 0.90, "s", 3),
+        ]
+        pairs = store.search_by_vector_with_score(
+            [0.0], k=3, source_ids=["s"]
+        )
+        assert [d.page_content for d, _ in pairs] == ["closest", "middle", "farthest"]
+        assert [score for _, score in pairs] == [0.05, 0.25, 0.90]
+
+        sql = mock_cursor.execute.call_args[0][0]
+        assert "ORDER BY" in sql
+        # Deterministic tiebreak on (source_id, id) per codex review.
+        assert "source_id, id" in sql
 
 
 @pytest.mark.unit
