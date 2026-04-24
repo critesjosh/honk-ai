@@ -1,3 +1,4 @@
+import fnmatch
 import logging
 import os
 import platform
@@ -158,7 +159,9 @@ def after_request(response):
     - "*": permissive; allows any origin. Insecure with credentials; only
       use for public read-only demos.
     - Comma-separated origin list: echoes the request's Origin back only
-      if it matches, and adds Vary: Origin for correct caching.
+      if it matches, and adds Vary: Origin for correct caching. Entries
+      may contain shell-style globs (``*``, ``?``) — for example
+      ``https://*.netlify.app`` matches every Netlify preview URL.
     """
     allowed = (settings.CORS_ALLOWED_ORIGINS or "").strip()
     if not allowed:
@@ -168,8 +171,8 @@ def after_request(response):
         response.headers["Access-Control-Allow-Origin"] = "*"
     else:
         origin = request.headers.get("Origin", "")
-        allowlist = {o.strip() for o in allowed.split(",") if o.strip()}
-        if origin in allowlist:
+        patterns = [o.strip() for o in allowed.split(",") if o.strip()]
+        if any(fnmatch.fnmatchcase(origin, p) for p in patterns):
             response.headers["Access-Control-Allow-Origin"] = origin
             response.headers["Vary"] = "Origin"
 

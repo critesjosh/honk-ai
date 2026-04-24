@@ -410,17 +410,18 @@ function AgentSection({
     return (
       <div className="text-muted-foreground mt-12 flex flex-col items-center justify-center gap-3">
         <p>{t(`agents.sections.${config.id}.emptyState`)}</p>
-        {config.showNewAgentButton && (
-          <button
-            className="bg-primary hover:bg-primary/90 rounded-full px-4 py-2 text-sm text-white"
-            onClick={() => {
-              setModalFolderId(null);
-              setShowAgentTypeModal(true);
-            }}
-          >
-            {t('agents.newAgent')}
-          </button>
-        )}
+        {config.showNewAgentButton &&
+          import.meta.env.VITE_DISABLE_AGENT_EDIT !== 'true' && (
+            <button
+              className="bg-primary hover:bg-primary/90 rounded-full px-4 py-2 text-sm text-white"
+              onClick={() => {
+                setModalFolderId(null);
+                setShowAgentTypeModal(true);
+              }}
+            >
+              {t('agents.newAgent')}
+            </button>
+          )}
       </div>
     );
   }

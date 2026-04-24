@@ -60,8 +60,40 @@
   30 s graceful shutdown (paired with compose `stop_grace_period: 40s`), and
   a 15 s `: ping` heartbeat in `application/api/answer/routes/base.py` so
   Cloudflare doesn't idle-close long SSE streams during multi-hop retrieval.
+- **Widget source URL rewriting** — the SSE `{type: "source"}` frame
+  emitted on `/stream` rewrites each chunk's in-corpus path into a
+  clickable public URL: rendered Developer Docs → `docs.aztec.network`,
+  everything else (code, non-rendered docs) → GitHub blob at the
+  `v4.2.0` tag. Sources are capped at 5 per answer.
+- **RAG context cap** (`RAG_MAX_DOC_TOKENS`, default 15k, prod 6k) —
+  upstream feeds the model's full context window (~198k tokens) of
+  retrieved docs on every query, which made answers take 60s+. The
+  cap keeps generation to 10–20s while still grounding well.
+- **Primary-source-first retrieval fix** — upstream dropped
+  `agent.source_id` when `extra_source_ids` existed, so the "primary"
+  source was never actually searched. Our `stream_processor` prepends
+  it back onto `sources_list`.
+- **Reasoning-disable shim** — auto-injects
+  `extra_body={"reasoning": {"exclude": true}}` for reasoning-mode
+  OpenRouter models (e.g. `x-ai/grok-4.1-fast`) that would otherwise
+  stream 100% chain-of-thought tokens with no visible answer.
+- **CORS glob patterns** — `CORS_ALLOWED_ORIGINS` supports shell-style
+  globs so Netlify preview URLs (`https://deploy-preview-*--aztec-docs-dev.netlify.app`)
+  and local dev (`http://localhost:*`) don't have to be re-added per PR.
+- **Widget embedding** — the React widget (`extensions/react-widget`)
+  works from any origin in the CORS allowlist. Cloudflare Access must
+  have **path-scoped Bypass applications** for the three widget
+  endpoints (`/stream`, `/api/search`, `/api/feedback`), otherwise
+  browsers hit the SSO challenge inside an XHR and fail. The rest of
+  the hostname stays SSO-gated.
+- **Agent-edit lockdown** (`VITE_DISABLE_AGENT_EDIT=true` build-arg) —
+  replaces the in-UI agent create/edit form with a notice directing
+  admins to manage agents via SQL or `/api/internal/create_mcp_key`.
+  The UI was silently resetting `source_id` and swapping `prompt_id`
+  on save; the lockdown prevents that drift.
 - **Custom settings** — `MCP_PROVISIONING_KEY`, `AZTEC_SOURCE_IDS`,
-  `CORS_ALLOWED_ORIGINS`, `EMBEDDINGS_DIMENSION`.
+  `CORS_ALLOWED_ORIGINS`, `EMBEDDINGS_DIMENSION`, `RAG_MAX_DOC_TOKENS`,
+  `VITE_DISABLE_AGENT_EDIT`.
 
 ### Repository map (fork-specific)
 

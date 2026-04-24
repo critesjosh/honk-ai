@@ -95,6 +95,13 @@ class Settings(BaseSettings):
     AZTEC_SOURCE_IDS: Optional[str] = None  # comma-separated Postgres source UUIDs for Aztec MCP agents
     CORS_ALLOWED_ORIGINS: Optional[str] = None  # comma-separated origin URLs; empty = same-origin only; "*" = any (insecure)
 
+    # Cap on tokens of retrieved documents injected into the LLM prompt.
+    # Upstream uses the model's full context window; for 200k-context models
+    # this stuffs huge contexts and makes generation slow. 6k keeps answers
+    # grounded while letting Claude Sonnet respond in 10-15s instead of 60s.
+    # Set to 0 to disable the cap.
+    RAG_MAX_DOC_TOKENS: int = 6000
+
     API_KEY: Optional[str] = None  # LLM api key (used by LLM_PROVIDER)
 
     # Provider-specific API keys (for multi-model support)

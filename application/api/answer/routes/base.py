@@ -33,6 +33,72 @@ answer_ns = Namespace("answer", description="Answer related operations", path="/
 
 _HEARTBEAT_INTERVAL_SECONDS = 15.0
 
+# Cap sources emitted to the client. The React widget already shows 3 with
+# a "+ N more" toggle, and long source lists push the answer off-screen.
+_MAX_SOURCES_EMITTED = 5
+
+# ---- Source URL mapping (Aztec fork) ------------------------------------
+# Corpus paths stored in `metadata.source` are relative to the ingest zip.
+# Map them to public URLs:
+#   - Developer Docs (rendered) → docs.aztec.network
+#   - Everything else (code, non-developer-docs markdown) → GitHub at v4.2.0
+# Widget renders `source.source` as the <a href>, so we rewrite that field
+# in-place before emitting.
+_AZTEC_DOCS_BASE = "https://docs.aztec.network/developers/docs"
+_AZTEC_GITHUB_BASE = (
+    "https://github.com/AztecProtocol/aztec-packages/blob/v4.2.0"
+)
+
+# Corpus prefix → GitHub repo prefix. First match wins, so put the more
+# specific prefixes before their catch-alls.
+_SOURCE_TO_REPO_PREFIX: List[Tuple[str, str]] = [
+    ("end-to-end/",               "yarn-project/end-to-end/src/"),
+    ("cli/",                      "yarn-project/cli/src/"),
+    ("cli-wallet/",               "yarn-project/cli-wallet/src/"),
+    ("aztec.js/",                 "yarn-project/aztec.js/src/"),
+    ("aztec-nr/",                 "noir-projects/aztec-nr/"),
+    ("noir-contracts/",           "noir-projects/noir-contracts/contracts/"),
+    ("noir-protocol-circuits/",   "noir-projects/noir-protocol-circuits/"),
+    ("l1-contracts/",             "l1-contracts/"),
+    # Network Docs live under docs/network_versioned_docs in the repo; they
+    # all sit under the `operators/` subdirectory in the versioned tree.
+    ("version-v4.2.0/operators/", "docs/network_versioned_docs/version-v4.2.0/operators/"),
+    # All remaining version-v4.2.0/* content (developer docs top-level files
+    # that aren't rendered on docs.aztec.network) falls into developer_versioned_docs.
+    ("version-v4.2.0/",           "docs/developer_versioned_docs/version-v4.2.0/"),
+]
+
+
+def _aztec_source_url(source_path: str) -> str:
+    """Translate a corpus `metadata.source` path to a clickable public URL.
+
+    Unknown patterns fall back to the original string; the widget will
+    still render the title — just without a working href.
+    """
+    if not source_path or not isinstance(source_path, str):
+        return source_path
+
+    # Rendered Aztec developer docs
+    if source_path.startswith("version-v4.2.0/docs/"):
+        rest = source_path[len("version-v4.2.0/docs/"):]
+        for ext in (".mdx", ".md"):
+            if rest.endswith(ext):
+                rest = rest[: -len(ext)]
+                break
+        return f"{_AZTEC_DOCS_BASE}/{rest}"
+
+    # Code / non-developer-docs → GitHub blob at v4.2.0
+    for corpus_prefix, repo_prefix in _SOURCE_TO_REPO_PREFIX:
+        if source_path.startswith(corpus_prefix):
+            rest = source_path[len(corpus_prefix):]
+            # Ingest appends .txt to code extensions (.nr/.ts/.sol/...) so
+            # parser recognises them — strip it to point at the real file.
+            if rest.endswith(".txt"):
+                rest = rest[:-4]
+            return f"{_AZTEC_GITHUB_BASE}/{repo_prefix}{rest}"
+
+    return source_path
+
 
 def _iter_with_heartbeat(
     source_iter: Iterable[Any],
@@ -289,11 +355,19 @@ class BaseAnswerResource:
                 elif "sources" in line:
                     truncated_sources = []
                     source_log_docs = line["sources"]
-                    for source in line["sources"]:
+                    # Cap at top N so the client doesn't drown in citations.
+                    for source in line["sources"][:_MAX_SOURCES_EMITTED]:
                         truncated_source = source.copy()
                         if "text" in truncated_source:
                             truncated_source["text"] = (
                                 truncated_source["text"][:100].strip() + "..."
+                            )
+                        # Rewrite the in-corpus relative path to a public URL
+                        # so the widget's <a href={source.source}> resolves.
+                        raw_path = truncated_source.get("source")
+                        if raw_path:
+                            truncated_source["source"] = _aztec_source_url(
+                                raw_path
                             )
                         truncated_sources.append(truncated_source)
                     if truncated_sources:

@@ -48,6 +48,7 @@ services:
       args:
         VITE_API_HOST: https://${PUBLIC_HOSTNAME}
         VITE_API_STREAMING: "${VITE_API_STREAMING:-true}"
+        VITE_DISABLE_AGENT_EDIT: "${VITE_DISABLE_AGENT_EDIT:-false}"
     image: aztec/docsgpt-fe:${IMAGE_TAG:-0.17.0-aztec.1}
     restart: unless-stopped
     # No host port; Caddy reaches frontend:80 on the internal network.

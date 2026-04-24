@@ -191,8 +191,16 @@ class StreamProcessor:
                     for query in conversation.get("queries", [])
                 ]
         else:
+            # `history` can arrive as either a JSON-encoded string (what the
+            # Discord bot sends via `json.dumps(messages)`) or as a native
+            # list (what the Flask-RESTX schema `fields.List(fields.String)`
+            # actually declares and what the React widget sends). Tolerate
+            # both instead of 500-ing on clients that use the declared type.
+            raw_history = self.data.get("history", [])
+            if isinstance(raw_history, str):
+                raw_history = json.loads(raw_history or "[]")
             self.history = limit_chat_history(
-                json.loads(self.data.get("history", "[]")), model_id=self.model_id
+                raw_history, model_id=self.model_id
             )
 
     def _handle_compression(self, conversation: Dict[str, Any]):
@@ -385,21 +393,40 @@ class StreamProcessor:
             else:
                 data["source"] = None
 
+            # Build the ordered retrieval list as [primary, *extras].
+            # The prior version populated `sources_list` only from
+            # `extra_source_ids`, which made `_configure_source` (below)
+            # silently drop the primary `source_id` whenever any extras
+            # existed. That meant the "primary" source was never
+            # actually searched — the retriever's first bucket was
+            # `extra_source_ids[0]`, so whichever source happened to be
+            # first in that array dominated the top-N citations.
             sources_list = []
+            if source_id:
+                source_doc = sources_repo.get(str(source_id), agent.get("user_id"))
+                if source_doc:
+                    sources_list.append(
+                        {
+                            "id": str(source_doc["id"]),
+                            "retriever": source_doc.get("retriever", "classic"),
+                            "chunks": source_doc.get(
+                                "chunks", data.get("chunks", "2")
+                            ),
+                        }
+                    )
             extra = agent.get("extra_source_ids") or []
-            if extra:
-                for sid in extra:
-                    source_doc = sources_repo.get(str(sid), agent.get("user_id"))
-                    if source_doc:
-                        sources_list.append(
-                            {
-                                "id": str(source_doc["id"]),
-                                "retriever": source_doc.get("retriever", "classic"),
-                                "chunks": source_doc.get(
-                                    "chunks", data.get("chunks", "2")
-                                ),
-                            }
-                        )
+            for sid in extra:
+                source_doc = sources_repo.get(str(sid), agent.get("user_id"))
+                if source_doc:
+                    sources_list.append(
+                        {
+                            "id": str(source_doc["id"]),
+                            "retriever": source_doc.get("retriever", "classic"),
+                            "chunks": source_doc.get(
+                                "chunks", data.get("chunks", "2")
+                            ),
+                        }
+                    )
         data["sources"] = sources_list
         data["default_model_id"] = data.get("default_model_id", "")
         return data

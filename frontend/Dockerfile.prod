@@ -6,8 +6,12 @@
 FROM node:22-bullseye-slim AS build
 ARG VITE_API_HOST=""
 ARG VITE_API_STREAMING="true"
+# Aztec fork: when "true", the agent create/edit form is replaced with a
+# notice instructing admins to manage agents directly in the backend.
+ARG VITE_DISABLE_AGENT_EDIT="false"
 ENV VITE_API_HOST=$VITE_API_HOST
 ENV VITE_API_STREAMING=$VITE_API_STREAMING
+ENV VITE_DISABLE_AGENT_EDIT=$VITE_DISABLE_AGENT_EDIT
 
 WORKDIR /app
 COPY package*.json ./

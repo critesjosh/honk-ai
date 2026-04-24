@@ -35,7 +35,47 @@ import WorkflowBuilder from './workflow/WorkflowBuilder';
 
 import type { Model } from '../models/types';
 
+// Aztec fork: optionally disable the agent create/edit form at build time.
+// Set VITE_DISABLE_AGENT_EDIT=true to lock agent configuration to the
+// backend (SQL / API) and avoid the UI silently resetting source_id or
+// swapping prompt_id during edits. When true, the route renders a notice
+// instead of the form.
+const IS_AGENT_EDIT_DISABLED =
+  import.meta.env.VITE_DISABLE_AGENT_EDIT === 'true';
+
+function AgentEditDisabledNotice({ mode }: { mode: 'new' | 'edit' | 'draft' }) {
+  const navigate = useNavigate();
+  const verb = mode === 'new' ? 'Creating' : 'Editing';
+  return (
+    <div className="mx-auto mt-16 max-w-2xl p-8 text-center">
+      <h1 className="text-2xl font-semibold mb-4">
+        {verb} agents is managed in the backend
+      </h1>
+      <p className="mb-3 text-muted-foreground">
+        To prevent accidental resets (such as dropping the primary source or
+        swapping the system prompt), agent configuration changes are made
+        directly against the database — not in this UI.
+      </p>
+      <p className="mb-6 text-muted-foreground">
+        Update an agent by running SQL against postgres, or provision a new
+        MCP-backed agent via the <code>/api/internal/create_mcp_key</code>{' '}
+        endpoint.
+      </p>
+      <button
+        className="bg-primary hover:bg-primary/90 rounded-full px-4 py-2 text-sm text-white"
+        onClick={() => navigate('/agents')}
+      >
+        Back to agents
+      </button>
+    </div>
+  );
+}
+
 export default function NewAgent({ mode }: { mode: 'new' | 'edit' | 'draft' }) {
+  // Early-return BEFORE any hooks so Rules-of-Hooks remain satisfied.
+  if (IS_AGENT_EDIT_DISABLED) {
+    return <AgentEditDisabledNotice mode={mode} />;
+  }
   const { t } = useTranslation();
   const navigate = useNavigate();
   const dispatch = useDispatch();

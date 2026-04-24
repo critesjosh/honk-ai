@@ -78,21 +78,28 @@ export default function AgentCard({
         iconWidth: 14,
         iconHeight: 14,
       },
-      {
-        icon: Edit,
-        label: 'Edit',
-        onClick: (e: SyntheticEvent) => {
-          e.stopPropagation();
-          if (agent.agent_type === 'workflow') {
-            navigate(`/agents/workflow/edit/${agent.id}`);
-          } else {
-            navigate(`/agents/edit/${agent.id}`);
-          }
-        },
-        variant: 'primary',
-        iconWidth: 14,
-        iconHeight: 14,
-      },
+      // Aztec fork: hide the Edit menu item when agent editing is disabled
+      // at build time (VITE_DISABLE_AGENT_EDIT=true). Keeps other actions
+      // (Logs, Pin, Share, etc.) available.
+      ...((import.meta.env.VITE_DISABLE_AGENT_EDIT === 'true'
+        ? []
+        : [
+            {
+              icon: Edit,
+              label: 'Edit',
+              onClick: (e: SyntheticEvent) => {
+                e.stopPropagation();
+                if (agent.agent_type === 'workflow') {
+                  navigate(`/agents/workflow/edit/${agent.id}`);
+                } else {
+                  navigate(`/agents/edit/${agent.id}`);
+                }
+              },
+              variant: 'primary' as const,
+              iconWidth: 14,
+              iconHeight: 14,
+            },
+          ]) as MenuOption[]),
       ...(agent.status === 'published'
         ? [
             {

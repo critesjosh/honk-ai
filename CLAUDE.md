@@ -12,7 +12,16 @@ Aztec-specific additions on top of upstream:
 - **TypeScript MCP server** (`extensions/mcp-server/`) that exposes DocsGPT agents via MCP.
 - **Chunking filter** (`application/parser/chunking.py`) that discards chunks with `token_count < 50`.
 - **Path ignore list** (`application/parser/file/bulk.py` → `_IGNORED_PATH_SEGMENTS`) that skips any file under a `fixtures/`, `dumps/`, `node_modules/`, `target/`, `dist/`, `build/`, `_out/`, `__pycache__/` or `.git/` directory during ingest. Prevents blockchain-state test fixtures and build artefacts from burning embedding credits. Add new deny-list directory names here.
-- **Custom settings**: `MCP_PROVISIONING_KEY`, `AZTEC_SOURCE_IDS`, `CORS_ALLOWED_ORIGINS`.
+- **Custom settings**: `MCP_PROVISIONING_KEY`, `AZTEC_SOURCE_IDS`, `CORS_ALLOWED_ORIGINS`, `EMBEDDINGS_DIMENSION`, `RAG_MAX_DOC_TOKENS`, `VITE_DISABLE_AGENT_EDIT`.
+- **RAG context cap** (`settings.RAG_MAX_DOC_TOKENS`, default 15000, set to 6000 in prod `.env`) — caps `calculate_doc_token_budget()` in `utils.py`. Upstream defaults to the full model window (~198k for Claude Sonnet 4.6), which makes every answer slow; the cap keeps generation <15s while still well-grounded.
+- **CORS glob patterns** (`application/app.py:after_request`) — `CORS_ALLOWED_ORIGINS` supports `fnmatch`-style globs. Used for Netlify preview URLs (`https://deploy-preview-*--aztec-docs-dev.netlify.app`) and localhost dev (`http://localhost:*`).
+- **Widget source rewriting** (`api/answer/routes/base.py:_aztec_source_url`) — remaps corpus paths in the emitted `{type: "source"}` SSE frame into public URLs. Developer Docs → `https://docs.aztec.network/developers/docs/...`; everything else → GitHub at `v4.2.0`. Sources capped at 5 (`_MAX_SOURCES_EMITTED`).
+- **Agent sources_list ordering fix** (`stream_processor._get_data_from_api_key`) — the upstream code dropped `agent.source_id` (primary) when `extra_source_ids` existed. Our version prepends the primary to `sources_list` so it's searched first. **Bug pattern**: editing an agent via the DocsGPT UI can re-clear `source_id` and rewrite `extra_source_ids` in a default order (often with E2E tests first) and can also swap `prompt_id`. If retrieval degrades after a UI edit, re-apply the canonical order + prompt via SQL. Prefer `VITE_DISABLE_AGENT_EDIT=true` in prod.
+- **SSE heartbeat** (`api/answer/routes/base.py:_iter_with_heartbeat`) — emits `: ping\n\n` every 15s on silent generator gaps so Cloudflare/Caddy don't idle-close long answers.
+- **SSE `history` shape tolerance** (`stream_processor._load_conversation_history`) — accepts both a JSON-encoded string (Discord bot) and a native list (widget / spec-compliant clients). Upstream only accepted the string.
+- **Gunicorn gthread workers** (`application/Dockerfile`) — 2×8 with `--timeout 120 --graceful-timeout 30 --keep-alive 75`. Paired with `stop_grace_period: 40s` on the backend compose service so SIGTERM drains SSE streams cleanly.
+- **Reasoning-disable shim for OpenRouter** (`llm/openai.py:_should_disable_reasoning`) — for models like `x-ai/grok-4.1-fast` that emit chain-of-thought tokens by default and stream no answer content, injects `extra_body={"reasoning": {"exclude": true}}`. Extend via `_REASONING_DISABLED_MODEL_PREFIXES`.
+- **Agent edit feature flag** (`VITE_DISABLE_AGENT_EDIT=true` build ARG, `frontend/Dockerfile.prod`) — hides the agent create/edit form in the UI (`NewAgent.tsx`, `AgentsList.tsx`, `AgentCard.tsx`). Replaces the form with a notice directing admins to manage agents via SQL or `/api/internal/create_mcp_key`. Use in prod to prevent UI-side config drift.
 
 ## Development environment
 
@@ -20,7 +29,7 @@ Aztec-specific additions on top of upstream:
 
 Two composes at `deployment/`:
 - `docker-compose.yaml` — **dev compose**. Builds from source, exposes ports on localhost (frontend 5173, backend 7091, Redis 6379, Postgres 5432). Use this in dev / smoke-test.
-- `docker-compose-hub.yaml` — **production compose**. Builds from source, publishes only Caddy's 80/443, uses Let's Encrypt, loads secrets from `.env`. Use this on the company server.
+- `docker-compose-hub.yaml` — **production compose**. Builds from source, runs an outbound-only `cloudflared` connector (Cloudflare Tunnel), Caddy in HTTP-only mode (TLS lives at the CF edge), plus the Discord bot as a container. **No host ports are published** — nothing on this host faces the public internet. Secrets loaded from `.env`. Use this on the company server.
 
 Configuration lives in `.env` at repo root. It is gitignored. `.env-template` holds placeholders and secret-generation instructions.
 

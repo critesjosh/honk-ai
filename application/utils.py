@@ -85,9 +85,20 @@ def count_tokens_docs(docs):
 def calculate_doc_token_budget(
     model_id: str = "gpt-4o"
 ) -> int:
+    """Token budget for retrieved documents injected into the LLM prompt.
+
+    Upstream computes this as (model_context_window - reserved_tokens),
+    which for a 200k-context model yields a ~195k budget and makes every
+    RAG answer stuff in as many chunks as exist, slowing generation to a
+    crawl. Cap at ``settings.RAG_MAX_DOC_TOKENS`` (default 15k) so the
+    retriever stops accumulating once we have plenty of grounded context.
+    """
     total_context = get_token_limit(model_id)
     reserved = sum(settings.RESERVED_TOKENS.values())
     doc_budget = total_context - reserved
+    cap = getattr(settings, "RAG_MAX_DOC_TOKENS", 15000)
+    if cap and cap > 0:
+        doc_budget = min(doc_budget, cap)
     return max(doc_budget, 1000)
 
 

@@ -299,6 +299,42 @@ OPENROUTER_MODELS = [
             supported_attachment_types=OPENROUTER_ATTACHMENTS
         ),
     ),
+    AvailableModel(
+        id="google/gemini-3-flash-preview",
+        provider=ModelProvider.OPENROUTER,
+        display_name="Gemini 3 Flash Preview",
+        description="Fast, cost-efficient Gemini 3 model with 1M token context, via OpenRouter.",
+        capabilities=ModelCapabilities(
+            supports_tools=True,
+            supports_structured_output=True,
+            context_window=int(1e6),
+            supported_attachment_types=OPENROUTER_ATTACHMENTS,
+        ),
+    ),
+    AvailableModel(
+        id="qwen/qwen3.5-flash-02-23",
+        provider=ModelProvider.OPENROUTER,
+        display_name="Qwen 3.5 Flash",
+        description="Qwen 3.5 Flash — fast, cost-efficient, strong at instruction-following. Via OpenRouter.",
+        capabilities=ModelCapabilities(
+            supports_tools=True,
+            supports_structured_output=True,
+            context_window=131072,
+            supported_attachment_types=OPENROUTER_ATTACHMENTS,
+        ),
+    ),
+    AvailableModel(
+        id="x-ai/grok-4.1-fast",
+        provider=ModelProvider.OPENROUTER,
+        display_name="Grok 4.1 Fast",
+        description="xAI Grok 4.1 Fast — reasoning disabled for low-latency streaming. Via OpenRouter.",
+        capabilities=ModelCapabilities(
+            supports_tools=True,
+            supports_structured_output=True,
+            context_window=int(2e6),
+            supported_attachment_types=OPENROUTER_ATTACHMENTS,
+        ),
+    ),
 ]
 
 NOVITA_MODELS = [
