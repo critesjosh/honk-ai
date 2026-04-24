@@ -148,6 +148,18 @@ class TestPGVectorStoreSearchByVectorWithScore:
         # Existing metadata preserved.
         assert pairs[0][0].metadata["source"] == "file.md"
 
+    def test_sql_source_id_overrides_stale_metadata_source_id(self):
+        # If stored metadata has a stale `_source_id`, the SQL-selected
+        # source_id is authoritative — we never want wrong attribution.
+        store, _, mock_cursor, _ = _make_store()
+        mock_cursor.fetchall.return_value = [
+            ("t", {"_source_id": "stale-value"}, 0.1, "fresh-src", 1),
+        ]
+        pairs = store.search_by_vector_with_score(
+            [0.0], k=1, source_ids=["fresh-src"]
+        )
+        assert pairs[0][0].metadata["_source_id"] == "fresh-src"
+
     def test_uses_source_id_any_filter_for_multiple_sources(self):
         store, _, mock_cursor, _ = _make_store()
         mock_cursor.fetchall.return_value = []

@@ -181,7 +181,9 @@ class PGVectorStore(BaseVectorStore):
             out: List[Tuple[Document, float]] = []
             for text, metadata, distance, source_id, _row_id in results:
                 md = dict(metadata or {})
-                md.setdefault("_source_id", source_id)
+                # Authoritative: the SQL-selected source_id wins over any
+                # stale _source_id that might be present in stored metadata.
+                md["_source_id"] = source_id
                 out.append(
                     (Document(page_content=text, metadata=md), float(distance))
                 )

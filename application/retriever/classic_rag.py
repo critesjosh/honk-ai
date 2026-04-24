@@ -161,11 +161,13 @@ class ClassicRAG(BaseRetriever):
                 self._extract_doc_fields(doc)
             )
 
-            # Dedup: near-identical chunks from the same source often surface
-            # together when pgvector walks a document linearly. Key on
-            # (source_path, leading text) — cheap enough, and a duplicate
-            # by this key genuinely duplicates retrieval value.
-            dedup_key = (source_path, (page_content or "")[:200])
+            # Dedup: near-identical chunks from the same source often
+            # surface together when pgvector walks a document linearly.
+            # Key includes filename so that two different files in the
+            # same corpus don't collapse just because source_path fell
+            # back to the corpus-level _source_id (when metadata.source
+            # is missing).
+            dedup_key = (source_path, filename, (page_content or "")[:200])
             if dedup_key in seen_keys:
                 continue
             seen_keys.add(dedup_key)
@@ -202,12 +204,20 @@ class ClassicRAG(BaseRetriever):
             )
             return []
 
-        # Global candidate pool size. Scales modestly with the number of
-        # configured sources so a 20-source deployment still has enough
-        # headroom after dedup + token-budget packing. 100 fits the current
-        # 12-source prod setup comfortably.
-        candidate_k = max(100, len(self.vectorstores) * 8)
         token_budget = max(int(self.doc_token_limit * 0.9), 100)
+
+        # Global candidate pool size. Needs to be large enough that the
+        # packer can fill `token_budget` even after dedup drops some top
+        # hits. The ingest filter drops chunks <50 tokens, so a lower bound
+        # on chunks-that-fit is ``token_budget / 50``; over-fetch by 2x for
+        # headroom. Also scale with source count and the requested
+        # ``chunks`` hint so small/tightly-scoped queries aren't hurt.
+        candidate_k = max(
+            120,
+            len(self.vectorstores) * 10,
+            self.chunks * 20,
+            (token_budget // 50) * 2,
+        )
 
         # One vectorstore instance drives the whole search. We pass all
         # source_ids to search_by_vector_with_score, so the instance's own
@@ -226,13 +236,16 @@ class ClassicRAG(BaseRetriever):
             return []
 
         if not hasattr(docsearch, "search_by_vector_with_score"):
-            logging.error(
-                f"Vector backend {type(docsearch).__name__} does not implement "
-                "search_by_vector_with_score — retrieval cannot run global "
-                "rerank. Implement the method on this backend or switch to "
-                "pgvector."
+            # Raise loudly rather than silently answer without context —
+            # silent empty retrieval is exactly the kind of operational
+            # bug we don't want masked. This surfaces as a 5xx to the
+            # caller and a stack trace in logs, which is what we want
+            # for a misconfigured backend.
+            raise RuntimeError(
+                f"Vector backend {type(docsearch).__name__} does not "
+                "implement search_by_vector_with_score. Implement the "
+                "method on this backend or switch to pgvector."
             )
-            return []
 
         try:
             query_vector = docsearch._embedding.embed_query(self.question)

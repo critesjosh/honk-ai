@@ -297,17 +297,19 @@ class TestClassicRAGGetData:
         assert rag._get_data() == []
 
     @patch("application.retriever.classic_rag.VectorCreator")
-    def test_backend_without_global_search_returns_empty(
+    def test_backend_without_global_search_raises(
         self, mock_vc, _patch_llm_creator
     ):
-        # Simulate a backend (e.g. legacy Faiss) without the new primitive.
-        # The spec=[] argument forbids attribute access, so hasattr() returns
-        # False for search_by_vector_with_score.
+        # A misconfigured backend (e.g. a legacy one that never grew the
+        # global-search primitive) must fail loudly, not silently answer
+        # without retrieved context. spec=[] forbids attribute access so
+        # hasattr() returns False for search_by_vector_with_score.
         mock_docsearch = MagicMock(spec=[])
         mock_vc.create_vectorstore.return_value = mock_docsearch
 
         rag = _make_rag(source={"question": "q", "active_docs": ["vs1"]})
-        assert rag._get_data() == []
+        with pytest.raises(RuntimeError, match="search_by_vector_with_score"):
+            rag._get_data()
 
     @patch("application.retriever.classic_rag.VectorCreator")
     @patch("application.retriever.classic_rag.num_tokens_from_string", return_value=10)
@@ -354,7 +356,10 @@ class TestClassicRAGGetData:
         self, mock_tokens, mock_vc, _patch_llm_creator
     ):
         # Same candidates, different active_docs orderings: results should
-        # match — global rerank shouldn't care about AZTEC_SOURCE_IDS order.
+        # match AND the retriever should pass the user-provided source_ids
+        # through verbatim to the backend (the SQL `source_id = ANY(...)`
+        # clause is set-invariant — correctness is the backend's
+        # responsibility, but the retriever must not reorder here).
         pairs = [
             (_mock_doc("alpha", source="src-a", title="A"), 0.05),
             (_mock_doc("beta",  source="src-b", title="B"), 0.15),
@@ -362,9 +367,44 @@ class TestClassicRAGGetData:
         ]
         mock_vc.create_vectorstore.return_value = _mock_global_docsearch(pairs)
 
-        rag1 = _make_rag(source={"question": "q", "active_docs": ["a", "b", "c"]})
-        rag2 = _make_rag(source={"question": "q", "active_docs": ["c", "a", "b"]})
+        order_1 = ["a", "b", "c"]
+        order_2 = ["c", "a", "b"]
+        rag1 = _make_rag(source={"question": "q", "active_docs": order_1})
+        rag2 = _make_rag(source={"question": "q", "active_docs": order_2})
         assert rag1._get_data() == rag2._get_data()
+
+        # Verify the retriever passed each caller's source_ids through
+        # verbatim. We recreate the mock for each call so we can inspect.
+        mock_ds_1 = _mock_global_docsearch(pairs)
+        mock_ds_2 = _mock_global_docsearch(pairs)
+        mock_vc.create_vectorstore.side_effect = [mock_ds_1, mock_ds_2]
+        rag_a = _make_rag(source={"question": "q", "active_docs": order_1})
+        rag_b = _make_rag(source={"question": "q", "active_docs": order_2})
+        rag_a._get_data()
+        rag_b._get_data()
+        assert mock_ds_1.search_by_vector_with_score.call_args.kwargs["source_ids"] == order_1
+        assert mock_ds_2.search_by_vector_with_score.call_args.kwargs["source_ids"] == order_2
+
+    @patch("application.retriever.classic_rag.VectorCreator")
+    @patch("application.retriever.classic_rag.num_tokens_from_string", return_value=10)
+    def test_candidate_k_scales_with_budget_not_fixed_cap(
+        self, mock_tokens, mock_vc, _patch_llm_creator
+    ):
+        # Regression: if candidate_k is a fixed floor (previously 100) the
+        # packer can run out of candidates long before filling the budget
+        # on a large deployment with lots of short chunks. With a large
+        # doc_token_limit the retriever should ask for many more than 100
+        # candidates so the packer has room to fill.
+        mock_ds = _mock_global_docsearch([])
+        mock_vc.create_vectorstore.return_value = mock_ds
+
+        rag = _make_rag(
+            source={"question": "q", "active_docs": ["vs1", "vs2"]},
+            doc_token_limit=50000,  # budget=45000, floor-bound k = 45000/50*2 = 1800
+        )
+        rag._get_data()
+        asked_k = mock_ds.search_by_vector_with_score.call_args.kwargs["k"]
+        assert asked_k >= 1000
 
     @patch("application.retriever.classic_rag.VectorCreator")
     @patch("application.retriever.classic_rag.num_tokens_from_string", return_value=10)
