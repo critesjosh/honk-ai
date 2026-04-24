@@ -106,10 +106,43 @@ class TestAuthenticateRequest:
 
 
 class TestAfterRequest:
+    """The Aztec fork gates CORS headers on CORS_ALLOWED_ORIGINS
+    (see application/app.py:after_request). Default is unset → no headers."""
 
     @pytest.mark.unit
-    def test_cors_headers(self, client):
+    def test_no_cors_headers_when_unset(self, client):
         response = client.get("/api/health")
+        assert "Access-Control-Allow-Origin" not in response.headers
+
+    @pytest.mark.unit
+    def test_wildcard_emits_star_and_methods(self, client):
+        with patch("application.app.settings") as mock_settings:
+            mock_settings.CORS_ALLOWED_ORIGINS = "*"
+            response = client.get("/api/health")
         assert response.headers.get("Access-Control-Allow-Origin") == "*"
         assert "Content-Type" in response.headers.get("Access-Control-Allow-Headers", "")
         assert "GET" in response.headers.get("Access-Control-Allow-Methods", "")
+
+    @pytest.mark.unit
+    def test_glob_pattern_echoes_matching_origin(self, client):
+        with patch("application.app.settings") as mock_settings:
+            mock_settings.CORS_ALLOWED_ORIGINS = "https://*.example.com"
+            response = client.get(
+                "/api/health",
+                headers={"Origin": "https://preview-7.example.com"},
+            )
+        assert (
+            response.headers.get("Access-Control-Allow-Origin")
+            == "https://preview-7.example.com"
+        )
+        assert response.headers.get("Vary") == "Origin"
+
+    @pytest.mark.unit
+    def test_non_matching_origin_gets_no_header(self, client):
+        with patch("application.app.settings") as mock_settings:
+            mock_settings.CORS_ALLOWED_ORIGINS = "https://*.example.com"
+            response = client.get(
+                "/api/health",
+                headers={"Origin": "https://evil.test"},
+            )
+        assert "Access-Control-Allow-Origin" not in response.headers

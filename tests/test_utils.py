@@ -145,9 +145,12 @@ class TestCalculateDocTokenBudget:
 
     @pytest.mark.unit
     def test_returns_budget(self):
+        # With the Aztec fork's RAG_MAX_DOC_TOKENS cap disabled (0), the
+        # budget is just context - reserved.
         with patch("application.utils.get_token_limit", return_value=128000), \
              patch("application.utils.settings") as s:
             s.RESERVED_TOKENS = {"system": 500, "history": 500}
+            s.RAG_MAX_DOC_TOKENS = 0
             result = calculate_doc_token_budget("gpt-4o")
             assert result == 127000
 
@@ -156,8 +159,20 @@ class TestCalculateDocTokenBudget:
         with patch("application.utils.get_token_limit", return_value=1000), \
              patch("application.utils.settings") as s:
             s.RESERVED_TOKENS = {"system": 500, "history": 500}
+            s.RAG_MAX_DOC_TOKENS = 0
             result = calculate_doc_token_budget("small-model")
             assert result == 1000
+
+    @pytest.mark.unit
+    def test_caps_at_rag_max_doc_tokens(self):
+        # Default behaviour in the Aztec fork: the cap (15k prod, 6k in
+        # our deployed .env) dominates when the model window is huge.
+        with patch("application.utils.get_token_limit", return_value=200000), \
+             patch("application.utils.settings") as s:
+            s.RESERVED_TOKENS = {"system": 500, "history": 500}
+            s.RAG_MAX_DOC_TOKENS = 6000
+            result = calculate_doc_token_budget("claude-sonnet-4")
+            assert result == 6000
 
 
 class TestFieldValidation:

@@ -191,13 +191,25 @@ class TestClassicChunk:
         result = chunker.classic_chunk([])
         assert result == []
 
-    def test_very_small_doc_below_min(self):
+    def test_very_small_doc_below_min_is_discarded(self):
+        # Aztec fork drops stub chunks below 50 tokens outright (see
+        # application/parser/chunking.py) to stop blockchain-state fixtures
+        # from burning embedding credits.
         chunker = Chunker(max_tokens=2000, min_tokens=500)
         doc = Document(text="tiny", doc_id="d1")
 
         result = chunker.classic_chunk([doc])
+        assert result == []
+
+    def test_doc_between_stub_floor_and_min_is_kept(self):
+        # 50 <= token_count < min_tokens: kept as-is.
+        chunker = Chunker(max_tokens=2000, min_tokens=500)
+        doc = Document(text="word " * 80, doc_id="d1")
+
+        result = chunker.classic_chunk([doc])
         assert len(result) == 1
-        assert result[0].extra_info["token_count"] < 500
+        tc = result[0].extra_info["token_count"]
+        assert 50 <= tc < 500
 
     def test_existing_extra_info_preserved(self):
         chunker = Chunker(max_tokens=2000, min_tokens=1)
@@ -230,7 +242,9 @@ class TestChunkDispatcher:
 
     def test_dispatch_classic_chunk(self):
         chunker = Chunker(chunking_strategy="classic_chunk")
-        doc = Document(text="content", doc_id="d1")
+        # Text must clear the 50-token stub floor in the Aztec fork's
+        # classic_chunk to survive.
+        doc = Document(text="content " * 80, doc_id="d1")
 
         result = chunker.chunk([doc])
         assert len(result) == 1
@@ -252,18 +266,23 @@ class TestChunkDispatcher:
 class TestChunkerIntegration:
 
     def test_mixed_document_sizes(self):
-        chunker = Chunker(max_tokens=50, min_tokens=5)
+        # In the Aztec fork, classic_chunk discards anything under 50 tokens.
+        # Size "small" above that floor so it survives; raise max_tokens high
+        # enough that "small" and "medium" land in the middle band (kept
+        # whole), while "large" still has to be split.
+        chunker = Chunker(max_tokens=150, min_tokens=5)
         docs = [
-            Document(text="small text", doc_id="small"),
-            Document(text="word " * 200, doc_id="large"),
-            Document(text="medium " * 20, doc_id="medium"),
+            Document(text="small " * 80, doc_id="small"),
+            Document(text="word " * 600, doc_id="large"),
+            Document(text="medium " * 80, doc_id="medium"),
         ]
 
         result = chunker.chunk(docs)
-        # Small and medium should pass through, large should be split
         assert len(result) >= 3
         doc_ids = [d.doc_id for d in result]
         assert "small" in doc_ids
+        # Large document got split into multiple parts.
+        assert any(did.startswith("large-") for did in doc_ids)
 
     def test_all_chunks_have_token_counts(self):
         chunker = Chunker(max_tokens=50, min_tokens=1)

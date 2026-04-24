@@ -15,40 +15,64 @@ import pytest
 
 
 # ---------------------------------------------------------------------------
-# Fake anthropic module
+# Fake anthropic module — stubs the Messages API shape our AnthropicLLM uses
+# (client.messages.create / client.messages.stream), not the legacy
+# Completions API.
 # ---------------------------------------------------------------------------
 
 
-class _FakeCompletion:
+class _FakeTextBlock:
     def __init__(self, text):
-        self.completion = text
+        self.text = text
 
 
-class _FakeCompletions:
+class _FakeMessagesResponse:
+    def __init__(self, text):
+        self.content = [_FakeTextBlock(text)]
+
+
+class _FakeStreamContext:
+    def __init__(self, texts, on_close=None):
+        self._texts = texts
+        self._on_close = on_close
+        self.text_stream = iter(texts)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        if self._on_close is not None:
+            self._on_close()
+        return False
+
+
+class _FakeMessages:
     def __init__(self):
-        self.last_kwargs = None
-        self._stream_items = [_FakeCompletion("s1"), _FakeCompletion("s2")]
+        self.last_create_kwargs = None
+        self.last_stream_kwargs = None
+        self._stream_texts = ["s1", "s2"]
+        self._stream_on_close = None
 
     def create(self, **kwargs):
-        self.last_kwargs = kwargs
-        if kwargs.get("stream"):
-            return self._stream_items
-        return _FakeCompletion("final")
+        self.last_create_kwargs = kwargs
+        return _FakeMessagesResponse("final")
+
+    def stream(self, **kwargs):
+        self.last_stream_kwargs = kwargs
+        return _FakeStreamContext(self._stream_texts, self._stream_on_close)
 
 
 class _FakeAnthropic:
     def __init__(self, api_key=None, base_url=None):
         self.api_key = api_key
         self.base_url = base_url
-        self.completions = _FakeCompletions()
+        self.messages = _FakeMessages()
 
 
 @pytest.fixture(autouse=True)
 def patch_anthropic(monkeypatch):
     fake = types.ModuleType("anthropic")
     fake.Anthropic = _FakeAnthropic
-    fake.HUMAN_PROMPT = "<HUMAN>"
-    fake.AI_PROMPT = "<AI>"
 
     modules_to_remove = [key for key in sys.modules if key.startswith("anthropic")]
     for key in modules_to_remove:
@@ -111,16 +135,8 @@ class TestAnthropicConstructor:
         instance = AnthropicLLM(api_key="k")
         assert instance.anthropic.base_url is None
 
-    def test_human_and_ai_prompts_set(self):
-        from application.llm.anthropic import AnthropicLLM
-
-        instance = AnthropicLLM(api_key="k")
-        assert instance.HUMAN_PROMPT == "<HUMAN>"
-        assert instance.AI_PROMPT == "<AI>"
-
-
 # ---------------------------------------------------------------------------
-# _raw_gen
+# _raw_gen — Messages API
 # ---------------------------------------------------------------------------
 
 
@@ -135,18 +151,20 @@ class TestRawGen:
     def test_prompt_contains_context_and_question(self, llm):
         msgs = [{"content": "my context"}, {"content": "my question"}]
         llm._raw_gen(llm, model="claude-2", messages=msgs)
-        prompt = llm.anthropic.completions.last_kwargs["prompt"]
-        assert "my context" in prompt
-        assert "my question" in prompt
+        convo = llm.anthropic.messages.last_create_kwargs["messages"]
+        # Roleless pair collapses into a single user turn with context+question.
+        combined = " ".join(part["content"] for part in convo)
+        assert "my context" in combined
+        assert "my question" in combined
 
     def test_max_tokens_passed(self, llm):
         msgs = [{"content": "c"}, {"content": "q"}]
         llm._raw_gen(llm, model="claude-2", messages=msgs, max_tokens=200)
-        assert llm.anthropic.completions.last_kwargs["max_tokens_to_sample"] == 200
+        assert llm.anthropic.messages.last_create_kwargs["max_tokens"] == 200
 
 
 # ---------------------------------------------------------------------------
-# _raw_gen_stream
+# _raw_gen_stream — Messages API
 # ---------------------------------------------------------------------------
 
 
@@ -162,16 +180,9 @@ class TestRawGenStream:
 
     def test_calls_close_on_response(self, llm):
         closed = {"called": False}
-        original = llm.anthropic.completions._stream_items
-
-        class ClosableList(list):
-            def close(self):
-                closed["called"] = True
-
-        closable = ClosableList(original)
-        llm.anthropic.completions._stream_items = closable
-        llm.anthropic.completions.create = lambda **kw: closable
-
+        llm.anthropic.messages._stream_on_close = lambda: closed.__setitem__(
+            "called", True
+        )
         msgs = [{"content": "c"}, {"content": "q"}]
         list(llm._raw_gen_stream(llm, model="claude", messages=msgs))
         assert closed["called"]
@@ -179,9 +190,14 @@ class TestRawGenStream:
     def test_prompt_format(self, llm):
         msgs = [{"content": "ctx"}, {"content": "q"}]
         list(llm._raw_gen_stream(llm, model="claude", messages=msgs))
-        prompt = llm.anthropic.completions.last_kwargs["prompt"]
-        assert prompt.startswith("<HUMAN>")
-        assert prompt.endswith("<AI>")
+        kwargs = llm.anthropic.messages.last_stream_kwargs
+        convo = kwargs["messages"]
+        # Roleless pair collapses into a single user turn; the older prompt
+        # string with <HUMAN>/<AI> sentinels is gone on the Messages API.
+        assert all(m["role"] in ("user", "assistant") for m in convo)
+        combined = " ".join(m["content"] for m in convo)
+        assert "ctx" in combined
+        assert "q" in combined
 
 
 # ---------------------------------------------------------------------------
