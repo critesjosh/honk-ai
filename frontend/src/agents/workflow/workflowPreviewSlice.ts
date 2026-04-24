@@ -408,7 +408,7 @@ export const workflowPreviewSlice = createSlice({
         state.status = 'failed';
         if (state.queries.length > 0) {
           state.queries[state.queries.length - 1].error =
-            'Something went wrong';
+            'The server may be busy — please try again in a moment.';
         }
       });
   },

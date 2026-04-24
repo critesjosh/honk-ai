@@ -60,10 +60,12 @@ EXPOSE 7091
 
 USER appuser
 
-# gthread with 2 workers × 8 threads → 16 concurrent requests. The workload
+# gthread with 4 workers × 8 threads → 32 concurrent requests. The workload
 # is I/O-bound (Postgres, OpenAI, pgvector retrieval), so threads fit well
 # and avoid the monkey-patching risk of gevent/eventlet. Celery runs
 # heavy/long work out-of-band — the Gunicorn process just serves API + SSE.
+# Bumped from 2 → 4 workers to better absorb spikes in concurrent widget
+# users; each /stream call holds a slot for 5–15s.
 #
 # --keep-alive 75: governs the Caddy→Gunicorn connection reuse window.
 # --graceful-timeout 30: drain in-flight SSE on SIGTERM. Requires a
@@ -73,7 +75,7 @@ USER appuser
 #   streams stay healthy because the SSE heartbeat yields every ~15s.
 CMD ["gunicorn", \
      "-k", "gthread", \
-     "-w", "2", \
+     "-w", "4", \
      "--threads", "8", \
      "--timeout", "120", \
      "--graceful-timeout", "30", \
