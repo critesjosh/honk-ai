@@ -25,3 +25,8 @@ jobs:
 
       - name: Run zizmor 🌈
         uses: zizmorcore/zizmor-action@71321a20a9ded102f6e9ce5718a2fcec2c4f70d8 # v0.5.2
+        with:
+          # Skip SARIF upload — Code Scanning requires GitHub Advanced Security
+          # on private repos, which this fork doesn't have. Findings still
+          # surface as annotations in the job log.
+          advanced-security: false
