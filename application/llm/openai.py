@@ -9,22 +9,6 @@ from application.llm.base import BaseLLM
 from application.storage.storage_creator import StorageCreator
 
 
-# Model-id prefixes whose default reasoning behavior makes them unusable
-# for low-latency streaming (they emit chain-of-thought tokens instead of
-# an answer). Extend as more such models ship.
-_REASONING_DISABLED_MODEL_PREFIXES = (
-    "x-ai/grok-4.1-fast",
-)
-
-
-def _should_disable_reasoning(model_id: str) -> bool:
-    if not isinstance(model_id, str):
-        return False
-    return any(
-        model_id.startswith(prefix) for prefix in _REASONING_DISABLED_MODEL_PREFIXES
-    )
-
-
 def _truncate_base64_for_logging(messages):
     """
     Create a copy of messages with base64 data truncated for readable logging.
@@ -259,15 +243,6 @@ class OpenAILLM(BaseLLM):
         if "max_tokens" in kwargs:
             kwargs["max_completion_tokens"] = kwargs.pop("max_tokens")
 
-        # For OpenRouter reasoning models that over-produce chain-of-thought
-        # (e.g. Grok 4.1 Fast emits 100% thought tokens by default), push
-        # reasoning off via the OpenRouter `reasoning.exclude` body field.
-        # OpenAI's Python SDK forwards `extra_body` into the request JSON.
-        if _should_disable_reasoning(model):
-            eb = kwargs.pop("extra_body", None) or {}
-            eb.setdefault("reasoning", {"exclude": True})
-            kwargs["extra_body"] = eb
-
         request_params = {
             "model": model,
             "messages": messages,
@@ -303,15 +278,6 @@ class OpenAILLM(BaseLLM):
         # Convert max_tokens to max_completion_tokens for newer models
         if "max_tokens" in kwargs:
             kwargs["max_completion_tokens"] = kwargs.pop("max_tokens")
-
-        # For OpenRouter reasoning models that over-produce chain-of-thought
-        # (e.g. Grok 4.1 Fast emits 100% thought tokens by default), push
-        # reasoning off via the OpenRouter `reasoning.exclude` body field.
-        # OpenAI's Python SDK forwards `extra_body` into the request JSON.
-        if _should_disable_reasoning(model):
-            eb = kwargs.pop("extra_body", None) or {}
-            eb.setdefault("reasoning", {"exclude": True})
-            kwargs["extra_body"] = eb
 
         request_params = {
             "model": model,
