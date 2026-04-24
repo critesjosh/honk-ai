@@ -13,10 +13,12 @@ Aztec-specific additions on top of upstream:
 - **Chunking filter** (`application/parser/chunking.py`) that discards chunks with `token_count < 50`.
 - **Path ignore list** (`application/parser/file/bulk.py` → `_IGNORED_PATH_SEGMENTS`) that skips any file under a `fixtures/`, `dumps/`, `node_modules/`, `target/`, `dist/`, `build/`, `_out/`, `__pycache__/` or `.git/` directory during ingest. Prevents blockchain-state test fixtures and build artefacts from burning embedding credits. Add new deny-list directory names here.
 - **Custom settings**: `MCP_PROVISIONING_KEY`, `AZTEC_SOURCE_IDS`, `CORS_ALLOWED_ORIGINS`, `EMBEDDINGS_DIMENSION`, `RAG_MAX_DOC_TOKENS`, `VITE_DISABLE_AGENT_EDIT`.
-- **RAG context cap** (`settings.RAG_MAX_DOC_TOKENS`, default 15000, set to 6000 in prod `.env`) — caps `calculate_doc_token_budget()` in `utils.py`. Upstream defaults to the full model window (~198k for Claude Sonnet 4.6), which makes every answer slow; the cap keeps generation <15s while still well-grounded.
+- **RAG context cap** (`settings.RAG_MAX_DOC_TOKENS`, default 6000, set to **10000** in prod `.env`) — caps `calculate_doc_token_budget()` in `utils.py`. Upstream defaults to the full model window (~198k for Claude Sonnet 4.6), which makes every answer slow; the cap keeps generation well under the 15s ceiling while still grounded. Bumped from 6000 → 10000 when the corpus grew to 12 sources to reduce late-source starvation (ClassicRAG iterates sources FIFO and breaks when budget fills, so later sources contribute 0 docs under tight budgets).
 - **CORS glob patterns** (`application/app.py:after_request`) — `CORS_ALLOWED_ORIGINS` supports `fnmatch`-style globs. Used for Netlify preview URLs (`https://deploy-preview-*--aztec-docs-dev.netlify.app`) and localhost dev (`http://localhost:*`).
 - **Widget source rewriting** (`api/answer/routes/base.py:_aztec_source_url`) — remaps corpus paths in the emitted `{type: "source"}` SSE frame into public URLs. Developer Docs → `https://docs.aztec.network/developers/docs/...`; everything else → GitHub at `v4.2.0`. Sources capped at 5 (`_MAX_SOURCES_EMITTED`).
 - **Agent sources_list ordering fix** (`stream_processor._get_data_from_api_key`) — the upstream code dropped `agent.source_id` (primary) when `extra_source_ids` existed. Our version prepends the primary to `sources_list` so it's searched first. **Bug pattern**: editing an agent via the DocsGPT UI can re-clear `source_id` and rewrite `extra_source_ids` in a default order (often with E2E tests first) and can also swap `prompt_id`. If retrieval degrades after a UI edit, re-apply the canonical order + prompt via SQL. Prefer `VITE_DISABLE_AGENT_EDIT=true` in prod.
+
+  **Canonical source order** (as of 2026-04-24, 12 sources total, developer-question-weighted): Dev Docs → Aztec.nr Framework → Noir Language Docs → Example Contracts → aztec.js SDK → TypeScript API → Noir stdlib → CLI → Network Docs → E2E Tests → Protocol Circuits → L1 Contracts. Source-of-truth is the `AZTEC_SOURCE_IDS` comment block in `.env`. Note: `AZTEC_SOURCE_IDS` is only consumed at **agent creation** time (`/api/internal/create_mcp_key`) — reordering `.env` does NOT affect existing agents; they must be updated via `UPDATE agents SET source_id=…, extra_source_ids=ARRAY[…]::uuid[]`.
 - **SSE heartbeat** (`api/answer/routes/base.py:_iter_with_heartbeat`) — emits `: ping\n\n` every 15s on silent generator gaps so Cloudflare/Caddy don't idle-close long answers.
 - **SSE `history` shape tolerance** (`stream_processor._load_conversation_history`) — accepts both a JSON-encoded string (Discord bot) and a native list (widget / spec-compliant clients). Upstream only accepted the string.
 - **Gunicorn gthread workers** (`application/Dockerfile`) — 2×8 with `--timeout 120 --graceful-timeout 30 --keep-alive 75`. Paired with `stop_grace_period: 40s` on the backend compose service so SIGTERM drains SSE streams cleanly.
@@ -99,7 +101,8 @@ Production config (in `.env`, shared by both composes):
 - `LLM_PROVIDER=openrouter`, `LLM_NAME=z-ai/glm-4.6` — default model served by both composes
 - `POSTGRES_PASSWORD=docsgpt` (TODO: rotate to `openssl rand -hex 32` before opening to real users; the `.env` comment flags this)
 - `EMBEDDINGS_*` via OpenAI `text-embedding-3-large` (3072-dim)
-- `AZTEC_SOURCE_IDS` points at all 9 v4.2.0 corpora (see "Data sources" above)
+- `AZTEC_SOURCE_IDS` points at all 10 v4.2.0 corpora (see "Data sources" above)
+- `UPLOAD_FOLDER=/app/application/inputs` — MUST be absolute; the `uploads` named volume is mounted there, but `LocalStorage` computes its `base_dir` as `/app`, so a relative `inputs` resolves to an unmounted `/app/inputs` and every `POST /api/upload` fails with `PermissionError` on `os.makedirs`.
 
 ### Critical gotcha — source edits don't cross composes
 
@@ -137,6 +140,9 @@ git -C ../aztec-packages worktree add --detach /tmp/aztec-v4.2.0 v4.2.0
 | Aztec CLI v4.2.0 | `yarn-project/cli/src/` + `yarn-project/cli-wallet/src/` | .ts → .txt | 93 |
 | Aztec E2E Tests v4.2.0 | `yarn-project/end-to-end/src/` | .ts → .txt | 245 |
 | Aztec L1 Contracts v4.2.0 | `l1-contracts/` | .sol → .txt | 347 |
+| Aztec TypeScript API v4.2.0 | `docs/static/typescript-api/testnet/` | .md .txt | 10 |
+| Noir Language Docs v4.2.0 | `noir-lang/noir` @ `842974fcf…`: `docs/docs/` | .md .mdx | 84 |
+| Noir stdlib v4.2.0 | `noir-lang/noir` @ `842974fcf…`: `noir_stdlib/src/` | .nr → .txt | 49 |
 
 ### Why `.txt` rename?
 The backend's `SUPPORTED_SOURCE_EXTENSIONS` allowlist (in `application/parser/file/constants.py`) accepts `.md .mdx .rst .pdf .txt .docx .csv .epub .html .json .xlsx .pptx` plus a few media types. Source-code extensions (`.nr .ts .sol .hpp .cpp`) are silently skipped. The ingest scripts zip source files with a `.txt` suffix appended — e.g. `Token.nr` → `aztec-nr/token/Token.nr.txt` — so the ingest pipeline indexes them. The original path is preserved in each chunk's `metadata.source`.
