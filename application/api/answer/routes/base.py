@@ -48,6 +48,11 @@ _AZTEC_DOCS_BASE = "https://docs.aztec.network/developers/docs"
 _AZTEC_GITHUB_BASE = (
     "https://github.com/AztecProtocol/aztec-packages/blob/v4.2.0"
 )
+# Noir is a separate repo; aztec-packages v4.2.0 pins it at this commit via
+# the noir/noir-repo submodule. Update this when bumping Aztec versions.
+_NOIR_GITHUB_BASE = (
+    "https://github.com/noir-lang/noir/blob/842974fcf034b0a652631e69fc24f92f9ddd1d37"
+)
 
 # Corpus prefix → GitHub repo prefix. First match wins, so put the more
 # specific prefixes before their catch-alls.
@@ -60,6 +65,10 @@ _SOURCE_TO_REPO_PREFIX: List[Tuple[str, str]] = [
     ("noir-contracts/",           "noir-projects/noir-contracts/contracts/"),
     ("noir-protocol-circuits/",   "noir-projects/noir-protocol-circuits/"),
     ("l1-contracts/",             "l1-contracts/"),
+    # Auto-generated TypeScript API reference. At the v4.2.0 tag these docs
+    # live under docs/static/typescript-api/testnet/ (the folder was renamed
+    # to mainnet/ on a later release).
+    ("typescript-api/",           "docs/static/typescript-api/testnet/"),
     # Network Docs live under docs/network_versioned_docs in the repo; they
     # all sit under the `operators/` subdirectory in the versioned tree.
     ("version-v4.2.0/operators/", "docs/network_versioned_docs/version-v4.2.0/operators/"),
@@ -86,6 +95,17 @@ def _aztec_source_url(source_path: str) -> str:
                 rest = rest[: -len(ext)]
                 break
         return f"{_AZTEC_DOCS_BASE}/{rest}"
+
+    # Noir language docs + stdlib live in a different repo (noir-lang/noir),
+    # pinned to a specific commit via aztec-packages' submodule.
+    if source_path.startswith("noir-docs/"):
+        rest = source_path[len("noir-docs/"):]
+        return f"{_NOIR_GITHUB_BASE}/docs/docs/{rest}"
+    if source_path.startswith("noir-stdlib/"):
+        rest = source_path[len("noir-stdlib/"):]
+        if rest.endswith(".txt"):
+            rest = rest[:-4]
+        return f"{_NOIR_GITHUB_BASE}/noir_stdlib/src/{rest}"
 
     # Code / non-developer-docs → GitHub blob at v4.2.0
     for corpus_prefix, repo_prefix in _SOURCE_TO_REPO_PREFIX:
