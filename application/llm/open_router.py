@@ -4,11 +4,12 @@ from application.llm.openai import OpenAILLM
 OPEN_ROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 
 
-# Model-id prefixes whose default reasoning behavior makes them unusable
-# for low-latency streaming — they emit 100% chain-of-thought tokens and
-# zero answer content. Extend this tuple when you encounter another one.
+# Model-id prefixes whose default reasoning behavior wastes a large
+# fraction of the stream on chain-of-thought tokens (and in some cases
+# 100% of it). Extend this tuple when you encounter another one.
 _REASONING_DISABLED_MODEL_PREFIXES = (
     "x-ai/grok-4.1-fast",
+    "z-ai/glm-4.6",
 )
 
 
