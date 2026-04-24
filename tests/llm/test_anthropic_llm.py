@@ -66,13 +66,14 @@ def patch_anthropic(monkeypatch):
         del sys.modules["application.llm.anthropic"]
 
 
-def test_anthropic_raw_gen_builds_prompt_and_returns_completion():
+def test_anthropic_raw_gen_splits_system_and_returns_completion():
     from application.llm.anthropic import AnthropicLLM
 
     llm = AnthropicLLM(api_key="k")
     msgs = [
-        {"content": "ctx"},
-        {"content": "q"},
+        {"role": "system", "content": "be helpful"},
+        {"role": "user", "content": "ping"},
+        {"role": "assistant", "content": "pong"},
     ]
     out = llm._raw_gen(
         llm, model="claude-2", messages=msgs, stream=False, max_tokens=55
@@ -81,10 +82,23 @@ def test_anthropic_raw_gen_builds_prompt_and_returns_completion():
     last = llm.anthropic.messages.last_create_kwargs
     assert last["model"] == "claude-2"
     assert last["max_tokens"] == 55
-    convo = last["messages"]
-    assert all(m["role"] in ("user", "assistant") for m in convo)
-    combined = " ".join(m["content"] for m in convo)
-    assert "### Context" in combined and "### Question" in combined
+    assert last["system"] == "be helpful"
+    assert last["messages"] == [
+        {"role": "user", "content": "ping"},
+        {"role": "assistant", "content": "pong"},
+    ]
+
+
+def test_anthropic_raw_gen_roleless_pair_uses_fallback_shape():
+    from application.llm.anthropic import AnthropicLLM
+
+    llm = AnthropicLLM(api_key="k")
+    msgs = [{"content": "ctx"}, {"content": "q"}]
+    llm._raw_gen(llm, model="claude-2", messages=msgs, stream=False, max_tokens=55)
+    convo = llm.anthropic.messages.last_create_kwargs["messages"]
+    assert len(convo) == 1 and convo[0]["role"] == "user"
+    assert "### Context" in convo[0]["content"]
+    assert "### Question" in convo[0]["content"]
 
 
 def test_anthropic_raw_gen_stream_yields_chunks():
@@ -92,8 +106,8 @@ def test_anthropic_raw_gen_stream_yields_chunks():
 
     llm = AnthropicLLM(api_key="k")
     msgs = [
-        {"content": "ctx"},
-        {"content": "q"},
+        {"role": "system", "content": "s"},
+        {"role": "user", "content": "q"},
     ]
     gen = llm._raw_gen_stream(
         llm, model="claude", messages=msgs, stream=True, max_tokens=10

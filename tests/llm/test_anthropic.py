@@ -144,21 +144,61 @@ class TestAnthropicConstructor:
 class TestRawGen:
 
     def test_returns_completion(self, llm):
-        msgs = [{"content": "context"}, {"content": "question"}]
+        msgs = [
+            {"role": "system", "content": "s"},
+            {"role": "user", "content": "q"},
+        ]
         result = llm._raw_gen(llm, model="claude-2", messages=msgs)
         assert result == "final"
 
-    def test_prompt_contains_context_and_question(self, llm):
+    def test_system_message_peeled_to_top_level(self, llm):
+        # _split_messages should lift the first system turn into system=
+        # and keep only user/assistant turns in messages=.
+        msgs = [
+            {"role": "system", "content": "you are helpful"},
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "hello"},
+            {"role": "user", "content": "more"},
+        ]
+        llm._raw_gen(llm, model="claude-2", messages=msgs)
+        kwargs = llm.anthropic.messages.last_create_kwargs
+        assert kwargs["system"] == "you are helpful"
+        assert kwargs["messages"] == [
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "hello"},
+            {"role": "user", "content": "more"},
+        ]
+
+    def test_no_system_message_sends_empty_system(self, llm):
+        msgs = [
+            {"role": "user", "content": "q1"},
+            {"role": "assistant", "content": "a1"},
+        ]
+        llm._raw_gen(llm, model="claude-2", messages=msgs)
+        kwargs = llm.anthropic.messages.last_create_kwargs
+        assert kwargs["system"] == ""
+        assert kwargs["messages"] == msgs
+
+    def test_roleless_pair_hits_fallback_shape(self, llm):
+        # Legacy callers pass a roleless context+question pair. The fallback
+        # must collapse those into exactly one user turn whose content
+        # carries both the Context and Question sections.
         msgs = [{"content": "my context"}, {"content": "my question"}]
         llm._raw_gen(llm, model="claude-2", messages=msgs)
         convo = llm.anthropic.messages.last_create_kwargs["messages"]
-        # Roleless pair collapses into a single user turn with context+question.
-        combined = " ".join(part["content"] for part in convo)
-        assert "my context" in combined
-        assert "my question" in combined
+        assert len(convo) == 1
+        assert convo[0]["role"] == "user"
+        content = convo[0]["content"]
+        assert "### Context" in content
+        assert "my context" in content
+        assert "### Question" in content
+        assert "my question" in content
 
     def test_max_tokens_passed(self, llm):
-        msgs = [{"content": "c"}, {"content": "q"}]
+        msgs = [
+            {"role": "system", "content": "s"},
+            {"role": "user", "content": "q"},
+        ]
         llm._raw_gen(llm, model="claude-2", messages=msgs, max_tokens=200)
         assert llm.anthropic.messages.last_create_kwargs["max_tokens"] == 200
 
@@ -172,7 +212,10 @@ class TestRawGen:
 class TestRawGenStream:
 
     def test_yields_all_completions(self, llm):
-        msgs = [{"content": "c"}, {"content": "q"}]
+        msgs = [
+            {"role": "system", "content": "s"},
+            {"role": "user", "content": "q"},
+        ]
         chunks = list(
             llm._raw_gen_stream(llm, model="claude", messages=msgs, max_tokens=10)
         )
@@ -183,21 +226,34 @@ class TestRawGenStream:
         llm.anthropic.messages._stream_on_close = lambda: closed.__setitem__(
             "called", True
         )
-        msgs = [{"content": "c"}, {"content": "q"}]
+        msgs = [
+            {"role": "system", "content": "s"},
+            {"role": "user", "content": "q"},
+        ]
         list(llm._raw_gen_stream(llm, model="claude", messages=msgs))
         assert closed["called"]
 
-    def test_prompt_format(self, llm):
-        msgs = [{"content": "ctx"}, {"content": "q"}]
+    def test_stream_splits_system_and_convo(self, llm):
+        msgs = [
+            {"role": "system", "content": "you are helpful"},
+            {"role": "user", "content": "hi"},
+        ]
         list(llm._raw_gen_stream(llm, model="claude", messages=msgs))
         kwargs = llm.anthropic.messages.last_stream_kwargs
-        convo = kwargs["messages"]
-        # Roleless pair collapses into a single user turn; the older prompt
-        # string with <HUMAN>/<AI> sentinels is gone on the Messages API.
-        assert all(m["role"] in ("user", "assistant") for m in convo)
-        combined = " ".join(m["content"] for m in convo)
-        assert "ctx" in combined
-        assert "q" in combined
+        assert kwargs["system"] == "you are helpful"
+        assert kwargs["messages"] == [{"role": "user", "content": "hi"}]
+
+    def test_roleless_pair_hits_fallback_shape(self, llm):
+        # Fallback branch: roleless context+question collapsed into a
+        # single user turn with the Context/Question section headers.
+        msgs = [{"content": "ctx"}, {"content": "q"}]
+        list(llm._raw_gen_stream(llm, model="claude", messages=msgs))
+        convo = llm.anthropic.messages.last_stream_kwargs["messages"]
+        assert len(convo) == 1
+        assert convo[0]["role"] == "user"
+        content = convo[0]["content"]
+        assert "### Context" in content and "ctx" in content
+        assert "### Question" in content and "q" in content
 
 
 # ---------------------------------------------------------------------------

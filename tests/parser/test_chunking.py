@@ -191,7 +191,7 @@ class TestClassicChunk:
         result = chunker.classic_chunk([])
         assert result == []
 
-    def test_very_small_doc_below_min_is_discarded(self):
+    def test_below_stub_floor_is_discarded(self):
         # Aztec fork drops stub chunks below 50 tokens outright (see
         # application/parser/chunking.py) to stop blockchain-state fixtures
         # from burning embedding credits.
@@ -201,8 +201,9 @@ class TestClassicChunk:
         result = chunker.classic_chunk([doc])
         assert result == []
 
-    def test_doc_between_stub_floor_and_min_is_kept(self):
-        # 50 <= token_count < min_tokens: kept as-is.
+    def test_between_stub_floor_and_min_is_kept(self):
+        # 50 <= token_count < min_tokens: kept as-is (above the fork's
+        # stub floor but below the upstream min_tokens band).
         chunker = Chunker(max_tokens=2000, min_tokens=500)
         doc = Document(text="word " * 80, doc_id="d1")
 
@@ -280,7 +281,9 @@ class TestChunkerIntegration:
         result = chunker.chunk(docs)
         assert len(result) >= 3
         doc_ids = [d.doc_id for d in result]
+        # Small and medium both land in the middle band → kept whole.
         assert "small" in doc_ids
+        assert "medium" in doc_ids
         # Large document got split into multiple parts.
         assert any(did.startswith("large-") for did in doc_ids)
 

@@ -111,8 +111,16 @@ class TestAfterRequest:
 
     @pytest.mark.unit
     def test_no_cors_headers_when_unset(self, client):
-        response = client.get("/api/health")
+        # Patch settings explicitly — otherwise an ambient
+        # CORS_ALLOWED_ORIGINS in the pytest env would flip the branch.
+        # Unset means after_request returns before emitting any CORS
+        # headers, not just the origin one.
+        with patch("application.app.settings") as mock_settings:
+            mock_settings.CORS_ALLOWED_ORIGINS = ""
+            response = client.get("/api/health")
         assert "Access-Control-Allow-Origin" not in response.headers
+        assert "Access-Control-Allow-Headers" not in response.headers
+        assert "Access-Control-Allow-Methods" not in response.headers
 
     @pytest.mark.unit
     def test_wildcard_emits_star_and_methods(self, client):
