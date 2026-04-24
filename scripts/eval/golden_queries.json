@@ -1,0 +1,126 @@
+[
+  {
+    "tag": "noir-stdlib-poseidon2",
+    "query": "How do I use std::hash::poseidon2 in Noir?",
+    "expected_source_prefixes": ["noir-stdlib/", "noir-docs/"],
+    "banned_identifiers": ["std::hash::poseidon2_hash", "UNCONSTRAINED_ONCHAIN"],
+    "max_response_time_s": 15,
+    "min_distinct_sources": 3
+  },
+  {
+    "tag": "noir-lang-unconstrained",
+    "query": "What is the difference between a proving function and an unconstrained function in Noir?",
+    "expected_source_prefixes": ["noir-docs/"],
+    "banned_identifiers": ["UNCONSTRAINED_ONCHAIN"],
+    "max_response_time_s": 15,
+    "min_distinct_sources": 3
+  },
+  {
+    "tag": "typescript-api-pxe",
+    "query": "How do I create a PXE client with aztec.js?",
+    "expected_source_prefixes": ["typescript-api/"],
+    "banned_identifiers": ["UNCONSTRAINED_ONCHAIN"],
+    "max_response_time_s": 15,
+    "min_distinct_sources": 3
+  },
+  {
+    "tag": "aztec-nr-private-storage",
+    "query": "How do I write a private function in an Aztec contract that updates storage?",
+    "expected_source_prefixes": ["version-v4.2.0/"],
+    "banned_identifiers": ["UNCONSTRAINED_ONCHAIN", "MessageDelivery.OFFCHAIN_CONSTRAINED"],
+    "max_response_time_s": 15,
+    "min_distinct_sources": 2
+  },
+  {
+    "tag": "example-token-contract",
+    "query": "Show me an example of a simple Aztec token contract.",
+    "expected_source_prefixes": ["noir-contracts/"],
+    "banned_identifiers": [],
+    "max_response_time_s": 15,
+    "min_distinct_sources": 2
+  },
+  {
+    "tag": "noir-boundedvec",
+    "query": "How does BoundedVec work in Noir?",
+    "expected_source_prefixes": ["noir-docs/"],
+    "banned_identifiers": [],
+    "max_response_time_s": 15,
+    "min_distinct_sources": 2
+  },
+  {
+    "tag": "cli-deploy",
+    "query": "How do I deploy a contract using the Aztec CLI?",
+    "expected_source_prefixes": ["version-v4.2.0/"],
+    "banned_identifiers": [],
+    "max_response_time_s": 15,
+    "min_distinct_sources": 2
+  },
+  {
+    "tag": "aztec-js-wallet-api",
+    "query": "What wallet API methods are available in aztec.js?",
+    "expected_source_prefixes": ["typescript-api/", "aztec.js/"],
+    "banned_identifiers": [],
+    "max_response_time_s": 15,
+    "min_distinct_sources": 3
+  },
+  {
+    "tag": "note-delivery-modes",
+    "query": "What are the different MessageDelivery modes in Aztec?",
+    "expected_source_prefixes": ["version-v4.2.0/"],
+    "banned_identifiers": ["UNCONSTRAINED_ONCHAIN", "CONSTRAINED_OFFCHAIN"],
+    "max_response_time_s": 15,
+    "min_distinct_sources": 2
+  },
+  {
+    "tag": "noir-format-strings",
+    "query": "How do format strings work in Noir?",
+    "expected_source_prefixes": ["noir-docs/"],
+    "banned_identifiers": [],
+    "max_response_time_s": 15,
+    "min_distinct_sources": 2
+  },
+  {
+    "tag": "aztec-state-management",
+    "query": "What is a note in Aztec and how does it differ from public state?",
+    "expected_source_prefixes": ["version-v4.2.0/"],
+    "banned_identifiers": [],
+    "max_response_time_s": 15,
+    "min_distinct_sources": 2
+  },
+  {
+    "tag": "noir-stdlib-option",
+    "query": "How do I use the Option type in Noir?",
+    "expected_source_prefixes": ["noir-stdlib/", "noir-docs/"],
+    "banned_identifiers": [],
+    "max_response_time_s": 15,
+    "min_distinct_sources": 2
+  },
+  {
+    "tag": "cross-source-private-tx",
+    "query": "Walk me through sending a private transaction from aztec.js including what happens in the contract.",
+    "expected_source_prefixes": ["version-v4.2.0/"],
+    "banned_identifiers": ["UNCONSTRAINED_ONCHAIN"],
+    "max_response_time_s": 30,
+    "min_distinct_sources": 3
+  },
+  {
+    "tag": "multi-turn-follow-up",
+    "query": "How does it differ from public state?",
+    "history": [
+      {"prompt": "What is a note in Aztec?", "response": "A note in Aztec is a chunk of private data..."}
+    ],
+    "expected_source_prefixes": ["version-v4.2.0/"],
+    "banned_identifiers": [],
+    "max_response_time_s": 15,
+    "min_distinct_sources": 2,
+    "notes": "Tests rephrase/multi-turn — the follow-up needs conversation context to retrieve well."
+  },
+  {
+    "tag": "l1-contracts-rollup",
+    "query": "How does the Aztec rollup contract work on L1?",
+    "expected_source_prefixes": ["l1-contracts/"],
+    "banned_identifiers": [],
+    "max_response_time_s": 15,
+    "min_distinct_sources": 1
+  }
+]

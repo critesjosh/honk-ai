@@ -35,7 +35,7 @@ _HEARTBEAT_INTERVAL_SECONDS = 15.0
 
 # Cap sources emitted to the client. The React widget already shows 3 with
 # a "+ N more" toggle, and long source lists push the answer off-screen.
-_MAX_SOURCES_EMITTED = 5
+_MAX_SOURCES_EMITTED = 10
 
 # ---- Source URL mapping (Aztec fork) ------------------------------------
 # Corpus paths stored in `metadata.source` are relative to the ingest zip.
@@ -374,21 +374,23 @@ class BaseAnswerResource:
                         yield f"data: {data}\n\n"
                 elif "sources" in line:
                     truncated_sources = []
+                    seen_urls: set = set()
                     source_log_docs = line["sources"]
-                    # Cap at top N so the client doesn't drown in citations.
-                    for source in line["sources"][:_MAX_SOURCES_EMITTED]:
+                    for source in line["sources"]:
+                        if len(truncated_sources) >= _MAX_SOURCES_EMITTED:
+                            break
                         truncated_source = source.copy()
                         if "text" in truncated_source:
                             truncated_source["text"] = (
                                 truncated_source["text"][:100].strip() + "..."
                             )
-                        # Rewrite the in-corpus relative path to a public URL
-                        # so the widget's <a href={source.source}> resolves.
                         raw_path = truncated_source.get("source")
                         if raw_path:
-                            truncated_source["source"] = _aztec_source_url(
-                                raw_path
-                            )
+                            public_url = _aztec_source_url(raw_path)
+                            if public_url in seen_urls:
+                                continue
+                            seen_urls.add(public_url)
+                            truncated_source["source"] = public_url
                         truncated_sources.append(truncated_source)
                     if truncated_sources:
                         data = json.dumps(

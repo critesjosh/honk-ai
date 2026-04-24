@@ -20,7 +20,7 @@ class ClassicRAG(BaseRetriever):
         user_api_key=None,
         agent_id=None,
         llm_name=settings.LLM_PROVIDER,
-        api_key=settings.API_KEY,
+        api_key=None,
         decoded_token=None,
     ):
         self.original_question = source.get("question", "")
