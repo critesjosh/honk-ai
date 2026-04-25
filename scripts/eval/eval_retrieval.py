@@ -177,7 +177,19 @@ def run_stream_eval(api_key: str, base_url: str = "http://localhost:7091"):
         has_table = "|---|" in answer or "| ---" in answer
         table_pass = not has_table
 
-        passed = banned_pass and time_pass and content_pass and table_pass
+        # Check source diversity (same prefixes as retriever mode)
+        min_sources = q.get("min_distinct_sources", 1)
+        source_titles = set()
+        for s in sources:
+            src = s.get("source") or s.get("title") or ""
+            if src:
+                source_titles.add(src)
+        diversity_pass = len(source_titles) >= min_sources
+
+        passed = (
+            banned_pass and time_pass and content_pass
+            and table_pass and diversity_pass
+        )
 
         result = {
             "tag": tag,
@@ -185,9 +197,11 @@ def run_stream_eval(api_key: str, base_url: str = "http://localhost:7091"):
             "elapsed_s": round(elapsed, 2),
             "answer_len": len(answer),
             "sources_count": len(sources),
+            "distinct_sources": len(source_titles),
             "found_banned": found_banned,
             "has_table": has_table,
             "time_pass": time_pass,
+            "diversity_pass": diversity_pass,
         }
         results.append(result)
 
@@ -201,6 +215,8 @@ def run_stream_eval(api_key: str, base_url: str = "http://localhost:7091"):
             flags.append(f"slow:{elapsed:.1f}s")
         if not content_pass:
             flags.append("empty!")
+        if not diversity_pass:
+            flags.append(f"low-diversity:{len(source_titles)}<{min_sources}")
         flag_str = f" ({', '.join(flags)})" if flags else ""
         print(f"  [{status}] {tag}: {elapsed:.1f}s, {len(answer)} chars, {len(sources)} sources{flag_str}")
 
