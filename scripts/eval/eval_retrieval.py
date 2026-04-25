@@ -13,7 +13,6 @@ Usage (from inside the backend container or with PYTHONPATH=/app):
 
 import argparse
 import json
-import os
 import sys
 import time
 from collections import Counter
