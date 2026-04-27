@@ -208,9 +208,16 @@ def create_mcp_key():
     try:
         with db_session() as conn:
             if candidate_uuids:
+                # AZTEC_SOURCE_IDS is the operator's declaration of
+                # public corpora. Every UUID listed there must be marked
+                # ``is_public=TRUE`` — refusing to provision against a
+                # private source fails loudly at config time rather than
+                # silently leaking access. See 0004_sources_is_public.
                 existing = conn.execute(
                     text(
-                        "SELECT id FROM sources WHERE id = ANY(CAST(:ids AS uuid[]))"
+                        "SELECT id FROM sources "
+                        "WHERE id = ANY(CAST(:ids AS uuid[])) "
+                        "  AND is_public = TRUE"
                     ),
                     {"ids": candidate_uuids},
                 )
@@ -228,7 +235,9 @@ def create_mcp_key():
 
             missing = set(candidate_uuids) - set(valid_source_ids)
             for sid in missing:
-                logger.warning(f"Source not found for UUID: {sid}")
+                logger.warning(
+                    f"Source not found or not is_public for UUID: {sid}"
+                )
 
             if not valid_source_ids:
                 logger.error("No valid Aztec sources found")

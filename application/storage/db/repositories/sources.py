@@ -159,48 +159,41 @@ class SourcesRepository:
                 return row
         return self.get_by_legacy_id(source_id, user_id)
 
-    def get_for_aztec_mcp_agent(
-        self, source_id: str, agent_id: str,
-    ) -> Optional[dict]:
-        """Resolve a source visible to a verified Aztec MCP agent.
+    def list_visible_by_ids(
+        self, user_id: str, ids: list[str],
+    ) -> dict[str, dict]:
+        """Resolve a batch of source UUIDs visible to ``user_id``.
 
-        Step-1 hot-fix for the source-ownership mismatch on the Discord MCP
-        path: sources are ingested as ``user_id='local'`` but Discord MCP
-        agents have ``user_id='discord:<id>'``, so the standard
-        ``get(sid, user_id)`` returns None for every source and retrieval
-        is silently empty.
+        Returns a ``{uuid_str: row}`` map for the subset of ``ids`` that
+        are either owned by ``user_id`` or marked ``is_public=TRUE``.
+        Missing IDs in the return map indicate denial — callers decide
+        whether that's a 403 (untrusted request input) or a silent skip
+        (curated agent list) based on their context.
 
-        Trust boundary: the agent row is created by
-        ``/api/internal/create_mcp_key`` which is gated on
-        ``MCP_PROVISIONING_KEY`` and only writes a fixed set of source UUIDs
-        (validated against the configured ``AZTEC_SOURCE_IDS``). The source
-        UUIDs persisted on that row are therefore authoritative for the
-        purposes of this lookup. This method requires
-        ``mcp_purpose='aztec_mcp'`` so it can never be used to read a
-        source via a non-MCP agent — even if a future bug in agent
-        create/update lets a user attach a foreign source UUID, that path
-        won't enter this resolver.
+        One SQL query regardless of input size — never call this in a
+        loop. The 12-source Aztec corpus would otherwise issue 12
+        SELECT round-trips per request before retrieval even started.
 
-        Step 3 of the source-visibility plan replaces this with a batched
-        ``list_visible_by_ids`` resolver that honors a generic
-        ``sources.is_public`` flag. Until that ships, this method is the
-        narrow exception.
+        Replaces the step-1 ``get_for_aztec_mcp_agent`` narrow exception:
+        Aztec corpora are now marked ``is_public=TRUE`` (see
+        ``0004_sources_is_public``) and any user — Discord MCP agent or
+        otherwise — can read them through the same generic resolver.
+
+        Both UUID strings and ``uuid.UUID`` objects in ``ids`` are
+        accepted; the return map is keyed by ``str(row['id'])``.
         """
+        if not ids:
+            return {}
+        id_strs = [str(x) for x in ids]
         result = self._conn.execute(
             text(
-                "SELECT s.* FROM sources s "
-                "JOIN agents a ON a.id = CAST(:agent_id AS uuid) "
-                "  AND a.mcp_purpose = 'aztec_mcp' "
-                "  AND a.mcp_provider IS NOT NULL "
-                "WHERE s.id = CAST(:id AS uuid) "
-                "  AND s.id = ANY( "
-                "    ARRAY[a.source_id] || COALESCE(a.extra_source_ids, '{}'::uuid[]) "
-                "  )"
+                "SELECT * FROM sources "
+                "WHERE id = ANY(CAST(:ids AS uuid[])) "
+                "  AND (user_id = :user_id OR is_public = TRUE)"
             ),
-            {"id": source_id, "agent_id": agent_id},
+            {"ids": id_strs, "user_id": user_id},
         )
-        row = result.fetchone()
-        return row_to_dict(row) if row is not None else None
+        return {str(row.id): row_to_dict(row) for row in result.fetchall()}
 
     def list_for_user(
         self,
