@@ -386,28 +386,90 @@ class TestConfigureSource:
 
     def test_request_active_docs_used(self):
         """Direct active_docs from a JWT user is now authorized via
-        list_visible_by_ids before reaching ``self.source``. Mock the
-        resolver so this stays a unit test; integration coverage lives
-        in the repo + endpoint tests.
+        SourceVisibilityService before reaching ``self.source``. Mock the
+        service so this stays a unit test; integration coverage lives in
+        the service + endpoint tests.
         """
         from unittest.mock import MagicMock, patch
         from application.api.answer.services.stream_processor import (
             StreamProcessor,
         )
+        from application.services.source_visibility import ResolvedSources
 
         with patch(
             "application.api.answer.services.stream_processor.db_readonly"
         ) as mock_db_ro, patch(
-            "application.api.answer.services.stream_processor.SourcesRepository"
-        ) as MockSrcRepo:
+            "application.api.answer.services.stream_processor.SourceVisibilityService"
+        ) as MockSvc:
             mock_db_ro.return_value.__enter__ = lambda self: MagicMock()
             mock_db_ro.return_value.__exit__ = lambda *a: None
-            MockSrcRepo.return_value.list_visible_by_ids.return_value = {
-                "abc": {"id": "abc"}
-            }
+            MockSvc.return_value.resolve.return_value = ResolvedSources(
+                visible=["abc"], rows={"abc": {"id": "abc"}},
+                missing=[], invalid=[],
+            )
             sp = StreamProcessor({"active_docs": "abc"}, {"sub": "u"})
             sp._configure_source()
         assert sp.source == {"active_docs": "abc"}
+
+    def test_request_active_docs_malformed_uuid_raises_value_error(self):
+        """Bug fix: malformed active_docs UUID used to fall through to
+        Postgres ``CAST(:ids AS uuid[])`` and raise a generic cast error
+        which the route translated to 400 'Malformed request body' via
+        the broad except. Now SourceVisibilityService partitions
+        malformed inputs into ``invalid`` and we raise ValueError with
+        a specific message before any SQL runs. The route's existing
+        ValueError branch keeps the 400 response.
+        """
+        import pytest as _pytest
+        from unittest.mock import MagicMock, patch
+        from application.api.answer.services.stream_processor import (
+            StreamProcessor,
+        )
+        from application.services.source_visibility import ResolvedSources
+
+        with patch(
+            "application.api.answer.services.stream_processor.db_readonly"
+        ) as mock_db_ro, patch(
+            "application.api.answer.services.stream_processor.SourceVisibilityService"
+        ) as MockSvc:
+            mock_db_ro.return_value.__enter__ = lambda self: MagicMock()
+            mock_db_ro.return_value.__exit__ = lambda *a: None
+            MockSvc.return_value.resolve.return_value = ResolvedSources(
+                visible=[], rows={}, missing=[], invalid=["not-a-uuid"],
+            )
+            sp = StreamProcessor(
+                {"active_docs": ["not-a-uuid"]}, {"sub": "u"},
+            )
+            with _pytest.raises(ValueError, match="Malformed source ID"):
+                sp._configure_source()
+
+    def test_request_active_docs_invisible_raises_permission_error(self):
+        """Well-formed UUID for a private source the user can't see —
+        PermissionError -> 403 at the route layer."""
+        import pytest as _pytest
+        from unittest.mock import MagicMock, patch
+        from application.api.answer.services.stream_processor import (
+            StreamProcessor,
+        )
+        from application.services.source_visibility import ResolvedSources
+
+        with patch(
+            "application.api.answer.services.stream_processor.db_readonly"
+        ) as mock_db_ro, patch(
+            "application.api.answer.services.stream_processor.SourceVisibilityService"
+        ) as MockSvc:
+            mock_db_ro.return_value.__enter__ = lambda self: MagicMock()
+            mock_db_ro.return_value.__exit__ = lambda *a: None
+            MockSvc.return_value.resolve.return_value = ResolvedSources(
+                visible=[], rows={},
+                missing=["00000000-0000-0000-0000-000000000000"], invalid=[],
+            )
+            sp = StreamProcessor(
+                {"active_docs": ["00000000-0000-0000-0000-000000000000"]},
+                {"sub": "u"},
+            )
+            with _pytest.raises(PermissionError, match="not found or not visible"):
+                sp._configure_source()
 
     def test_request_active_docs_default(self):
         from application.api.answer.services.stream_processor import (

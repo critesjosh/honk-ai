@@ -132,6 +132,7 @@ class TestStreamResourcePost:
             data = resp.get_data(as_text=True)
             assert "Malformed request body" in data
 
+
     def test_general_exception_returns_400_stream(
         self, stream_client, mock_stream_processor
     ):

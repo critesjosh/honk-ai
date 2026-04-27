@@ -65,10 +65,6 @@ class ResolvedSources:
     missing: list[str]
     invalid: list[str] = field(default_factory=list)
 
-    def has_problems(self) -> bool:
-        """True if any input ID was either invalid or invisible."""
-        return bool(self.missing or self.invalid)
-
 
 def _normalize_inputs(
     requested_ids: Iterable,

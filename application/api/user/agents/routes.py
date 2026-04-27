@@ -576,7 +576,24 @@ class CreateAgent(Resource):
                 # both create and update reject malformed entries with
                 # 400 (previously create silently dropped non-UUIDs
                 # while update returned 400 — divergent behaviour).
-                if data.get("sources"):
+                #
+                # Container shape (list vs single string) is the caller's
+                # responsibility — the service iterates whatever it's
+                # given, and a string would be iterated character-by-
+                # character. Validate the contract here before handing
+                # off.
+                if data.get("sources") is not None:
+                    if not isinstance(data["sources"], list):
+                        return make_response(
+                            jsonify({
+                                "success": False,
+                                "message": (
+                                    "Field 'sources' must be a list of "
+                                    "source UUIDs."
+                                ),
+                            }),
+                            400,
+                        )
                     requested = data["sources"]
                     extras_only = True
                 else:
@@ -816,8 +833,16 @@ class UpdateAgent(Resource):
                     elif field == "sources":
                         sources_list = data.get("sources", []) or []
                         if not isinstance(sources_list, list):
-                            update_fields["extra_source_ids"] = []
-                            continue
+                            return make_response(
+                                jsonify({
+                                    "success": False,
+                                    "message": (
+                                        "Field 'sources' must be a list "
+                                        "of source UUIDs."
+                                    ),
+                                }),
+                                400,
+                            )
                         visible, err = _authorize_sources_or_error(
                             conn, user, sources_list,
                         )
