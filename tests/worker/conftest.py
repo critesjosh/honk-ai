@@ -20,20 +20,32 @@ from sqlalchemy import Connection
 
 @pytest.fixture
 def patch_worker_db(pg_conn, monkeypatch):
-    """Redirect ``db_session`` / ``db_readonly`` in ``application.worker``.
+    """Redirect ``db_session`` / ``db_readonly`` across worker submodules.
 
     Both helpers yield the per-test transactional ``pg_conn``, so any
     writes a task performs are visible to the test and roll back on
     teardown. Without this patch the worker would open its own pooled
     engine and punch past the per-test transaction.
+
+    Each worker submodule imports ``db_session``/``db_readonly``
+    directly (``from application.storage.db.session import ...``), so
+    we have to patch the symbol on every module that uses it. Adding a
+    new worker module that touches the DB? Add it here.
     """
 
     @contextmanager
     def _use_pg_conn() -> Iterator[Connection]:
         yield pg_conn
 
-    monkeypatch.setattr("application.worker.db_session", _use_pg_conn)
-    monkeypatch.setattr("application.worker.db_readonly", _use_pg_conn)
+    for module in (
+        "application.workers.agent_runtime",
+        "application.workers.attachments",
+        "application.workers.connectors",
+        "application.workers.reingest",
+        "application.workers.webhooks",
+    ):
+        monkeypatch.setattr(f"{module}.db_session", _use_pg_conn, raising=False)
+        monkeypatch.setattr(f"{module}.db_readonly", _use_pg_conn, raising=False)
 
 
 @pytest.fixture

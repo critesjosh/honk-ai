@@ -25,7 +25,7 @@ class TestAgentWebhookWorker:
     def test_resolves_agent_by_uuid_and_runs_logic(
         self, pg_conn, patch_worker_db, task_self, monkeypatch
     ):
-        from application import worker
+        from application.workers import webhooks as worker
 
         agent = AgentsRepository(pg_conn).create(
             user_id="alice",
@@ -64,7 +64,7 @@ class TestAgentWebhookWorker:
     def test_missing_agent_returns_error(
         self, pg_conn, patch_worker_db, task_self, monkeypatch
     ):
-        from application import worker
+        from application.workers import webhooks as worker
 
         # Run with an id that exists in no shape the resolver understands;
         # ``looks_like_uuid`` is False so the UUID branch is skipped and
@@ -83,7 +83,7 @@ class TestRunAgentLogic:
         """``run_agent_logic`` looks up the agent's ``source_id`` in PG to
         pick up the source's ``retriever`` override. Proving the read
         wires up end-to-end is enough for a smoke test."""
-        from application import worker
+        from application.workers import agent_runtime as worker
         from application.storage.db.repositories.sources import SourcesRepository
 
         src = SourcesRepository(pg_conn).create(
