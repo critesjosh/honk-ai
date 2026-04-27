@@ -1,330 +1,24 @@
-"""Agent management routes."""
+"""Agent management routes.
 
-import datetime
+HTTP-layer only: auth, request parsing, image upload, db-session
+lifecycle, response shaping. All validation and persistence logic
+lives in ``service.py``; response formatting helpers live in
+``serializers.py``.
+"""
+
 import json
-import uuid
 
 from flask import current_app, jsonify, make_response, request
 from flask_restx import fields, Namespace, Resource
 
 from application.api import api
-from application.api.user.base import (
-    handle_image_upload,
-    resolve_tool_details,
-    storage,
-)
-from application.core.json_schema_utils import (
-    JsonSchemaValidationError,
-    normalize_json_schema_payload,
-)
-from application.core.settings import settings
-from application.services.source_visibility import SourceVisibilityService
-from application.storage.db.base_repository import looks_like_uuid
-from application.storage.db.repositories.agent_folders import AgentFoldersRepository
+from application.api.user.agents import service
+from application.api.user.base import handle_image_upload, storage
 from application.storage.db.repositories.agents import AgentsRepository
-from application.storage.db.repositories.users import UsersRepository
-from application.storage.db.repositories.workflow_edges import WorkflowEdgesRepository
-from application.storage.db.repositories.workflow_nodes import WorkflowNodesRepository
-from application.storage.db.repositories.workflows import WorkflowsRepository
 from application.storage.db.session import db_readonly, db_session
-from application.utils import (
-    check_required_fields,
-    generate_image_url,
-    validate_required_fields,
-)
 
 
 agents_ns = Namespace("agents", description="Agent management operations", path="/api")
-
-
-AGENT_TYPE_SCHEMAS = {
-    "classic": {
-        "required_published": [
-            "name",
-            "description",
-            "chunks",
-            "retriever",
-            "prompt_id",
-        ],
-        "required_draft": ["name"],
-        "validate_published": ["name", "description", "prompt_id"],
-        "validate_draft": [],
-        "require_source": True,
-        "fields": [
-            "name",
-            "description",
-            "agent_type",
-            "status",
-            "key",
-            "image",
-            "source_id",
-            "extra_source_ids",
-            "chunks",
-            "retriever",
-            "prompt_id",
-            "tools",
-            "json_schema",
-            "models",
-            "default_model_id",
-            "folder_id",
-            "limited_token_mode",
-            "token_limit",
-            "limited_request_mode",
-            "request_limit",
-            "allow_system_prompt_override",
-        ],
-    },
-    "workflow": {
-        "required_published": ["name", "workflow"],
-        "required_draft": ["name"],
-        "validate_published": ["name", "workflow"],
-        "validate_draft": [],
-        "fields": [
-            "name",
-            "description",
-            "agent_type",
-            "status",
-            "key",
-            "workflow_id",
-            "folder_id",
-            "limited_token_mode",
-            "token_limit",
-            "limited_request_mode",
-            "request_limit",
-            "allow_system_prompt_override",
-        ],
-    },
-}
-
-AGENT_TYPE_SCHEMAS["react"] = AGENT_TYPE_SCHEMAS["classic"]
-AGENT_TYPE_SCHEMAS["agentic"] = AGENT_TYPE_SCHEMAS["classic"]
-AGENT_TYPE_SCHEMAS["research"] = AGENT_TYPE_SCHEMAS["classic"]
-AGENT_TYPE_SCHEMAS["openai"] = AGENT_TYPE_SCHEMAS["classic"]
-
-
-def normalize_workflow_reference(workflow_value):
-    """Normalize workflow references from form/json payloads into a string id."""
-    if workflow_value is None:
-        return None
-    if isinstance(workflow_value, dict):
-        return (
-            workflow_value.get("id")
-            or workflow_value.get("_id")
-            or workflow_value.get("workflow_id")
-        )
-    if isinstance(workflow_value, str):
-        value = workflow_value.strip()
-        if not value:
-            return ""
-        try:
-            parsed = json.loads(value)
-            if isinstance(parsed, str):
-                return parsed.strip()
-            if isinstance(parsed, dict):
-                return (
-                    parsed.get("id") or parsed.get("_id") or parsed.get("workflow_id")
-                )
-        except json.JSONDecodeError:
-            pass
-        return value
-    return str(workflow_value)
-
-
-def _resolve_workflow_for_user(conn, workflow_value, user):
-    """Resolve and ownership-check a workflow value, returning its PG UUID."""
-    workflow_id = normalize_workflow_reference(workflow_value)
-    if not workflow_id:
-        return None, None
-    repo = WorkflowsRepository(conn)
-    if looks_like_uuid(workflow_id):
-        workflow = repo.get(workflow_id, user)
-    else:
-        workflow = repo.get_by_legacy_id(workflow_id, user)
-    if workflow is None:
-        return None, make_response(
-            jsonify({"success": False, "message": "Workflow not found"}), 404
-        )
-    return str(workflow["id"]), None
-
-
-def _authorize_sources_or_error(conn, user, source_uuids):
-    """Resolve ``source_uuids`` for agent CRUD (untrusted request input).
-
-    Returns ``(visible_ids, error_response)``. On success ``error_response``
-    is None and ``visible_ids`` is the input-order list of UUIDs the user
-    can see. On any malformed or invisible ID the function returns the
-    ready-to-return Flask error response (400 for malformed, 403 for
-    invisible) so the caller can ``return err`` directly.
-
-    Centralises agent-CRUD source-validation policy in one place — both
-    create and update used to inline this differently, with create
-    silently dropping non-UUIDs while update returned 400 for them.
-    """
-    resolved = SourceVisibilityService(conn).resolve(user, source_uuids)
-    if resolved.invalid:
-        return [], make_response(
-            jsonify({
-                "success": False,
-                "message": f"Invalid source ID format: {resolved.invalid[0]}",
-            }),
-            400,
-        )
-    if resolved.missing:
-        return [], make_response(
-            jsonify({
-                "success": False,
-                "message": (
-                    "Source not found or not visible: "
-                    f"{resolved.missing[0]}"
-                ),
-            }),
-            403,
-        )
-    return resolved.visible, None
-
-
-def _resolve_folder_id(conn, folder_id, user):
-    """Resolve a folder id (UUID or legacy) to its PG UUID; error response otherwise."""
-    if not folder_id:
-        return None, None
-    repo = AgentFoldersRepository(conn)
-    folder = None
-    if looks_like_uuid(folder_id):
-        folder = repo.get(folder_id, user)
-    if folder is None:
-        folder = repo.get_by_legacy_id(folder_id, user)
-    if folder is None:
-        return None, make_response(
-            jsonify({"success": False, "message": "Folder not found"}), 404
-        )
-    return str(folder["id"]), None
-
-
-def _format_agent_output(agent: dict, *, pinned: bool = False, include_key_masked: bool = True) -> dict:
-    """Shape a PG agent row into the outward API response dict.
-
-    Translates PG snake_case columns to the camelCase/frontend keys that
-    the React client expects, preserving ``source``/``sources`` naming on
-    the response even though storage uses ``source_id`` /
-    ``extra_source_ids``.
-    """
-    source_id = agent.get("source_id")
-    extra_source_ids = agent.get("extra_source_ids") or []
-    source_value = str(source_id) if source_id else ""
-    sources_list = [str(s) for s in extra_source_ids if s]
-
-    out = {
-        "id": str(agent["id"]),
-        "name": agent.get("name", ""),
-        "description": agent.get("description", "") or "",
-        "image": (
-            generate_image_url(agent["image"]) if agent.get("image") else ""
-        ),
-        "source": source_value,
-        "sources": sources_list,
-        "chunks": str(agent["chunks"]) if agent.get("chunks") is not None else "2",
-        "retriever": agent.get("retriever", "") or "",
-        "prompt_id": str(agent["prompt_id"]) if agent.get("prompt_id") else "",
-        "tools": agent.get("tools", []) or [],
-        "tool_details": resolve_tool_details(agent.get("tools", []) or []),
-        "agent_type": agent.get("agent_type", "") or "",
-        "status": agent.get("status", "") or "",
-        "json_schema": agent.get("json_schema"),
-        "limited_token_mode": bool(agent.get("limited_token_mode", False)),
-        "token_limit": agent.get("token_limit") or settings.DEFAULT_AGENT_LIMITS["token_limit"],
-        "limited_request_mode": bool(agent.get("limited_request_mode", False)),
-        "request_limit": agent.get("request_limit") or settings.DEFAULT_AGENT_LIMITS["request_limit"],
-        "created_at": agent.get("created_at", ""),
-        "updated_at": agent.get("updated_at", ""),
-        "last_used_at": agent.get("last_used_at", ""),
-        "pinned": pinned,
-        "shared": bool(agent.get("shared", False)),
-        "shared_metadata": agent.get("shared_metadata", {}) or {},
-        "shared_token": agent.get("shared_token", "") or "",
-        "models": agent.get("models", []) or [],
-        "default_model_id": agent.get("default_model_id", "") or "",
-        "folder_id": str(agent["folder_id"]) if agent.get("folder_id") else None,
-        "workflow": str(agent["workflow_id"]) if agent.get("workflow_id") else None,
-        "allow_system_prompt_override": bool(
-            agent.get("allow_system_prompt_override", False)
-        ),
-    }
-    if include_key_masked:
-        key_val = agent.get("key") or ""
-        out["key"] = (
-            f"{key_val[:4]}...{key_val[-4:]}" if key_val else ""
-        )
-    return out
-
-
-def _build_create_kwargs(data: dict, *, image_url: str, agent_type: str) -> dict:
-    """Translate request data + resolved references into AgentsRepository.create kwargs."""
-    kwargs: dict = {}
-
-    schema = AGENT_TYPE_SCHEMAS.get(agent_type, AGENT_TYPE_SCHEMAS["classic"])
-    allowed_fields = set(schema["fields"])
-
-    for key in (
-        "description", "agent_type", "key", "image", "retriever",
-        "default_model_id",
-    ):
-        if key in allowed_fields and data.get(key) not in (None, ""):
-            kwargs[key] = data[key]
-
-    if image_url and "image" in allowed_fields:
-        kwargs["image"] = image_url
-
-    if "source_id" in allowed_fields and data.get("source_id"):
-        kwargs["source_id"] = data["source_id"]
-    if "extra_source_ids" in allowed_fields and data.get("extra_source_ids"):
-        kwargs["extra_source_ids"] = data["extra_source_ids"]
-
-    if "prompt_id" in allowed_fields:
-        prompt_val = data.get("prompt_id")
-        if prompt_val and prompt_val != "default" and looks_like_uuid(prompt_val):
-            kwargs["prompt_id"] = prompt_val
-
-    if "folder_id" in allowed_fields and data.get("folder_id"):
-        kwargs["folder_id"] = data["folder_id"]
-
-    if "workflow_id" in allowed_fields and data.get("workflow_id"):
-        kwargs["workflow_id"] = data["workflow_id"]
-
-    if "chunks" in allowed_fields:
-        chunks_val = data.get("chunks")
-        if chunks_val not in (None, ""):
-            try:
-                kwargs["chunks"] = int(chunks_val)
-            except (TypeError, ValueError):
-                current_app.logger.debug(
-                    "Ignoring invalid 'chunks' value while building agent create kwargs: %r",
-                    chunks_val,
-                )
-
-    for key in ("limited_token_mode", "limited_request_mode", "allow_system_prompt_override"):
-        if key in allowed_fields and key in data:
-            raw = data[key]
-            kwargs[key] = raw == "True" if isinstance(raw, str) else bool(raw)
-
-    for key in ("token_limit", "request_limit"):
-        if key in allowed_fields and data.get(key) not in (None, ""):
-            try:
-                kwargs[key] = int(data[key])
-            except (TypeError, ValueError):
-                current_app.logger.debug(
-                    "Ignoring invalid %s value while building agent create kwargs: %r",
-                    key,
-                    data.get(key),
-                )
-
-    if "tools" in allowed_fields and data.get("tools") is not None:
-        kwargs["tools"] = data["tools"]
-    if "json_schema" in allowed_fields and data.get("json_schema") is not None:
-        kwargs["json_schema"] = data["json_schema"]
-    if "models" in allowed_fields and data.get("models") is not None:
-        kwargs["models"] = data["models"]
-
-    return kwargs
 
 
 @agents_ns.route("/get_agent")
@@ -338,11 +32,10 @@ class GetAgent(Resource):
         try:
             user = decoded_token["sub"]
             with db_readonly() as conn:
-                agent = AgentsRepository(conn).get_any(agent_id, user)
-            if not agent:
+                payload = service.get_user_agent(conn, agent_id, user)
+            if payload is None:
                 return {"status": "Not found"}, 404
-            data = _format_agent_output(agent)
-            return make_response(jsonify(data), 200)
+            return make_response(jsonify(payload), 200)
         except Exception as e:
             current_app.logger.error(f"Agent fetch error: {e}", exc_info=True)
             return {"success": False}, 400
@@ -357,28 +50,11 @@ class GetAgents(Resource):
         user = decoded_token.get("sub")
         try:
             with db_session() as conn:
-                users_repo = UsersRepository(conn)
-                user_doc = users_repo.upsert(user)
-                pinned_ids = set(
-                    user_doc.get("agent_preferences", {}).get("pinned", [])
-                    if isinstance(user_doc.get("agent_preferences"), dict)
-                    else []
-                )
-                agents = AgentsRepository(conn).list_for_user(user)
-            list_agents = [
-                _format_agent_output(
-                    agent, pinned=str(agent["id"]) in pinned_ids,
-                )
-                for agent in agents
-                if agent.get("source_id")
-                or (agent.get("extra_source_ids") or [])
-                or agent.get("retriever")
-                or agent.get("agent_type") == "workflow"
-            ]
+                payload = service.list_user_agents(conn, user)
         except Exception as err:
             current_app.logger.error(f"Error retrieving agents: {err}", exc_info=True)
             return make_response(jsonify({"success": False}), 400)
-        return make_response(jsonify(list_agents), 200)
+        return make_response(jsonify(payload), 200)
 
 
 @agents_ns.route("/create_agent")
@@ -484,60 +160,9 @@ class CreateAgent(Resource):
                 except json.JSONDecodeError:
                     data["models"] = []
 
-        if "json_schema" in data:
-            try:
-                data["json_schema"] = normalize_json_schema_payload(
-                    data.get("json_schema")
-                )
-            except JsonSchemaValidationError:
-                return make_response(
-                    jsonify({"success": False, "message": "Invalid JSON schema"}),
-                    400,
-                )
-        if data.get("status") not in ["draft", "published"]:
-            return make_response(
-                jsonify(
-                    {
-                        "success": False,
-                        "message": "Status must be either 'draft' or 'published'",
-                    }
-                ),
-                400,
-            )
-        agent_type = data.get("agent_type", "")
-        if not agent_type or agent_type not in AGENT_TYPE_SCHEMAS:
-            schema = AGENT_TYPE_SCHEMAS["classic"]
-            if not agent_type:
-                agent_type = "classic"
-        else:
-            schema = AGENT_TYPE_SCHEMAS[agent_type]
-        is_published = data.get("status") == "published"
-        if data.get("status") == "published":
-            required_fields = schema["required_published"]
-            validate_fields = schema["validate_published"]
-            if (
-                schema.get("require_source")
-                and not data.get("source")
-                and not data.get("sources")
-            ):
-                return make_response(
-                    jsonify(
-                        {
-                            "success": False,
-                            "message": "Either 'source' or 'sources' field is required for published agents",
-                        }
-                    ),
-                    400,
-                )
-        else:
-            required_fields = schema["required_draft"]
-            validate_fields = schema["validate_draft"]
-        missing_fields = check_required_fields(data, required_fields)
-        invalid_fields = validate_required_fields(data, validate_fields)
-        if missing_fields:
-            return missing_fields
-        if invalid_fields:
-            return invalid_fields
+        if (err := service.validate_create_request(data)) is not None:
+            return err
+
         image_url, error = handle_image_upload(request, "", user, storage)
         if error:
             return make_response(
@@ -545,108 +170,14 @@ class CreateAgent(Resource):
             )
 
         try:
-            key = str(uuid.uuid4()) if is_published else ""
             with db_session() as conn:
-                # Resolve folder.
-                pg_folder_id = None
-                if data.get("folder_id"):
-                    pg_folder_id, err = _resolve_folder_id(
-                        conn, data["folder_id"], user,
-                    )
-                    if err:
-                        return err
-
-                # Resolve workflow for workflow-type agents.
-                pg_workflow_id = None
-                if agent_type == "workflow":
-                    pg_workflow_id, err = _resolve_workflow_for_user(
-                        conn, data.get("workflow"), user,
-                    )
-                    if err and is_published:
-                        return err
-                    if pg_workflow_id is None and is_published:
-                        return make_response(
-                            jsonify({"success": False, "message": "Workflow is required"}),
-                            400,
-                        )
-
-                # Resolve sources via SourceVisibilityService. The service
-                # partitions inputs into invalid (malformed UUID) /
-                # missing (well-formed but not visible) / visible, so
-                # both create and update reject malformed entries with
-                # 400 (previously create silently dropped non-UUIDs
-                # while update returned 400 — divergent behaviour).
-                #
-                # Container shape (list vs single string) is the caller's
-                # responsibility — the service iterates whatever it's
-                # given, and a string would be iterated character-by-
-                # character. Validate the contract here before handing
-                # off.
-                if data.get("sources") is not None:
-                    if not isinstance(data["sources"], list):
-                        return make_response(
-                            jsonify({
-                                "success": False,
-                                "message": (
-                                    "Field 'sources' must be a list of "
-                                    "source UUIDs."
-                                ),
-                            }),
-                            400,
-                        )
-                    requested = data["sources"]
-                    extras_only = True
-                else:
-                    extras_only = False
-                    source_value = data.get("source", "")
-                    requested = [source_value] if source_value else []
-
-                visible_ids, err = _authorize_sources_or_error(
-                    conn, user, requested,
-                )
+                payload, err = service.create_agent(conn, user, data, image_url)
                 if err is not None:
                     return err
-
-                source_id_resolved = None
-                extra_source_ids: list[str] = []
-                if extras_only:
-                    extra_source_ids = visible_ids
-                elif visible_ids:
-                    source_id_resolved = visible_ids[0]
-
-                build_data = dict(data)
-                build_data["folder_id"] = pg_folder_id
-                build_data["workflow_id"] = pg_workflow_id
-                build_data["source_id"] = source_id_resolved
-                build_data["extra_source_ids"] = extra_source_ids
-                build_data["key"] = key
-                build_data["agent_type"] = agent_type
-
-                # For classic agents: default chunks/retriever if nothing else supplied.
-                if agent_type != "workflow":
-                    if build_data.get("chunks") in (None, ""):
-                        build_data["chunks"] = 2
-                    if (
-                        not source_id_resolved
-                        and not extra_source_ids
-                        and not build_data.get("retriever")
-                    ):
-                        build_data["retriever"] = "classic"
-
-                kwargs = _build_create_kwargs(
-                    build_data, image_url=image_url, agent_type=agent_type,
-                )
-                agent_row = AgentsRepository(conn).create(
-                    user,
-                    data["name"],
-                    data["status"],
-                    **kwargs,
-                )
-                new_id = str(agent_row["id"])
         except Exception as err:
             current_app.logger.error(f"Error creating agent: {err}", exc_info=True)
             return make_response(jsonify({"success": False}), 400)
-        return make_response(jsonify({"id": new_id, "key": key}), 201)
+        return make_response(jsonify(payload), 201)
 
 
 @agents_ns.route("/update_agent/<string:agent_id>")
@@ -762,8 +293,7 @@ class UpdateAgent(Resource):
 
         try:
             with db_session() as conn:
-                agents_repo = AgentsRepository(conn)
-                existing_agent = agents_repo.get_any(agent_id, user)
+                existing_agent = AgentsRepository(conn).get_any(agent_id, user)
                 if not existing_agent:
                     return make_response(
                         jsonify(
@@ -771,350 +301,17 @@ class UpdateAgent(Resource):
                         ),
                         404,
                     )
-                pg_agent_id = str(existing_agent["id"])
                 image_url, image_error = handle_image_upload(
                     request, existing_agent.get("image", "") or "", user, storage,
                 )
                 if image_error:
                     return image_error
 
-                update_fields: dict = {}
-                allowed_fields = [
-                    "name",
-                    "description",
-                    "image",
-                    "source",
-                    "sources",
-                    "chunks",
-                    "retriever",
-                    "prompt_id",
-                    "tools",
-                    "agent_type",
-                    "status",
-                    "json_schema",
-                    "limited_token_mode",
-                    "token_limit",
-                    "limited_request_mode",
-                    "request_limit",
-                    "models",
-                    "default_model_id",
-                    "folder_id",
-                    "workflow",
-                    "allow_system_prompt_override",
-                ]
-
-                for field in allowed_fields:
-                    if field not in data:
-                        continue
-                    if field == "status":
-                        new_status = data.get("status")
-                        if new_status not in ["draft", "published"]:
-                            return make_response(
-                                jsonify(
-                                    {
-                                        "success": False,
-                                        "message": "Invalid status value. Must be 'draft' or 'published'",
-                                    }
-                                ),
-                                400,
-                            )
-                        update_fields["status"] = new_status
-                    elif field == "source":
-                        source_id = data.get("source")
-                        if not source_id or source_id == "default":
-                            update_fields["source_id"] = None
-                            continue
-                        visible, err = _authorize_sources_or_error(
-                            conn, user, [source_id],
-                        )
-                        if err is not None:
-                            return err
-                        update_fields["source_id"] = visible[0] if visible else None
-                    elif field == "sources":
-                        sources_list = data.get("sources", []) or []
-                        if not isinstance(sources_list, list):
-                            return make_response(
-                                jsonify({
-                                    "success": False,
-                                    "message": (
-                                        "Field 'sources' must be a list "
-                                        "of source UUIDs."
-                                    ),
-                                }),
-                                400,
-                            )
-                        visible, err = _authorize_sources_or_error(
-                            conn, user, sources_list,
-                        )
-                        if err is not None:
-                            return err
-                        update_fields["extra_source_ids"] = visible
-                    elif field == "chunks":
-                        chunks_value = data.get("chunks")
-                        if chunks_value in ("", None):
-                            update_fields["chunks"] = 2
-                        else:
-                            try:
-                                chunks_int = int(chunks_value)
-                                if chunks_int < 0:
-                                    return make_response(
-                                        jsonify(
-                                            {
-                                                "success": False,
-                                                "message": "Chunks value must be a non-negative integer",
-                                            }
-                                        ),
-                                        400,
-                                    )
-                                update_fields["chunks"] = chunks_int
-                            except (ValueError, TypeError):
-                                return make_response(
-                                    jsonify(
-                                        {
-                                            "success": False,
-                                            "message": f"Invalid chunks value: {chunks_value}",
-                                        }
-                                    ),
-                                    400,
-                                )
-                    elif field == "tools":
-                        tools_list = data.get("tools", [])
-                        if not isinstance(tools_list, list):
-                            return make_response(
-                                jsonify({"success": False, "message": "Tools must be a list"}),
-                                400,
-                            )
-                        update_fields["tools"] = tools_list
-                    elif field == "json_schema":
-                        json_schema = data.get("json_schema")
-                        if json_schema is not None:
-                            try:
-                                update_fields["json_schema"] = normalize_json_schema_payload(
-                                    json_schema
-                                )
-                            except JsonSchemaValidationError:
-                                return make_response(
-                                    jsonify({"success": False, "message": "Invalid JSON schema"}),
-                                    400,
-                                )
-                        else:
-                            update_fields["json_schema"] = None
-                    elif field == "limited_token_mode":
-                        raw_value = data.get("limited_token_mode", False)
-                        bool_value = (
-                            raw_value == "True"
-                            if isinstance(raw_value, str)
-                            else bool(raw_value)
-                        )
-                        update_fields["limited_token_mode"] = bool_value
-                        if bool_value and data.get("token_limit") is None:
-                            return make_response(
-                                jsonify(
-                                    {
-                                        "success": False,
-                                        "message": "Token limit must be provided when limited token mode is enabled",
-                                    }
-                                ),
-                                400,
-                            )
-                    elif field == "limited_request_mode":
-                        raw_value = data.get("limited_request_mode", False)
-                        bool_value = (
-                            raw_value == "True"
-                            if isinstance(raw_value, str)
-                            else bool(raw_value)
-                        )
-                        update_fields["limited_request_mode"] = bool_value
-                        if bool_value and data.get("request_limit") is None:
-                            return make_response(
-                                jsonify(
-                                    {
-                                        "success": False,
-                                        "message": "Request limit must be provided when limited request mode is enabled",
-                                    }
-                                ),
-                                400,
-                            )
-                    elif field == "token_limit":
-                        token_limit = data.get("token_limit")
-                        update_fields["token_limit"] = int(token_limit) if token_limit else 0
-                        if update_fields["token_limit"] > 0 and not data.get("limited_token_mode"):
-                            return make_response(
-                                jsonify(
-                                    {
-                                        "success": False,
-                                        "message": "Token limit cannot be set when limited token mode is disabled",
-                                    }
-                                ),
-                                400,
-                            )
-                    elif field == "request_limit":
-                        request_limit = data.get("request_limit")
-                        update_fields["request_limit"] = int(request_limit) if request_limit else 0
-                        if update_fields["request_limit"] > 0 and not data.get("limited_request_mode"):
-                            return make_response(
-                                jsonify(
-                                    {
-                                        "success": False,
-                                        "message": "Request limit cannot be set when limited request mode is disabled",
-                                    }
-                                ),
-                                400,
-                            )
-                    elif field == "folder_id":
-                        folder_input = data.get("folder_id")
-                        if folder_input:
-                            pg_folder_id, folder_err = _resolve_folder_id(
-                                conn, folder_input, user,
-                            )
-                            if folder_err:
-                                return folder_err
-                            update_fields["folder_id"] = pg_folder_id
-                        else:
-                            update_fields["folder_id"] = None
-                    elif field == "workflow":
-                        workflow_required = (
-                            data.get("status", existing_agent.get("status")) == "published"
-                            and data.get("agent_type", existing_agent.get("agent_type"))
-                            == "workflow"
-                        )
-                        workflow_input = data.get("workflow")
-                        normalized = normalize_workflow_reference(workflow_input)
-                        if not normalized:
-                            if workflow_required:
-                                return make_response(
-                                    jsonify({"success": False, "message": "Workflow is required"}),
-                                    400,
-                                )
-                            update_fields["workflow_id"] = None
-                        else:
-                            pg_workflow_id, wf_err = _resolve_workflow_for_user(
-                                conn, workflow_input, user,
-                            )
-                            if wf_err:
-                                return wf_err
-                            update_fields["workflow_id"] = pg_workflow_id
-                    elif field == "prompt_id":
-                        value = data["prompt_id"]
-                        if not value or value == "default":
-                            update_fields["prompt_id"] = None
-                        elif looks_like_uuid(value):
-                            update_fields["prompt_id"] = value
-                        else:
-                            return make_response(
-                                jsonify(
-                                    {"success": False, "message": f"Invalid prompt_id: {value}"}
-                                ),
-                                400,
-                            )
-                    elif field == "allow_system_prompt_override":
-                        raw_value = data.get("allow_system_prompt_override", False)
-                        update_fields["allow_system_prompt_override"] = (
-                            raw_value == "True"
-                            if isinstance(raw_value, str)
-                            else bool(raw_value)
-                        )
-                    else:
-                        value = data[field]
-                        if field in ["name", "description", "agent_type"]:
-                            if not value or not str(value).strip():
-                                return make_response(
-                                    jsonify(
-                                        {
-                                            "success": False,
-                                            "message": f"Field '{field}' cannot be empty",
-                                        }
-                                    ),
-                                    400,
-                                )
-                        update_fields[field] = value
-                if image_url:
-                    update_fields["image"] = image_url
-                if not update_fields:
-                    return make_response(
-                        jsonify(
-                            {
-                                "success": False,
-                                "message": "No valid update data provided",
-                            }
-                        ),
-                        400,
-                    )
-
-                newly_generated_key = None
-                final_status = update_fields.get("status", existing_agent.get("status"))
-                final_agent_type = update_fields.get(
-                    "agent_type", existing_agent.get("agent_type")
+                payload, err = service.update_agent(
+                    conn, user, existing_agent, data, image_url,
                 )
-
-                if final_status == "published":
-                    if final_agent_type == "workflow":
-                        missing_published_fields = []
-                        if not update_fields.get("name", existing_agent.get("name")):
-                            missing_published_fields.append("Agent name")
-                        workflow_final = update_fields.get(
-                            "workflow_id", existing_agent.get("workflow_id"),
-                        )
-                        if not workflow_final:
-                            missing_published_fields.append("Workflow")
-                        if missing_published_fields:
-                            return make_response(
-                                jsonify(
-                                    {
-                                        "success": False,
-                                        "message": f"Cannot publish workflow agent. Missing required fields: {', '.join(missing_published_fields)}",
-                                    }
-                                ),
-                                400,
-                            )
-                    else:
-                        missing_published_fields = []
-                        for req_field, field_label in (
-                            ("name", "Agent name"),
-                            ("description", "Agent description"),
-                            ("chunks", "Chunks count"),
-                            ("prompt_id", "Prompt"),
-                            ("agent_type", "Agent type"),
-                        ):
-                            final_value = update_fields.get(
-                                req_field, existing_agent.get(req_field)
-                            )
-                            if not final_value:
-                                missing_published_fields.append(field_label)
-                        source_final = update_fields.get(
-                            "source_id", existing_agent.get("source_id"),
-                        )
-                        extra_final = update_fields.get(
-                            "extra_source_ids", existing_agent.get("extra_source_ids") or [],
-                        )
-                        if not source_final and not extra_final:
-                            missing_published_fields.append("Source")
-                        if missing_published_fields:
-                            return make_response(
-                                jsonify(
-                                    {
-                                        "success": False,
-                                        "message": f"Cannot publish agent. Missing or invalid required fields: {', '.join(missing_published_fields)}",
-                                    }
-                                ),
-                                400,
-                            )
-                    if not existing_agent.get("key"):
-                        newly_generated_key = str(uuid.uuid4())
-                        update_fields["key"] = newly_generated_key
-
-                # Apply update.
-                updated = agents_repo.update(pg_agent_id, user, update_fields)
-                if not updated:
-                    return make_response(
-                        jsonify(
-                            {
-                                "success": False,
-                                "message": "Agent not found or update failed",
-                            }
-                        ),
-                        404,
-                    )
+                if err is not None:
+                    return err
         except Exception as err:
             current_app.logger.error(
                 f"Error updating agent {agent_id}: {err}", exc_info=True
@@ -1124,14 +321,7 @@ class UpdateAgent(Resource):
                 500,
             )
 
-        response_data = {
-            "success": True,
-            "id": pg_agent_id,
-            "message": "Agent updated successfully",
-        }
-        if newly_generated_key:
-            response_data["key"] = newly_generated_key
-        return make_response(jsonify(response_data), 200)
+        return make_response(jsonify(payload), 200)
 
 
 @agents_ns.route("/delete_agent")
@@ -1149,33 +339,9 @@ class DeleteAgent(Resource):
             )
         try:
             with db_session() as conn:
-                agents_repo = AgentsRepository(conn)
-                agent = agents_repo.get_any(agent_id, user)
-                if not agent:
-                    return make_response(
-                        jsonify({"success": False, "message": "Agent not found"}), 404
-                    )
-                pg_agent_id = str(agent["id"])
-                workflow_id = agent.get("workflow_id")
-                # For workflow-type agents, delete the owned workflow in the
-                # same transaction. workflow_nodes/workflow_edges cascade
-                # via ON DELETE CASCADE so a single workflow delete suffices.
-                if agent.get("agent_type") == "workflow" and workflow_id:
-                    try:
-                        WorkflowNodesRepository(conn).delete_by_workflow(
-                            str(workflow_id),
-                        )
-                        WorkflowEdgesRepository(conn).delete_by_workflow(
-                            str(workflow_id),
-                        )
-                        WorkflowsRepository(conn).delete(str(workflow_id), user)
-                    except Exception as wf_err:
-                        current_app.logger.warning(
-                            f"Workflow cleanup failed for agent {pg_agent_id}: {wf_err}"
-                        )
-                agents_repo.delete(pg_agent_id, user)
-                # Strip pinned/shared entries for this agent from the owner's prefs.
-                UsersRepository(conn).remove_agent_from_all(user, pg_agent_id)
+                pg_agent_id, err = service.delete_agent(conn, user, agent_id)
+                if err is not None:
+                    return err
         except Exception as err:
             current_app.logger.error(f"Error deleting agent: {err}", exc_info=True)
             return make_response(jsonify({"success": False}), 400)
@@ -1193,75 +359,11 @@ class PinnedAgents(Resource):
 
         try:
             with db_session() as conn:
-                users_repo = UsersRepository(conn)
-                user_doc = users_repo.upsert(user_id)
-                pinned_ids = (
-                    user_doc.get("agent_preferences", {}).get("pinned", [])
-                    if isinstance(user_doc.get("agent_preferences"), dict)
-                    else []
-                )
-                if not pinned_ids:
-                    return make_response(jsonify([]), 200)
-
-                uuid_pinned = [pid for pid in pinned_ids if looks_like_uuid(pid)]
-                non_uuid = [pid for pid in pinned_ids if not looks_like_uuid(pid)]
-
-                if uuid_pinned:
-                    from sqlalchemy import text as _sql_text
-
-                    result = conn.execute(
-                        _sql_text(
-                            "SELECT * FROM agents "
-                            "WHERE id = ANY(CAST(:ids AS uuid[]))"
-                        ),
-                        {"ids": uuid_pinned},
-                    )
-                    pinned_agents = [dict(row._mapping) for row in result.fetchall()]
-                else:
-                    pinned_agents = []
-
-                existing_ids = {str(a["id"]) for a in pinned_agents}
-                stale = [pid for pid in uuid_pinned if pid not in existing_ids]
-                stale.extend(non_uuid)
-                if stale:
-                    users_repo.remove_pinned_bulk(user_id, stale)
-
-            list_pinned_agents = []
-            for agent in pinned_agents:
-                source_id = agent.get("source_id")
-                if not source_id and not agent.get("retriever"):
-                    continue
-                list_pinned_agents.append(
-                    {
-                        "id": str(agent["id"]),
-                        "name": agent.get("name", ""),
-                        "description": agent.get("description", ""),
-                        "image": (
-                            generate_image_url(agent["image"]) if agent.get("image") else ""
-                        ),
-                        "source": str(source_id) if source_id else "",
-                        "chunks": str(agent["chunks"]) if agent.get("chunks") is not None else "",
-                        "retriever": agent.get("retriever", "") or "",
-                        "prompt_id": str(agent["prompt_id"]) if agent.get("prompt_id") else "",
-                        "tools": agent.get("tools", []) or [],
-                        "tool_details": resolve_tool_details(agent.get("tools", []) or []),
-                        "agent_type": agent.get("agent_type", "") or "",
-                        "status": agent.get("status", "") or "",
-                        "created_at": agent.get("created_at", ""),
-                        "updated_at": agent.get("updated_at", ""),
-                        "last_used_at": agent.get("last_used_at", ""),
-                        "key": (
-                            f"{agent['key'][:4]}...{agent['key'][-4:]}"
-                            if agent.get("key")
-                            else ""
-                        ),
-                        "pinned": True,
-                    }
-                )
+                payload = service.list_pinned_agents(conn, user_id)
         except Exception as err:
             current_app.logger.error(f"Error retrieving pinned agents: {err}")
             return make_response(jsonify({"success": False}), 400)
-        return make_response(jsonify(list_pinned_agents), 200)
+        return make_response(jsonify(payload), 200)
 
 
 @agents_ns.route("/template_agents")
@@ -1269,27 +371,9 @@ class GetTemplateAgents(Resource):
     @api.doc(description="Get template/premade agents")
     def get(self):
         try:
-            from sqlalchemy import text as _sql_text
-
             with db_readonly() as conn:
-                result = conn.execute(
-                    _sql_text(
-                        "SELECT * FROM agents "
-                        "WHERE user_id IN ('system', '__system__') "
-                        "ORDER BY name"
-                    ),
-                )
-                template_rows = [dict(row._mapping) for row in result.fetchall()]
-            template_agents = [
-                {
-                    "id": str(agent["id"]),
-                    "name": agent.get("name"),
-                    "description": agent.get("description") or "",
-                    "image": agent.get("image") or "",
-                }
-                for agent in template_rows
-            ]
-            return make_response(jsonify(template_agents), 200)
+                payload = service.list_template_agents(conn)
+            return make_response(jsonify(payload), 200)
         except Exception as e:
             current_app.logger.error(f"Template agents fetch error: {e}", exc_info=True)
             return make_response(jsonify({"success": False}), 400)
@@ -1307,105 +391,11 @@ class AdoptAgent(Resource):
             )
         try:
             user = decoded_token["sub"]
-            from sqlalchemy import text as _sql_text
-
             with db_session() as conn:
-                # Template lookup: user_id must be 'system' or '__system__'.
-                if looks_like_uuid(agent_id):
-                    template_row = conn.execute(
-                        _sql_text(
-                            "SELECT * FROM agents "
-                            "WHERE id = CAST(:id AS uuid) "
-                            "AND user_id IN ('system', '__system__')"
-                        ),
-                        {"id": agent_id},
-                    ).fetchone()
-                else:
-                    template_row = conn.execute(
-                        _sql_text(
-                            "SELECT * FROM agents "
-                            "WHERE legacy_mongo_id = :id "
-                            "AND user_id IN ('system', '__system__')"
-                        ),
-                        {"id": agent_id},
-                    ).fetchone()
-                if template_row is None:
-                    return make_response(jsonify({"status": "Not found"}), 404)
-                template = dict(template_row._mapping)
-
-                now = datetime.datetime.now(datetime.timezone.utc)
-                new_key = str(uuid.uuid4())
-                create_kwargs: dict = {}
-                # Filter the template's source attachments through the
-                # adopter's visibility scope. A template is system-owned
-                # and SHOULD reference is_public=TRUE corpora, but if it
-                # was misconfigured (or shipped from a different
-                # environment) we drop the invisible UUIDs rather than
-                # persist them onto the new row. Step 3's runtime check
-                # would already reject them at query time; this keeps
-                # the persisted state honest and surfaces misconfig in
-                # logs.
-                template_primary = template.get("source_id")
-                template_extras = list(template.get("extra_source_ids") or [])
-                template_source_ids = [
-                    str(s) for s in [template_primary, *template_extras] if s
-                ]
-                if template_source_ids:
-                    resolved = SourceVisibilityService(conn).resolve(
-                        user, template_source_ids,
-                    )
-                    if resolved.missing or resolved.invalid:
-                        current_app.logger.warning(
-                            f"AdoptAgent: template {agent_id} references "
-                            "sources not visible to "
-                            f"{user}: missing={resolved.missing} "
-                            f"invalid={resolved.invalid}"
-                        )
-                    if (
-                        template_primary
-                        and str(template_primary) in resolved.rows
-                    ):
-                        create_kwargs["source_id"] = str(template_primary)
-                    create_kwargs["extra_source_ids"] = [
-                        str(s) for s in template_extras
-                        if str(s) in resolved.rows
-                    ]
-                for col in (
-                    "description", "agent_type", "image", "retriever",
-                    "default_model_id",
-                    "prompt_id", "folder_id", "workflow_id",
-                ):
-                    val = template.get(col)
-                    if val not in (None, ""):
-                        create_kwargs[col] = val
-                for col in ("tools", "json_schema", "models", "shared_metadata"):
-                    if template.get(col) is not None:
-                        create_kwargs[col] = template[col]
-                for col in ("chunks", "token_limit", "request_limit"):
-                    if template.get(col) is not None:
-                        create_kwargs[col] = template[col]
-                for col in (
-                    "limited_token_mode", "limited_request_mode",
-                    "allow_system_prompt_override",
-                ):
-                    if template.get(col) is not None:
-                        create_kwargs[col] = bool(template[col])
-
-                create_kwargs["key"] = new_key
-                create_kwargs["last_used_at"] = now
-
-                new_agent = AgentsRepository(conn).create(
-                    user,
-                    template.get("name") or "",
-                    "published",
-                    **create_kwargs,
-                )
-
-            response_agent = _format_agent_output(new_agent, include_key_masked=False)
-            response_agent["key"] = new_key
-            return make_response(
-                jsonify({"success": True, "agent": response_agent}), 200
-            )
+                payload, err = service.adopt_template(conn, user, agent_id)
+                if err is not None:
+                    return err
+            return make_response(jsonify(payload), 200)
         except Exception as e:
             current_app.logger.error(f"Agent adopt error: {e}", exc_info=True)
             return make_response(jsonify({"success": False}), 400)
@@ -1427,43 +417,9 @@ class PinAgent(Resource):
             )
         try:
             with db_session() as conn:
-                # Any user can pin any agent they can see — including
-                # shared ones. Use the non-user-scoped lookup so pins
-                # aren't restricted to owner-only.
-                from sqlalchemy import text as _sql_text
-
-                if looks_like_uuid(agent_id):
-                    agent_row = conn.execute(
-                        _sql_text("SELECT id FROM agents WHERE id = CAST(:id AS uuid)"),
-                        {"id": agent_id},
-                    ).fetchone()
-                else:
-                    agent_row = conn.execute(
-                        _sql_text(
-                            "SELECT id FROM agents WHERE legacy_mongo_id = :id"
-                        ),
-                        {"id": agent_id},
-                    ).fetchone()
-                if agent_row is None:
-                    return make_response(
-                        jsonify({"success": False, "message": "Agent not found"}),
-                        404,
-                    )
-                pg_agent_id = str(agent_row._mapping["id"])
-
-                users_repo = UsersRepository(conn)
-                user_doc = users_repo.upsert(user_id)
-                pinned_list = (
-                    user_doc.get("agent_preferences", {}).get("pinned", [])
-                    if isinstance(user_doc.get("agent_preferences"), dict)
-                    else []
-                )
-                if pg_agent_id in pinned_list:
-                    users_repo.remove_pinned(user_id, pg_agent_id)
-                    action = "unpinned"
-                else:
-                    users_repo.add_pinned(user_id, pg_agent_id)
-                    action = "pinned"
+                action, err = service.toggle_pin(conn, user_id, agent_id)
+                if err is not None:
+                    return err
         except Exception as err:
             current_app.logger.error(f"Error pinning/unpinning agent: {err}")
             return make_response(
@@ -1491,35 +447,9 @@ class RemoveSharedAgent(Resource):
             )
         try:
             with db_session() as conn:
-                from sqlalchemy import text as _sql_text
-
-                if looks_like_uuid(agent_id):
-                    agent_row = conn.execute(
-                        _sql_text(
-                            "SELECT id FROM agents "
-                            "WHERE id = CAST(:id AS uuid) AND shared = true"
-                        ),
-                        {"id": agent_id},
-                    ).fetchone()
-                else:
-                    agent_row = conn.execute(
-                        _sql_text(
-                            "SELECT id FROM agents "
-                            "WHERE legacy_mongo_id = :id AND shared = true"
-                        ),
-                        {"id": agent_id},
-                    ).fetchone()
-                if agent_row is None:
-                    return make_response(
-                        jsonify({"success": False, "message": "Shared agent not found"}),
-                        404,
-                    )
-                pg_agent_id = str(agent_row._mapping["id"])
-
-                users_repo = UsersRepository(conn)
-                users_repo.upsert(user_id)
-                users_repo.remove_agent_from_all(user_id, pg_agent_id)
-
+                _, err = service.remove_shared_agent(conn, user_id, agent_id)
+                if err is not None:
+                    return err
             return make_response(jsonify({"success": True, "action": "removed"}), 200)
         except Exception as err:
             current_app.logger.error(f"Error removing shared agent: {err}")
