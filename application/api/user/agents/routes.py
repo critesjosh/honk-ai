@@ -18,10 +18,10 @@ from application.core.json_schema_utils import (
     normalize_json_schema_payload,
 )
 from application.core.settings import settings
+from application.services.source_visibility import SourceVisibilityService
 from application.storage.db.base_repository import looks_like_uuid
 from application.storage.db.repositories.agent_folders import AgentFoldersRepository
 from application.storage.db.repositories.agents import AgentsRepository
-from application.storage.db.repositories.sources import SourcesRepository
 from application.storage.db.repositories.users import UsersRepository
 from application.storage.db.repositories.workflow_edges import WorkflowEdgesRepository
 from application.storage.db.repositories.workflow_nodes import WorkflowNodesRepository
@@ -147,27 +147,40 @@ def _resolve_workflow_for_user(conn, workflow_value, user):
     return str(workflow["id"]), None
 
 
-def _resolve_visible_sources(conn, user, source_uuids):
-    """Filter ``source_uuids`` to those visible to ``user``, preserving order.
+def _authorize_sources_or_error(conn, user, source_uuids):
+    """Resolve ``source_uuids`` for agent CRUD (untrusted request input).
 
-    Returns ``(visible_ids, missing_ids)``. ``visible_ids`` keeps the input
-    order so callers can use the result as a primary/extras list directly.
-    ``missing_ids`` lets the caller decide between 403 and silent skip;
-    for agent CRUD we 403 because the request is untrusted user input.
+    Returns ``(visible_ids, error_response)``. On success ``error_response``
+    is None and ``visible_ids`` is the input-order list of UUIDs the user
+    can see. On any malformed or invisible ID the function returns the
+    ready-to-return Flask error response (400 for malformed, 403 for
+    invisible) so the caller can ``return err`` directly.
+
+    Centralises agent-CRUD source-validation policy in one place — both
+    create and update used to inline this differently, with create
+    silently dropping non-UUIDs while update returned 400 for them.
     """
-    if not source_uuids:
-        return [], []
-    repo = SourcesRepository(conn)
-    visible = repo.list_visible_by_ids(user, [str(s) for s in source_uuids])
-    visible_ids: list[str] = []
-    missing_ids: list[str] = []
-    for sid in source_uuids:
-        sid_str = str(sid)
-        if sid_str in visible:
-            visible_ids.append(sid_str)
-        else:
-            missing_ids.append(sid_str)
-    return visible_ids, missing_ids
+    resolved = SourceVisibilityService(conn).resolve(user, source_uuids)
+    if resolved.invalid:
+        return [], make_response(
+            jsonify({
+                "success": False,
+                "message": f"Invalid source ID format: {resolved.invalid[0]}",
+            }),
+            400,
+        )
+    if resolved.missing:
+        return [], make_response(
+            jsonify({
+                "success": False,
+                "message": (
+                    "Source not found or not visible: "
+                    f"{resolved.missing[0]}"
+                ),
+            }),
+            403,
+        )
+    return resolved.visible, None
 
 
 def _resolve_folder_id(conn, folder_id, user):
@@ -557,42 +570,25 @@ class CreateAgent(Resource):
                             400,
                         )
 
-                # Resolve sources — only UUIDs accepted post-cutover, and
-                # every UUID must be visible to the requester (owned or
-                # ``is_public=TRUE``). Returns 403 on the first invisible
-                # ID rather than silently dropping; silent drop is what
-                # let the MCP grounding regression ship.
-                requested_uuids: list[str] = []
+                # Resolve sources via SourceVisibilityService. The service
+                # partitions inputs into invalid (malformed UUID) /
+                # missing (well-formed but not visible) / visible, so
+                # both create and update reject malformed entries with
+                # 400 (previously create silently dropped non-UUIDs
+                # while update returned 400 — divergent behaviour).
                 if data.get("sources"):
-                    for src in data["sources"]:
-                        if src == "default":
-                            continue
-                        if looks_like_uuid(src):
-                            requested_uuids.append(src)
+                    requested = data["sources"]
                     extras_only = True
                 else:
                     extras_only = False
                     source_value = data.get("source", "")
-                    if (
-                        source_value and source_value != "default"
-                        and looks_like_uuid(source_value)
-                    ):
-                        requested_uuids.append(source_value)
+                    requested = [source_value] if source_value else []
 
-                visible_ids, missing_ids = _resolve_visible_sources(
-                    conn, user, requested_uuids,
+                visible_ids, err = _authorize_sources_or_error(
+                    conn, user, requested,
                 )
-                if missing_ids:
-                    return make_response(
-                        jsonify({
-                            "success": False,
-                            "message": (
-                                "Source not found or not visible: "
-                                f"{missing_ids[0]}"
-                            ),
-                        }),
-                        403,
-                    )
+                if err is not None:
+                    return err
 
                 source_id_resolved = None
                 extra_source_ids: list[str] = []
@@ -810,67 +806,23 @@ class UpdateAgent(Resource):
                         source_id = data.get("source")
                         if not source_id or source_id == "default":
                             update_fields["source_id"] = None
-                        elif looks_like_uuid(source_id):
-                            visible, missing = _resolve_visible_sources(
-                                conn, user, [source_id],
-                            )
-                            if missing:
-                                return make_response(
-                                    jsonify({
-                                        "success": False,
-                                        "message": (
-                                            "Source not found or not "
-                                            f"visible: {missing[0]}"
-                                        ),
-                                    }),
-                                    403,
-                                )
-                            update_fields["source_id"] = visible[0]
-                        else:
-                            return make_response(
-                                jsonify(
-                                    {
-                                        "success": False,
-                                        "message": f"Invalid source ID format: {source_id}",
-                                    }
-                                ),
-                                400,
-                            )
+                            continue
+                        visible, err = _authorize_sources_or_error(
+                            conn, user, [source_id],
+                        )
+                        if err is not None:
+                            return err
+                        update_fields["source_id"] = visible[0] if visible else None
                     elif field == "sources":
                         sources_list = data.get("sources", []) or []
                         if not isinstance(sources_list, list):
                             update_fields["extra_source_ids"] = []
                             continue
-                        requested: list[str] = []
-                        for src in sources_list:
-                            if src == "default":
-                                continue
-                            if looks_like_uuid(src):
-                                requested.append(src)
-                            else:
-                                return make_response(
-                                    jsonify(
-                                        {
-                                            "success": False,
-                                            "message": f"Invalid source ID in list: {src}",
-                                        }
-                                    ),
-                                    400,
-                                )
-                        visible, missing = _resolve_visible_sources(
-                            conn, user, requested,
+                        visible, err = _authorize_sources_or_error(
+                            conn, user, sources_list,
                         )
-                        if missing:
-                            return make_response(
-                                jsonify({
-                                    "success": False,
-                                    "message": (
-                                        "Source not found or not visible: "
-                                        f"{missing[0]}"
-                                    ),
-                                }),
-                                403,
-                            )
+                        if err is not None:
+                            return err
                         update_fields["extra_source_ids"] = visible
                     elif field == "chunks":
                         chunks_value = data.get("chunks")
@@ -1374,22 +1326,24 @@ class AdoptAgent(Resource):
                     str(s) for s in [template_primary, *template_extras] if s
                 ]
                 if template_source_ids:
-                    visible = SourcesRepository(conn).list_visible_by_ids(
+                    resolved = SourceVisibilityService(conn).resolve(
                         user, template_source_ids,
                     )
-                    invisible = [
-                        sid for sid in template_source_ids
-                        if sid not in visible
-                    ]
-                    if invisible:
+                    if resolved.missing or resolved.invalid:
                         current_app.logger.warning(
                             f"AdoptAgent: template {agent_id} references "
-                            f"sources not visible to {user}: {invisible}"
+                            "sources not visible to "
+                            f"{user}: missing={resolved.missing} "
+                            f"invalid={resolved.invalid}"
                         )
-                    if template_primary and str(template_primary) in visible:
+                    if (
+                        template_primary
+                        and str(template_primary) in resolved.rows
+                    ):
                         create_kwargs["source_id"] = str(template_primary)
                     create_kwargs["extra_source_ids"] = [
-                        str(s) for s in template_extras if str(s) in visible
+                        str(s) for s in template_extras
+                        if str(s) in resolved.rows
                     ]
                 for col in (
                     "description", "agent_type", "image", "retriever",

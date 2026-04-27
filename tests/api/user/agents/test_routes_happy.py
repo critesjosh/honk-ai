@@ -1061,6 +1061,53 @@ class TestCreateAgentMore:
         )
         assert status == 400
 
+    def test_create_with_non_uuid_source_returns_400(self, app, pg_conn):
+        """Bug fix: create previously silently dropped non-UUID entries
+        in ``sources`` and saved an agent with no attached sources.
+        Update returned 400 for the same input — divergence between
+        create and update was the bug. Both now reject malformed shape
+        with 400 via SourceVisibilityService.
+        """
+        from application.api.user.agents.routes import CreateAgent
+
+        with _patch_db(pg_conn), app.test_request_context(
+            "/api/create_agent", method="POST",
+            json={
+                "name": "n", "description": "d", "status": "draft",
+                "agent_type": "classic",
+                "sources": ["not-a-uuid"],
+            },
+        ):
+            from flask import request
+            request.decoded_token = {"sub": "u-create-bad"}
+            response = CreateAgent().post()
+        status = (
+            response[1] if isinstance(response, tuple) else response.status_code
+        )
+        assert status == 400
+
+    def test_create_with_single_non_uuid_source_field_returns_400(
+        self, app, pg_conn,
+    ):
+        """Same fix on the singular ``source`` field path."""
+        from application.api.user.agents.routes import CreateAgent
+
+        with _patch_db(pg_conn), app.test_request_context(
+            "/api/create_agent", method="POST",
+            json={
+                "name": "n", "description": "d", "status": "draft",
+                "agent_type": "classic",
+                "source": "garbage",
+            },
+        ):
+            from flask import request
+            request.decoded_token = {"sub": "u-create-bad-2"}
+            response = CreateAgent().post()
+        status = (
+            response[1] if isinstance(response, tuple) else response.status_code
+        )
+        assert status == 400
+
 
 # ---------------------------------------------------------------------------
 # AdoptAgent — copies a template into user's agents
