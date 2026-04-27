@@ -16,9 +16,10 @@
 
 ### Access paths
 - **Web chat UI** — `https://aztec.adjacentpossible.dev`. Log in via Cloudflare
-  Access (email SSO). The default `Aztec 4.2.0` agent is scoped to all 9
-  corpora (Developer Docs, Network Docs, Aztec.nr, Example Contracts, Protocol
-  Circuits, aztec.js SDK, CLI, E2E Tests, L1 Contracts).
+  Access (email SSO). The default `Aztec 4.2.0` agent is scoped to all 12
+  corpora (Developer Docs, Aztec.nr Framework, Noir Language Docs, Example
+  Contracts, aztec.js SDK, TypeScript API, Noir stdlib, CLI, Network Docs,
+  E2E Tests, Protocol Circuits, L1 Contracts).
 - **Discord** — run `/mcp-key` in the Noir Discord to provision a personal
   MCP API key. `@`-mention the Aztec DocsGPT bot in any channel (or DM it)
   to chat directly. Responses are formatted for Discord (no Mermaid, no
@@ -64,15 +65,36 @@
   emitted on `/stream` rewrites each chunk's in-corpus path into a
   clickable public URL: rendered Developer Docs → `docs.aztec.network`,
   everything else (code, non-rendered docs) → GitHub blob at the
-  `v4.2.0` tag. Sources are capped at 5 per answer.
-- **RAG context cap** (`RAG_MAX_DOC_TOKENS`, default 15k, prod 6k) —
+  `v4.2.0` tag. Sources are deduped by rewritten URL and capped at 10
+  per answer.
+- **RAG context cap** (`RAG_MAX_DOC_TOKENS`, default 6k, prod 10k) —
   upstream feeds the model's full context window (~198k tokens) of
   retrieved docs on every query, which made answers take 60s+. The
-  cap keeps generation to 10–20s while still grounding well.
+  cap keeps generation to 10–20s while still grounding well. Bumped
+  to 10k once the corpus grew to 12 sources to reduce late-source
+  starvation.
+- **Global rerank retrieval** — upstream `ClassicRAG` iterated source
+  vectorstores FIFO, fetched k chunks per source, and broke once the
+  token budget filled. With 12 sources and a 9k budget, sources #1–#2
+  greedily consumed the entire budget and sources #4–#12 contributed
+  zero docs to every answer. Our retriever embeds the question once,
+  issues a single SQL query against pgvector with
+  `WHERE source_id = ANY(%s)`, then greedy-packs the globally-sorted
+  candidates. Retrieval is invariant to `AZTEC_SOURCE_IDS` ordering.
+- **Rephrase auth fix** — `ClassicRAG` defaulted `api_key` to an agent
+  UUID, which OpenRouter rejected with 401. The query rephrase step
+  silently fell back to the raw question, so multi-turn follow-ups
+  ("how does it differ?") went to retrieval without conversation
+  context. Fix: default `api_key=None` so the LLM backend resolves
+  the provider key.
 - **Primary-source-first retrieval fix** — upstream dropped
   `agent.source_id` when `extra_source_ids` existed, so the "primary"
   source was never actually searched. Our `stream_processor` prepends
   it back onto `sources_list`.
+- **Eval harness** (`scripts/eval/`) — 15 golden queries with two run
+  modes (direct retriever probe and end-to-end `/stream`) that assert
+  source coverage, source diversity, banned identifiers, no Markdown
+  tables, and per-query response-time SLAs. See `scripts/eval/README.md`.
 - **Reasoning-disable shim** — auto-injects
   `extra_body={"reasoning": {"exclude": true}}` for reasoning-mode
   OpenRouter models (e.g. `x-ai/grok-4.1-fast`) that would otherwise
