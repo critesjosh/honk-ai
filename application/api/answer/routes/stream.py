@@ -148,6 +148,16 @@ class StreamResource(Resource, BaseAnswerResource):
                 ),
                 mimetype="text/event-stream",
             )
+        except PermissionError as e:
+            logger.warning(
+                f"/stream - permission denied: {str(e)}",
+                extra={"error": str(e)},
+            )
+            return Response(
+                self.error_stream_generate(str(e)),
+                status=403,
+                mimetype="text/event-stream",
+            )
         except ValueError as e:
             message = "Malformed request body"
             logger.error(

@@ -1359,11 +1359,42 @@ class AdoptAgent(Resource):
                 now = datetime.datetime.now(datetime.timezone.utc)
                 new_key = str(uuid.uuid4())
                 create_kwargs: dict = {}
+                # Filter the template's source attachments through the
+                # adopter's visibility scope. A template is system-owned
+                # and SHOULD reference is_public=TRUE corpora, but if it
+                # was misconfigured (or shipped from a different
+                # environment) we drop the invisible UUIDs rather than
+                # persist them onto the new row. Step 3's runtime check
+                # would already reject them at query time; this keeps
+                # the persisted state honest and surfaces misconfig in
+                # logs.
+                template_primary = template.get("source_id")
+                template_extras = list(template.get("extra_source_ids") or [])
+                template_source_ids = [
+                    str(s) for s in [template_primary, *template_extras] if s
+                ]
+                if template_source_ids:
+                    visible = SourcesRepository(conn).list_visible_by_ids(
+                        user, template_source_ids,
+                    )
+                    invisible = [
+                        sid for sid in template_source_ids
+                        if sid not in visible
+                    ]
+                    if invisible:
+                        current_app.logger.warning(
+                            f"AdoptAgent: template {agent_id} references "
+                            f"sources not visible to {user}: {invisible}"
+                        )
+                    if template_primary and str(template_primary) in visible:
+                        create_kwargs["source_id"] = str(template_primary)
+                    create_kwargs["extra_source_ids"] = [
+                        str(s) for s in template_extras if str(s) in visible
+                    ]
                 for col in (
                     "description", "agent_type", "image", "retriever",
                     "default_model_id",
-                    "source_id", "prompt_id", "folder_id", "workflow_id",
-                    "extra_source_ids",
+                    "prompt_id", "folder_id", "workflow_id",
                 ):
                     val = template.get(col)
                     if val not in (None, ""):

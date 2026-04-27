@@ -1116,6 +1116,53 @@ class TestAdoptAgentMore:
             response = AdoptAgent().post()
         assert response.status_code == 400
 
+    def test_adopt_drops_invisible_template_sources(self, app, pg_conn):
+        """A template referencing a non-public source owned by 'system'
+        is invisible to the adopter — that source UUID must not be
+        copied onto the new agent row, even if Step 3's runtime check
+        would later filter it out at query time. Defense-in-depth.
+        """
+        from sqlalchemy import text as _sql_text
+
+        from application.api.user.agents.routes import AdoptAgent
+        from application.storage.db.repositories.agents import AgentsRepository
+        from application.storage.db.repositories.sources import SourcesRepository
+
+        sources = SourcesRepository(pg_conn)
+        public_src = sources.create("public-src", user_id="system")
+        private_src = sources.create("private-src", user_id="system")
+        # Mark only one as public.
+        pg_conn.execute(
+            _sql_text(
+                "UPDATE sources SET is_public = TRUE "
+                "WHERE id = CAST(:i AS uuid)"
+            ),
+            {"i": public_src["id"]},
+        )
+
+        repo = AgentsRepository(pg_conn)
+        template = repo.create(
+            "__system__", "T", "template",
+            source_id=public_src["id"],
+            extra_source_ids=[private_src["id"]],
+        )
+
+        with _patch_db(pg_conn), app.test_request_context(
+            f"/api/adopt_agent?id={template['id']}", method="POST"
+        ):
+            from flask import request
+            request.decoded_token = {"sub": "u-adopter"}
+            response = AdoptAgent().post()
+
+        assert response.status_code == 200
+        body = response.get_json()
+        adopted = repo.find_by_key(body["agent"]["key"])
+        # Public source survived the filter.
+        assert str(adopted["source_id"]) == str(public_src["id"])
+        # Private source dropped from extras.
+        adopted_extras = [str(x) for x in (adopted["extra_source_ids"] or [])]
+        assert str(private_src["id"]) not in adopted_extras
+
 
 class TestPinAgentMore:
     def test_toggle_pin(self, app, pg_conn):

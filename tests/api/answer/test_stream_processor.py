@@ -523,21 +523,72 @@ class TestConfigureRetriever:
 class TestConfigureSource:
 
     @pytest.mark.unit
-    def test_active_docs_from_request(self):
+    def test_active_docs_from_request_visible(self):
+        """Direct active_docs path from a JWT user: each UUID is checked
+        against ``list_visible_by_ids`` for that user. Visible UUIDs are
+        accepted and stored on ``self.source``.
+        """
         mock_db = MagicMock()
-        with patch("application.api.answer.services.stream_processor.MongoDB") as MockMongo, \
-             patch("application.api.answer.services.stream_processor.settings") as mock_settings:
+
+        # Stub the visibility resolver so this stays a unit test (no DB).
+        # The integration test below uses the real pg_conn fixture.
+        fake_visible = {"source_123": {"id": "source_123", "name": "src"}}
+        with patch(
+            "application.api.answer.services.stream_processor.MongoDB"
+        ) as MockMongo, patch(
+            "application.api.answer.services.stream_processor.settings"
+        ) as mock_settings, patch(
+            "application.api.answer.services.stream_processor.db_readonly"
+        ) as mock_db_ro, patch(
+            "application.api.answer.services.stream_processor.SourcesRepository"
+        ) as MockSrcRepo:
             mock_settings.MONGO_DB_NAME = "docsgpt"
             MockMongo.get_client.return_value = {"docsgpt": mock_db}
+            mock_db_ro.return_value.__enter__ = lambda self: mock_db
+            mock_db_ro.return_value.__exit__ = lambda *a: None
+            MockSrcRepo.return_value.list_visible_by_ids.return_value = fake_visible
 
             from application.api.answer.services.stream_processor import StreamProcessor
             sp = StreamProcessor(
                 request_data={"question": "Q", "active_docs": "source_123"},
                 decoded_token={"sub": "u"},
             )
-        sp.agent_key = None
-        sp._configure_source()
+            sp.agent_key = None
+            sp._configure_source()
         assert sp.source == {"active_docs": "source_123"}
+
+    @pytest.mark.unit
+    def test_active_docs_from_request_invisible_raises(self):
+        """If a UUID in the request is not visible to the JWT user, the
+        configurator raises PermissionError (the route translates to 403).
+        """
+        mock_db = MagicMock()
+        with patch(
+            "application.api.answer.services.stream_processor.MongoDB"
+        ) as MockMongo, patch(
+            "application.api.answer.services.stream_processor.settings"
+        ) as mock_settings, patch(
+            "application.api.answer.services.stream_processor.db_readonly"
+        ) as mock_db_ro, patch(
+            "application.api.answer.services.stream_processor.SourcesRepository"
+        ) as MockSrcRepo:
+            mock_settings.MONGO_DB_NAME = "docsgpt"
+            MockMongo.get_client.return_value = {"docsgpt": mock_db}
+            mock_db_ro.return_value.__enter__ = lambda self: mock_db
+            mock_db_ro.return_value.__exit__ = lambda *a: None
+            MockSrcRepo.return_value.list_visible_by_ids.return_value = {}
+
+            from application.api.answer.services.stream_processor import StreamProcessor
+            sp = StreamProcessor(
+                request_data={
+                    "question": "Q",
+                    "active_docs": ["foreign-private-uuid"],
+                },
+                decoded_token={"sub": "u"},
+            )
+            sp.agent_key = None
+            with pytest.raises(PermissionError):
+                sp._configure_source()
 
     @pytest.mark.unit
     def test_no_source_config(self):
