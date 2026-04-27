@@ -159,6 +159,49 @@ class SourcesRepository:
                 return row
         return self.get_by_legacy_id(source_id, user_id)
 
+    def get_for_aztec_mcp_agent(
+        self, source_id: str, agent_id: str,
+    ) -> Optional[dict]:
+        """Resolve a source visible to a verified Aztec MCP agent.
+
+        Step-1 hot-fix for the source-ownership mismatch on the Discord MCP
+        path: sources are ingested as ``user_id='local'`` but Discord MCP
+        agents have ``user_id='discord:<id>'``, so the standard
+        ``get(sid, user_id)`` returns None for every source and retrieval
+        is silently empty.
+
+        Trust boundary: the agent row is created by
+        ``/api/internal/create_mcp_key`` which is gated on
+        ``MCP_PROVISIONING_KEY`` and only writes a fixed set of source UUIDs
+        (validated against the configured ``AZTEC_SOURCE_IDS``). The source
+        UUIDs persisted on that row are therefore authoritative for the
+        purposes of this lookup. This method requires
+        ``mcp_purpose='aztec_mcp'`` so it can never be used to read a
+        source via a non-MCP agent — even if a future bug in agent
+        create/update lets a user attach a foreign source UUID, that path
+        won't enter this resolver.
+
+        Step 3 of the source-visibility plan replaces this with a batched
+        ``list_visible_by_ids`` resolver that honors a generic
+        ``sources.is_public`` flag. Until that ships, this method is the
+        narrow exception.
+        """
+        result = self._conn.execute(
+            text(
+                "SELECT s.* FROM sources s "
+                "JOIN agents a ON a.id = CAST(:agent_id AS uuid) "
+                "  AND a.mcp_purpose = 'aztec_mcp' "
+                "  AND a.mcp_provider IS NOT NULL "
+                "WHERE s.id = CAST(:id AS uuid) "
+                "  AND s.id = ANY( "
+                "    ARRAY[a.source_id] || COALESCE(a.extra_source_ids, '{}'::uuid[]) "
+                "  )"
+            ),
+            {"id": source_id, "agent_id": agent_id},
+        )
+        row = result.fetchone()
+        return row_to_dict(row) if row is not None else None
+
     def list_for_user(
         self,
         user_id: str,
