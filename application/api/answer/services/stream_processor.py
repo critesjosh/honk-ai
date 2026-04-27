@@ -378,10 +378,27 @@ class StreamProcessor:
             data: Dict[str, Any] = dict(agent)
             data["user"] = agent.get("user_id")
 
+            # Aztec MCP agents (Discord-provisioned) have user_id='discord:<id>'
+            # but the corpora are owned by user_id='local', so the standard
+            # owner-scoped resolver returns None for every source and
+            # retrieval is silently empty. For these agents only, use the
+            # narrow resolver that authorizes via the agent's persisted
+            # source UUIDs (set by the trusted /api/internal/create_mcp_key
+            # endpoint).
+            is_aztec_mcp = agent.get("mcp_purpose") == "aztec_mcp"
+            agent_id = agent.get("id")
+
+            def _resolve_source(sid: str) -> Optional[dict]:
+                if is_aztec_mcp and agent_id is not None:
+                    return sources_repo.get_for_aztec_mcp_agent(
+                        str(sid), str(agent_id),
+                    )
+                return sources_repo.get(str(sid), agent.get("user_id"))
+
             # Resolve the primary source row (if any) for retriever/chunks.
             source_id = agent.get("source_id")
             if source_id:
-                source_doc = sources_repo.get(str(source_id), agent.get("user_id"))
+                source_doc = _resolve_source(source_id)
                 if source_doc:
                     data["source"] = str(source_doc["id"])
                     data["retriever"] = source_doc.get(
@@ -403,7 +420,7 @@ class StreamProcessor:
             # first in that array dominated the top-N citations.
             sources_list = []
             if source_id:
-                source_doc = sources_repo.get(str(source_id), agent.get("user_id"))
+                source_doc = _resolve_source(source_id)
                 if source_doc:
                     sources_list.append(
                         {
@@ -416,7 +433,7 @@ class StreamProcessor:
                     )
             extra = agent.get("extra_source_ids") or []
             for sid in extra:
-                source_doc = sources_repo.get(str(sid), agent.get("user_id"))
+                source_doc = _resolve_source(sid)
                 if source_doc:
                     sources_list.append(
                         {

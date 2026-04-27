@@ -140,9 +140,18 @@ class AgentsRepository:
         """Atomically upsert one agent per (mcp_provider, mcp_provider_user_id, mcp_purpose).
 
         Insert: populate every field; `key` is the generated API key.
-        Update: only refresh `name` (Discord usernames change) and `updated_at`.
-        Caller distinguishes create vs update by comparing `created_at` and
-        `updated_at` on the returned row.
+
+        Update: refresh the fields that come from the latest provisioning
+        call so existing users pick up corpus changes — name (Discord
+        usernames change), description, source_id, extra_source_ids,
+        chunks, retriever. The provisioning endpoint (gated by
+        ``MCP_PROVISIONING_KEY``) is the source of truth for these. The
+        ``key`` field is **deliberately preserved** so existing users
+        don't lose access in their already-configured MCP clients
+        (Claude Desktop, Cursor, etc.).
+
+        Caller distinguishes create vs update by comparing ``created_at``
+        and ``updated_at`` on the returned row.
         """
         values = {
             "user_id": user_id,
@@ -169,7 +178,15 @@ class AgentsRepository:
         stmt = stmt.on_conflict_do_update(
             index_elements=["mcp_provider", "mcp_provider_user_id", "mcp_purpose"],
             index_where=agents_table.c.mcp_provider.is_not(None),
-            set_={"name": stmt.excluded.name, "updated_at": func.now()},
+            set_={
+                "name": stmt.excluded.name,
+                "description": stmt.excluded.description,
+                "source_id": stmt.excluded.source_id,
+                "extra_source_ids": stmt.excluded.extra_source_ids,
+                "chunks": stmt.excluded.chunks,
+                "retriever": stmt.excluded.retriever,
+                "updated_at": func.now(),
+            },
         ).returning(agents_table)
         result = self._conn.execute(stmt)
         return row_to_dict(result.fetchone())

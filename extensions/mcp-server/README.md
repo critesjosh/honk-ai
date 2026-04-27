@@ -1,6 +1,23 @@
 # DocsGPT MCP Server for Aztec Network
 
-An [MCP (Model Context Protocol)](https://modelcontextprotocol.io/) server that gives LLMs access to the Aztec Network knowledge base via DocsGPT. Install it to query Aztec developer docs, smart contract patterns, the Aztec.nr framework, aztec.js SDK, protocol circuits, and more from Claude Desktop, Cursor, Claude Code, or any MCP-compatible client.
+An [MCP (Model Context Protocol)](https://modelcontextprotocol.io/) server that gives LLMs access to the Aztec Network knowledge base via DocsGPT. Install it to query the v4.2.0 corpus from Claude Desktop, Cursor, Claude Code, or any MCP-compatible client.
+
+## What's indexed
+
+The default `Aztec 4.2.0` agent searches all 12 v4.2.0 corpora:
+
+- Aztec Developer Docs (`docs.aztec.network` rendered docs)
+- Aztec Network Docs
+- Aztec.nr Framework (smart-contract framework, Noir)
+- Example Contracts (`noir-contracts`)
+- Aztec Protocol Circuits
+- aztec.js SDK (TypeScript)
+- Aztec CLI + CLI Wallet
+- Aztec E2E Tests (working examples in TypeScript)
+- Aztec L1 Contracts (Solidity)
+- Aztec TypeScript API reference
+- Noir Language Docs (the Noir language itself)
+- Noir stdlib (`std::hash`, `std::ec`, `BoundedVec`, etc.)
 
 ## Getting Your API Key
 
