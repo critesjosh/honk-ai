@@ -160,6 +160,9 @@ class CreateAgent(Resource):
                 except json.JSONDecodeError:
                     data["models"] = []
 
+        if (err := service.validate_create_request(data)) is not None:
+            return err
+
         image_url, error = handle_image_upload(request, "", user, storage)
         if error:
             return make_response(

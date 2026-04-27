@@ -415,11 +415,18 @@ def list_template_agents(conn):
 # ---------------------------------------------------------------------------
 
 
-def create_agent(conn, user, data, image_url):
-    """Create an agent for ``user`` from a parsed request payload.
+def validate_create_request(data):
+    """Pre-DB validation for the create-agent payload.
 
-    Returns ``(payload, err)`` where ``payload`` is ``{"id": ..., "key": ...}``
-    on success and ``err`` is a Flask error response on failure.
+    Mutates ``data`` in place to normalise ``json_schema``. Returns a
+    Flask error response on failure or ``None`` on success.
+
+    Kept separate from :func:`create_agent` so the route can fail fast
+    before performing image upload — otherwise a malformed payload (bad
+    JSON schema / missing required field / unsupported status) would
+    leave an uploaded image on disk that the caller never persisted.
+    DB-dependent checks (source visibility, folder/workflow ownership)
+    still happen inside ``create_agent`` after upload.
     """
     if "json_schema" in data:
         try:
@@ -427,13 +434,13 @@ def create_agent(conn, user, data, image_url):
                 data.get("json_schema")
             )
         except JsonSchemaValidationError:
-            return None, make_response(
+            return make_response(
                 jsonify({"success": False, "message": "Invalid JSON schema"}),
                 400,
             )
 
     if data.get("status") not in ["draft", "published"]:
-        return None, make_response(
+        return make_response(
             jsonify(
                 {
                     "success": False,
@@ -446,8 +453,6 @@ def create_agent(conn, user, data, image_url):
     agent_type = data.get("agent_type", "")
     if not agent_type or agent_type not in AGENT_TYPE_SCHEMAS:
         schema = AGENT_TYPE_SCHEMAS["classic"]
-        if not agent_type:
-            agent_type = "classic"
     else:
         schema = AGENT_TYPE_SCHEMAS[agent_type]
 
@@ -460,7 +465,7 @@ def create_agent(conn, user, data, image_url):
             and not data.get("source")
             and not data.get("sources")
         ):
-            return None, make_response(
+            return make_response(
                 jsonify(
                     {
                         "success": False,
@@ -473,12 +478,30 @@ def create_agent(conn, user, data, image_url):
         required_fields = schema["required_draft"]
         validate_fields = schema["validate_draft"]
 
-    missing_fields = check_required_fields(data, required_fields)
-    if missing_fields:
-        return None, missing_fields
-    invalid_fields = validate_required_fields(data, validate_fields)
-    if invalid_fields:
-        return None, invalid_fields
+    missing = check_required_fields(data, required_fields)
+    if missing:
+        return missing
+    invalid = validate_required_fields(data, validate_fields)
+    if invalid:
+        return invalid
+    return None
+
+
+def create_agent(conn, user, data, image_url):
+    """Create an agent for ``user`` from a *pre-validated* request payload.
+
+    The caller is expected to have run :func:`validate_create_request`
+    against ``data`` first (the route does so before image upload). This
+    function only handles checks that need a DB connection: source
+    visibility, folder ownership, workflow ownership.
+
+    Returns ``(payload, err)`` where ``payload`` is ``{"id": ..., "key": ...}``
+    on success and ``err`` is a Flask error response on failure.
+    """
+    agent_type = data.get("agent_type") or "classic"
+    if agent_type not in AGENT_TYPE_SCHEMAS:
+        agent_type = "classic"
+    is_published = data.get("status") == "published"
 
     key = str(uuid.uuid4()) if is_published else ""
 
