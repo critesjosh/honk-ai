@@ -25,7 +25,7 @@ from application.storage.db.repositories.sources import SourcesRepository
 @pytest.fixture
 def _mock_remote_pipeline(monkeypatch):
     """Stub out the non-PG boundaries used by ``remote_worker``."""
-    from application import worker
+    from application.workers import connectors as worker
 
     fake_loader = MagicMock(name="remote_loader")
     fake_loader.load_data.return_value = [
@@ -58,7 +58,7 @@ class TestRemoteWorkerSyncUpdatesDate:
         monkeypatch,
         _mock_remote_pipeline,
     ):
-        from application import worker
+        from application.workers import connectors as worker
 
         # Seed a source with a known old ``date`` we can compare against.
         import datetime as dt
@@ -108,7 +108,7 @@ class TestSyncWorker:
         each to ``sync``. We assert the seeded row is discovered and
         forwarded with the right doc_id — the nested ``sync`` call is
         stubbed so we don't re-run the whole remote pipeline here."""
-        from application import worker
+        from application.workers import connectors as worker
 
         src = SourcesRepository(pg_conn).create(
             "weekly-feed",
@@ -165,7 +165,7 @@ class TestRemoteWorkerPathTraversal:
         monkeypatch,
         _mock_remote_pipeline,
     ):
-        from application import worker
+        from application.workers import connectors as worker
 
         created_paths: list[str] = []
         deleted_paths: list[str] = []

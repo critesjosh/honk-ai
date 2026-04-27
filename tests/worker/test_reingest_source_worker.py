@@ -21,7 +21,7 @@ class TestReingestSourceWorker:
     def test_updates_source_directory_structure_and_tokens(
         self, pg_conn, patch_worker_db, task_self, monkeypatch
     ):
-        from application import worker
+        from application.workers import reingest as worker
 
         # Seed a source we can re-ingest.
         src = SourcesRepository(pg_conn).create(

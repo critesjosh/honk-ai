@@ -22,7 +22,7 @@ class TestAttachmentWorker:
     def test_inserts_row_in_attachments(
         self, pg_conn, patch_worker_db, task_self, monkeypatch
     ):
-        from application import worker
+        from application.workers import attachments as worker
 
         fake_doc = Document(
             text="hello world",

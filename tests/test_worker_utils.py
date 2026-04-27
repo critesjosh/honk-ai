@@ -164,7 +164,7 @@ class TestValidateZipSafety:
             # patch the cap to trigger the "too many files" branch.
             for i in range(20):
                 zf.writestr(f"f{i}.txt", "x")
-        with patch("application.worker.MAX_FILE_COUNT", 5):
+        with patch("application.workers.zip_safety.MAX_FILE_COUNT", 5):
             with pytest.raises(ZipExtractionError):
                 _validate_zip_safety(str(zip_path), str(tmp_path))
 
@@ -214,7 +214,7 @@ class TestDownloadFile:
         mock_response.raise_for_status = MagicMock()
 
         with patch(
-            "application.worker.requests.get", return_value=mock_response,
+            "application.workers._helpers.requests.get", return_value=mock_response,
         ):
             download_file("http://ex/foo", {}, str(dest))
 
@@ -225,7 +225,7 @@ class TestDownloadFile:
         import requests
 
         with patch(
-            "application.worker.requests.get",
+            "application.workers._helpers.requests.get",
             side_effect=requests.RequestException("boom"),
         ):
             with pytest.raises(requests.RequestException):
@@ -242,13 +242,13 @@ class TestUploadIndex:
         mock_response.raise_for_status = MagicMock()
 
         with patch(
-            "application.worker.settings.VECTOR_STORE", "milvus"
+            "application.workers._helpers.settings.VECTOR_STORE", "milvus"
         ), patch(
-            "application.worker.settings.API_URL", "http://api/"
+            "application.workers._helpers.settings.API_URL", "http://api/"
         ), patch(
-            "application.worker.settings.INTERNAL_KEY", "k"
+            "application.workers._helpers.settings.INTERNAL_KEY", "k"
         ), patch(
-            "application.worker.requests.post", return_value=mock_response,
+            "application.workers._helpers.requests.post", return_value=mock_response,
         ) as mock_post:
             upload_index(str(tmp_path), {"source_id": "1"})
 
@@ -261,7 +261,7 @@ class TestUploadIndex:
         from application.worker import upload_index
 
         with patch(
-            "application.worker.settings.VECTOR_STORE", "faiss"
+            "application.workers._helpers.settings.VECTOR_STORE", "faiss"
         ):
             with pytest.raises(FileNotFoundError):
                 upload_index(str(tmp_path), {"source_id": "1"})
@@ -274,13 +274,13 @@ class TestUploadIndex:
         mock_response = MagicMock()
 
         with patch(
-            "application.worker.settings.VECTOR_STORE", "faiss"
+            "application.workers._helpers.settings.VECTOR_STORE", "faiss"
         ), patch(
-            "application.worker.settings.API_URL", "http://api/"
+            "application.workers._helpers.settings.API_URL", "http://api/"
         ), patch(
-            "application.worker.settings.INTERNAL_KEY", ""
+            "application.workers._helpers.settings.INTERNAL_KEY", ""
         ), patch(
-            "application.worker.requests.post", return_value=mock_response,
+            "application.workers._helpers.requests.post", return_value=mock_response,
         ) as mock_post:
             upload_index(str(tmp_path), {"source_id": "1"})
 

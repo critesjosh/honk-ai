@@ -28,7 +28,7 @@ class TestIngestWorker:
     def test_invokes_upload_index_with_expected_payload(
         self, patch_worker_db, task_self, monkeypatch
     ):
-        from application import worker
+        from application.workers import ingest as worker
 
         # Storage: pretend a single file was uploaded at ``inputs/.../a.txt``.
         from io import BytesIO

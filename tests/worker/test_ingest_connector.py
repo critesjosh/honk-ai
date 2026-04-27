@@ -20,7 +20,7 @@ from application.storage.db.repositories.sources import SourcesRepository
 @pytest.fixture
 def _mock_connector_pipeline(monkeypatch):
     """Stub the connector + pipeline so only PG writes are real."""
-    from application import worker
+    from application.workers import connectors as worker
 
     fake_connector = MagicMock(name="connector")
     fake_connector.download_to_directory.return_value = {
@@ -74,7 +74,7 @@ class TestIngestConnectorSyncUpdatesDate:
         monkeypatch,
         _mock_connector_pipeline,
     ):
-        from application import worker
+        from application.workers import connectors as worker
         import datetime as dt
 
         old_date = dt.datetime(2019, 6, 1, tzinfo=dt.timezone.utc)
