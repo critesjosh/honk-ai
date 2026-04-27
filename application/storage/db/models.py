@@ -164,6 +164,7 @@ sources_table = Table(
     Column("created_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
     Column("updated_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
     Column("legacy_mongo_id", Text),
+    Column("is_public", Boolean, nullable=False, server_default="false"),
 )
 
 agents_table = Table(

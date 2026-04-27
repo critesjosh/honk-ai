@@ -378,35 +378,34 @@ class StreamProcessor:
             data: Dict[str, Any] = dict(agent)
             data["user"] = agent.get("user_id")
 
-            # Aztec MCP agents (Discord-provisioned) have user_id='discord:<id>'
-            # but the corpora are owned by user_id='local', so the standard
-            # owner-scoped resolver returns None for every source and
-            # retrieval is silently empty. For these agents only, use the
-            # narrow resolver that authorizes via the agent's persisted
-            # source UUIDs (set by the trusted /api/internal/create_mcp_key
-            # endpoint).
-            is_aztec_mcp = agent.get("mcp_purpose") == "aztec_mcp"
-            agent_id = agent.get("id")
+            # Build the ordered retrieval list as [primary, *extras] in
+            # one batched lookup. Visibility is owner-OR-public via
+            # ``list_visible_by_ids``: Discord MCP agents own nothing but
+            # see the Aztec corpora because those rows are
+            # ``is_public=TRUE`` (see migration 0004_sources_is_public).
+            # Sources that aren't visible to the agent owner are silently
+            # skipped — the agent's source list is curated by the trusted
+            # /api/internal/create_mcp_key path or by the agent owner via
+            # CRUD, so dropping is safer than 403'ing the whole request.
+            primary_id = agent.get("source_id")
+            extra_ids = list(agent.get("extra_source_ids") or [])
+            ordered_ids: list[str] = []
+            if primary_id:
+                ordered_ids.append(str(primary_id))
+            ordered_ids.extend(str(x) for x in extra_ids)
 
-            def _resolve_source(sid: str) -> Optional[dict]:
-                if is_aztec_mcp and agent_id is not None:
-                    return sources_repo.get_for_aztec_mcp_agent(
-                        str(sid), str(agent_id),
-                    )
-                return sources_repo.get(str(sid), agent.get("user_id"))
+            visible = sources_repo.list_visible_by_ids(
+                agent.get("user_id"), ordered_ids,
+            )
 
             # Resolve the primary source row (if any) for retriever/chunks.
-            source_id = agent.get("source_id")
-            if source_id:
-                source_doc = _resolve_source(source_id)
-                if source_doc:
-                    data["source"] = str(source_doc["id"])
-                    data["retriever"] = source_doc.get(
-                        "retriever", data.get("retriever")
-                    )
-                    data["chunks"] = source_doc.get("chunks", data.get("chunks"))
-                else:
-                    data["source"] = None
+            primary_doc = visible.get(str(primary_id)) if primary_id else None
+            if primary_doc:
+                data["source"] = str(primary_doc["id"])
+                data["retriever"] = primary_doc.get(
+                    "retriever", data.get("retriever")
+                )
+                data["chunks"] = primary_doc.get("chunks", data.get("chunks"))
             else:
                 data["source"] = None
 
@@ -419,21 +418,8 @@ class StreamProcessor:
             # `extra_source_ids[0]`, so whichever source happened to be
             # first in that array dominated the top-N citations.
             sources_list = []
-            if source_id:
-                source_doc = _resolve_source(source_id)
-                if source_doc:
-                    sources_list.append(
-                        {
-                            "id": str(source_doc["id"]),
-                            "retriever": source_doc.get("retriever", "classic"),
-                            "chunks": source_doc.get(
-                                "chunks", data.get("chunks", "2")
-                            ),
-                        }
-                    )
-            extra = agent.get("extra_source_ids") or []
-            for sid in extra:
-                source_doc = _resolve_source(sid)
+            for sid in ordered_ids:
+                source_doc = visible.get(sid)
                 if source_doc:
                     sources_list.append(
                         {

@@ -21,6 +21,7 @@ from application.core.settings import settings
 from application.storage.db.base_repository import looks_like_uuid
 from application.storage.db.repositories.agent_folders import AgentFoldersRepository
 from application.storage.db.repositories.agents import AgentsRepository
+from application.storage.db.repositories.sources import SourcesRepository
 from application.storage.db.repositories.users import UsersRepository
 from application.storage.db.repositories.workflow_edges import WorkflowEdgesRepository
 from application.storage.db.repositories.workflow_nodes import WorkflowNodesRepository
@@ -144,6 +145,29 @@ def _resolve_workflow_for_user(conn, workflow_value, user):
             jsonify({"success": False, "message": "Workflow not found"}), 404
         )
     return str(workflow["id"]), None
+
+
+def _resolve_visible_sources(conn, user, source_uuids):
+    """Filter ``source_uuids`` to those visible to ``user``, preserving order.
+
+    Returns ``(visible_ids, missing_ids)``. ``visible_ids`` keeps the input
+    order so callers can use the result as a primary/extras list directly.
+    ``missing_ids`` lets the caller decide between 403 and silent skip;
+    for agent CRUD we 403 because the request is untrusted user input.
+    """
+    if not source_uuids:
+        return [], []
+    repo = SourcesRepository(conn)
+    visible = repo.list_visible_by_ids(user, [str(s) for s in source_uuids])
+    visible_ids: list[str] = []
+    missing_ids: list[str] = []
+    for sid in source_uuids:
+        sid_str = str(sid)
+        if sid_str in visible:
+            visible_ids.append(sid_str)
+        else:
+            missing_ids.append(sid_str)
+    return visible_ids, missing_ids
 
 
 def _resolve_folder_id(conn, folder_id, user):
@@ -533,19 +557,49 @@ class CreateAgent(Resource):
                             400,
                         )
 
-                # Resolve sources — only UUIDs accepted post-cutover.
-                source_id_resolved = None
-                extra_source_ids: list[str] = []
+                # Resolve sources — only UUIDs accepted post-cutover, and
+                # every UUID must be visible to the requester (owned or
+                # ``is_public=TRUE``). Returns 403 on the first invisible
+                # ID rather than silently dropping; silent drop is what
+                # let the MCP grounding regression ship.
+                requested_uuids: list[str] = []
                 if data.get("sources"):
                     for src in data["sources"]:
                         if src == "default":
                             continue
                         if looks_like_uuid(src):
-                            extra_source_ids.append(src)
+                            requested_uuids.append(src)
+                    extras_only = True
                 else:
+                    extras_only = False
                     source_value = data.get("source", "")
-                    if source_value and source_value != "default" and looks_like_uuid(source_value):
-                        source_id_resolved = source_value
+                    if (
+                        source_value and source_value != "default"
+                        and looks_like_uuid(source_value)
+                    ):
+                        requested_uuids.append(source_value)
+
+                visible_ids, missing_ids = _resolve_visible_sources(
+                    conn, user, requested_uuids,
+                )
+                if missing_ids:
+                    return make_response(
+                        jsonify({
+                            "success": False,
+                            "message": (
+                                "Source not found or not visible: "
+                                f"{missing_ids[0]}"
+                            ),
+                        }),
+                        403,
+                    )
+
+                source_id_resolved = None
+                extra_source_ids: list[str] = []
+                if extras_only:
+                    extra_source_ids = visible_ids
+                elif visible_ids:
+                    source_id_resolved = visible_ids[0]
 
                 build_data = dict(data)
                 build_data["folder_id"] = pg_folder_id
@@ -757,7 +811,21 @@ class UpdateAgent(Resource):
                         if not source_id or source_id == "default":
                             update_fields["source_id"] = None
                         elif looks_like_uuid(source_id):
-                            update_fields["source_id"] = source_id
+                            visible, missing = _resolve_visible_sources(
+                                conn, user, [source_id],
+                            )
+                            if missing:
+                                return make_response(
+                                    jsonify({
+                                        "success": False,
+                                        "message": (
+                                            "Source not found or not "
+                                            f"visible: {missing[0]}"
+                                        ),
+                                    }),
+                                    403,
+                                )
+                            update_fields["source_id"] = visible[0]
                         else:
                             return make_response(
                                 jsonify(
@@ -773,12 +841,12 @@ class UpdateAgent(Resource):
                         if not isinstance(sources_list, list):
                             update_fields["extra_source_ids"] = []
                             continue
-                        valid: list[str] = []
+                        requested: list[str] = []
                         for src in sources_list:
                             if src == "default":
                                 continue
                             if looks_like_uuid(src):
-                                valid.append(src)
+                                requested.append(src)
                             else:
                                 return make_response(
                                     jsonify(
@@ -789,7 +857,21 @@ class UpdateAgent(Resource):
                                     ),
                                     400,
                                 )
-                        update_fields["extra_source_ids"] = valid
+                        visible, missing = _resolve_visible_sources(
+                            conn, user, requested,
+                        )
+                        if missing:
+                            return make_response(
+                                jsonify({
+                                    "success": False,
+                                    "message": (
+                                        "Source not found or not visible: "
+                                        f"{missing[0]}"
+                                    ),
+                                }),
+                                403,
+                            )
+                        update_fields["extra_source_ids"] = visible
                     elif field == "chunks":
                         chunks_value = data.get("chunks")
                         if chunks_value in ("", None):

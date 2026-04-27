@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import uuid
 
-from application.storage.db.repositories.agents import AgentsRepository
 from application.storage.db.repositories.sources import SourcesRepository
 
 
@@ -292,107 +290,80 @@ class TestDelete:
         assert repo.get(created["id"], "u") is not None
 
 
-class TestGetForAztecMcpAgent:
-    """The narrow resolver used to authorize source reads for Aztec MCP
-    agents. The legitimate use is: source owned by 'local' (the ingest
-    user) but read via an agent with user_id='discord:<id>'.
+class TestListVisibleByIds:
+    """The batched visibility resolver: returns the subset of source UUIDs
+    visible to ``user_id`` (owned OR is_public=TRUE) as a {uuid: row} map.
+    Designed to be the single source-authorization gate for every entry
+    point that takes a source UUID from a request.
     """
 
-    def _make_agent(
-        self,
-        conn,
-        *,
-        user_id: str,
-        sources: list[str],
-        mcp_purpose: str | None = "aztec_mcp",
-        mcp_provider: str | None = "discord",
-    ) -> dict:
-        primary = sources[0] if sources else None
-        extras = sources[1:] if len(sources) > 1 else []
-        return AgentsRepository(conn).upsert_mcp_key(
-            mcp_provider=mcp_provider or "discord",
-            mcp_provider_user_id=str(uuid.uuid4()),
-            mcp_purpose=mcp_purpose or "aztec_mcp",
-            user_id=user_id,
-            name="t",
-            description="t",
-            key=str(uuid.uuid4()),
-            source_id=primary,
-            extra_source_ids=extras,
+    @staticmethod
+    def _set_public(conn, source_id: str, value: bool) -> None:
+        from sqlalchemy import text
+        conn.execute(
+            text("UPDATE sources SET is_public = :v WHERE id = CAST(:i AS uuid)"),
+            {"v": value, "i": source_id},
         )
 
-    def test_resolves_source_owned_by_other_user_when_referenced(self, pg_conn):
-        """The whole point: an MCP agent owned by ``discord:<id>`` can read a
-        source owned by ``local`` as long as the source UUID is on the
-        agent row.
+    def test_returns_owned_source(self, pg_conn):
+        repo = _repo(pg_conn)
+        src = repo.create("mine", user_id="alice")
+        result = repo.list_visible_by_ids("alice", [src["id"]])
+        assert src["id"] in result
+        assert result[src["id"]]["user_id"] == "alice"
+
+    def test_returns_public_source_for_other_user(self, pg_conn):
+        """The Aztec MCP shape: corpora owned by 'local' but read by
+        'discord:<id>' agents because is_public=TRUE.
         """
         repo = _repo(pg_conn)
         src = repo.create("aztec-docs", user_id="local")
-        agent = self._make_agent(
-            pg_conn, user_id="discord:42", sources=[src["id"]],
-        )
+        self._set_public(pg_conn, src["id"], True)
 
-        resolved = repo.get_for_aztec_mcp_agent(src["id"], agent["id"])
-        assert resolved is not None
-        assert resolved["id"] == src["id"]
-        assert resolved["user_id"] == "local"
+        result = repo.list_visible_by_ids("discord:42", [src["id"]])
+        assert src["id"] in result
 
-    def test_resolves_source_in_extra_source_ids(self, pg_conn):
-        """Sources in extra_source_ids resolve, not just the primary."""
+    def test_denies_private_source_from_another_user(self, pg_conn):
         repo = _repo(pg_conn)
-        primary = repo.create("primary", user_id="local")
-        extra = repo.create("extra", user_id="local")
-        agent = self._make_agent(
-            pg_conn, user_id="discord:42",
-            sources=[primary["id"], extra["id"]],
+        src = repo.create("alice-private", user_id="alice")
+        result = repo.list_visible_by_ids("bob", [src["id"]])
+        assert result == {}
+
+    def test_mixed_batch_returns_only_visible(self, pg_conn):
+        """Out of [private-other, public, mine], the requester sees their
+        own + the public one — the private-other UUID is dropped."""
+        repo = _repo(pg_conn)
+        mine = repo.create("mine", user_id="alice")
+        public = repo.create("public", user_id="local")
+        self._set_public(pg_conn, public["id"], True)
+        not_mine = repo.create("not-mine", user_id="bob")
+
+        result = repo.list_visible_by_ids(
+            "alice", [mine["id"], public["id"], not_mine["id"]],
         )
+        assert mine["id"] in result
+        assert public["id"] in result
+        assert not_mine["id"] not in result
 
-        assert repo.get_for_aztec_mcp_agent(primary["id"], agent["id"]) is not None
-        assert repo.get_for_aztec_mcp_agent(extra["id"], agent["id"]) is not None
+    def test_returns_empty_for_empty_input(self, pg_conn):
+        repo = _repo(pg_conn)
+        assert repo.list_visible_by_ids("alice", []) == {}
 
-    def test_denies_source_not_referenced_by_agent(self, pg_conn):
-        """If the source UUID isn't on the agent row, deny — even if the
-        source exists. Prevents an attacker from passing arbitrary UUIDs.
+    def test_unknown_uuid_is_silently_dropped(self, pg_conn):
+        """Bogus UUIDs aren't in the return map — caller decides 403 vs skip."""
+        repo = _repo(pg_conn)
+        bogus = "00000000-0000-0000-0000-000000000000"
+        result = repo.list_visible_by_ids("alice", [bogus])
+        assert result == {}
+
+    def test_keys_are_string_uuids(self, pg_conn):
+        """Caller can do `result.get(str(sid))` regardless of whether the
+        input was a str or a uuid.UUID.
         """
+        import uuid as _uuid
         repo = _repo(pg_conn)
-        attached = repo.create("attached", user_id="local")
-        unattached = repo.create("unattached", user_id="local")
-        agent = self._make_agent(
-            pg_conn, user_id="discord:42", sources=[attached["id"]],
+        src = repo.create("s", user_id="alice")
+        result = repo.list_visible_by_ids(
+            "alice", [_uuid.UUID(str(src["id"]))],
         )
-
-        assert repo.get_for_aztec_mcp_agent(unattached["id"], agent["id"]) is None
-
-    def test_denies_when_agent_lacks_aztec_mcp_purpose(self, pg_conn):
-        """The resolver only fires for ``mcp_purpose='aztec_mcp'``. A
-        regular owner-mismatched agent must not be able to use this
-        path even if the source UUID is on its row.
-        """
-        repo = _repo(pg_conn)
-        src = repo.create("s", user_id="local")
-        agent = self._make_agent(
-            pg_conn, user_id="discord:42",
-            sources=[src["id"]],
-            mcp_purpose="something_else",
-        )
-
-        assert repo.get_for_aztec_mcp_agent(src["id"], agent["id"]) is None
-
-    def test_denies_for_nonexistent_agent(self, pg_conn):
-        """Bogus agent_id → None, never raise."""
-        repo = _repo(pg_conn)
-        src = repo.create("s", user_id="local")
-
-        bogus_agent_id = "00000000-0000-0000-0000-000000000000"
-        assert repo.get_for_aztec_mcp_agent(src["id"], bogus_agent_id) is None
-
-    def test_denies_for_nonexistent_source(self, pg_conn):
-        """Bogus source_id → None even if the agent is valid."""
-        repo = _repo(pg_conn)
-        attached = repo.create("attached", user_id="local")
-        agent = self._make_agent(
-            pg_conn, user_id="discord:42", sources=[attached["id"]],
-        )
-
-        bogus_source_id = "00000000-0000-0000-0000-000000000000"
-        assert repo.get_for_aztec_mcp_agent(bogus_source_id, agent["id"]) is None
+        assert str(src["id"]) in result

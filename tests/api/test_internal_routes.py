@@ -332,11 +332,31 @@ class TestCreateMcpKey:
     _AUTH = {"X-Provisioning-Key": _PROV_KEY}
 
     @staticmethod
-    def _make_sources(pg_conn, count: int = 5) -> list[str]:
+    def _make_sources(pg_conn, count: int = 5, *, is_public: bool = True) -> list[str]:
+        """Create test source rows.
+
+        Aztec corpora must be ``is_public=TRUE`` for ``create_mcp_key``
+        to accept them — that's the whole point of the
+        ``0004_sources_is_public`` migration. Tests default to True;
+        pass ``is_public=False`` to verify the rejection path.
+        """
+        from sqlalchemy import text as sql_text
         from application.storage.db.repositories.sources import SourcesRepository
 
         repo = SourcesRepository(pg_conn)
-        return [str(repo.create(f"src-{i}", user_id="local")["id"]) for i in range(count)]
+        ids: list[str] = []
+        for i in range(count):
+            row = repo.create(f"src-{i}", user_id="local")
+            ids.append(str(row["id"]))
+        if is_public:
+            pg_conn.execute(
+                sql_text(
+                    "UPDATE sources SET is_public = TRUE "
+                    "WHERE id = ANY(CAST(:ids AS uuid[]))"
+                ),
+                {"ids": ids},
+            )
+        return ids
 
     def test_preserves_aztec_source_ids_order_on_create(self, pg_conn):
         """The primary source must be the FIRST UUID in AZTEC_SOURCE_IDS,
@@ -442,3 +462,27 @@ class TestCreateMcpKey:
                     json={"discord_user_id": "u", "discord_username": "x"},
                 )
         assert r.status_code == 401
+
+    def test_rejects_when_no_aztec_source_is_public(self, pg_conn):
+        """If AZTEC_SOURCE_IDS lists private sources, the endpoint must
+        fail loudly (500) rather than silently provisioning an agent
+        that points at unreachable corpora.
+        """
+        ids = self._make_sources(pg_conn, count=3, is_public=False)
+
+        app = _make_app()
+        with patch(
+            "application.api.internal.routes.settings.MCP_PROVISIONING_KEY",
+            self._PROV_KEY,
+        ), patch(
+            "application.api.internal.routes.settings.AZTEC_SOURCE_IDS",
+            ",".join(ids),
+        ), _patch_db(pg_conn):
+            with app.test_client() as c:
+                r = c.post(
+                    "/api/internal/create_mcp_key",
+                    headers=self._AUTH,
+                    json={"discord_user_id": "u-priv", "discord_username": "z"},
+                )
+        assert r.status_code == 500
+        assert "No valid" in (r.json or {}).get("error", "")
