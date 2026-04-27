@@ -170,21 +170,24 @@ class SourcesRepository:
         whether that's a 403 (untrusted request input) or a silent skip
         (curated agent list) based on their context.
 
+        Defensive: non-UUID-shaped inputs are silently dropped before the
+        SQL cast so a malformed caller can't crash the query. Callers
+        that need to distinguish "malformed shape" from "valid shape but
+        not visible" should use ``SourceVisibilityService`` instead —
+        this method only tells you what's visible.
+
         One SQL query regardless of input size — never call this in a
         loop. The 12-source Aztec corpus would otherwise issue 12
         SELECT round-trips per request before retrieval even started.
-
-        Replaces the step-1 ``get_for_aztec_mcp_agent`` narrow exception:
-        Aztec corpora are now marked ``is_public=TRUE`` (see
-        ``0004_sources_is_public``) and any user — Discord MCP agent or
-        otherwise — can read them through the same generic resolver.
 
         Both UUID strings and ``uuid.UUID`` objects in ``ids`` are
         accepted; the return map is keyed by ``str(row['id'])``.
         """
         if not ids:
             return {}
-        id_strs = [str(x) for x in ids]
+        id_strs = [str(x) for x in ids if looks_like_uuid(str(x))]
+        if not id_strs:
+            return {}
         result = self._conn.execute(
             text(
                 "SELECT * FROM sources "

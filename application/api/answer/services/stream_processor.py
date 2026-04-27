@@ -19,11 +19,11 @@ from application.core.model_utils import (
 from application.core.settings import settings
 from sqlalchemy import text as sql_text
 
+from application.services.source_visibility import SourceVisibilityService
 from application.storage.db.base_repository import looks_like_uuid, row_to_dict
 from application.storage.db.repositories.agents import AgentsRepository
 from application.storage.db.repositories.attachments import AttachmentsRepository
 from application.storage.db.repositories.prompts import PromptsRepository
-from application.storage.db.repositories.sources import SourcesRepository
 from application.storage.db.repositories.user_tools import UserToolsRepository
 from application.storage.db.session import db_readonly, db_session
 from application.retriever.retriever_creator import RetrieverCreator
@@ -372,21 +372,19 @@ class StreamProcessor:
             agent = AgentsRepository(conn).find_by_key(api_key)
             if not agent:
                 raise Exception("Invalid API Key, please generate a new key", 401)
-            sources_repo = SourcesRepository(conn)
             # The repo dict uses "user_id" — the streaming path expects
             # a "user" key (legacy Mongo shape) for identity propagation.
             data: Dict[str, Any] = dict(agent)
             data["user"] = agent.get("user_id")
 
-            # Build the ordered retrieval list as [primary, *extras] in
-            # one batched lookup. Visibility is owner-OR-public via
-            # ``list_visible_by_ids``: Discord MCP agents own nothing but
-            # see the Aztec corpora because those rows are
-            # ``is_public=TRUE`` (see migration 0004_sources_is_public).
-            # Sources that aren't visible to the agent owner are silently
-            # skipped — the agent's source list is curated by the trusted
-            # /api/internal/create_mcp_key path or by the agent owner via
-            # CRUD, so dropping is safer than 403'ing the whole request.
+            # Build the ordered retrieval list as [primary, *extras]
+            # through SourceVisibilityService. This is the curated path:
+            # the agent's source list was set by either the trusted MCP
+            # provisioning endpoint or the agent owner via CRUD, so we
+            # silently skip invisible/invalid IDs instead of 403'ing the
+            # whole request. Visibility is owner-OR-public, which lets
+            # Discord MCP agents (owning nothing) see Aztec corpora
+            # marked is_public=TRUE.
             primary_id = agent.get("source_id")
             extra_ids = list(agent.get("extra_source_ids") or [])
             ordered_ids: list[str] = []
@@ -394,12 +392,14 @@ class StreamProcessor:
                 ordered_ids.append(str(primary_id))
             ordered_ids.extend(str(x) for x in extra_ids)
 
-            visible = sources_repo.list_visible_by_ids(
+            resolved = SourceVisibilityService(conn).resolve(
                 agent.get("user_id"), ordered_ids,
             )
 
             # Resolve the primary source row (if any) for retriever/chunks.
-            primary_doc = visible.get(str(primary_id)) if primary_id else None
+            primary_doc = (
+                resolved.rows.get(str(primary_id)) if primary_id else None
+            )
             if primary_doc:
                 data["source"] = str(primary_doc["id"])
                 data["retriever"] = primary_doc.get(
@@ -418,18 +418,17 @@ class StreamProcessor:
             # `extra_source_ids[0]`, so whichever source happened to be
             # first in that array dominated the top-N citations.
             sources_list = []
-            for sid in ordered_ids:
-                source_doc = visible.get(sid)
-                if source_doc:
-                    sources_list.append(
-                        {
-                            "id": str(source_doc["id"]),
-                            "retriever": source_doc.get("retriever", "classic"),
-                            "chunks": source_doc.get(
-                                "chunks", data.get("chunks", "2")
-                            ),
-                        }
-                    )
+            for sid in resolved.visible:
+                source_doc = resolved.rows[sid]
+                sources_list.append(
+                    {
+                        "id": str(source_doc["id"]),
+                        "retriever": source_doc.get("retriever", "classic"),
+                        "chunks": source_doc.get(
+                            "chunks", data.get("chunks", "2")
+                        ),
+                    }
+                )
         data["sources"] = sources_list
         data["default_model_id"] = data.get("default_model_id", "")
         return data
@@ -474,26 +473,31 @@ class StreamProcessor:
             if not active_docs or active_docs == "default":
                 self.source = {}
                 return
-            # Normalize to a list of UUID strings, then authorize each one
-            # against the requesting user's visibility scope (owned OR
-            # is_public=TRUE). Untrusted request input — we 403 on any
-            # invisible UUID rather than silently dropping (silent drop
-            # is what let the original MCP grounding regression ship).
-            if isinstance(active_docs, str):
-                requested_ids = [active_docs]
-            elif isinstance(active_docs, list):
-                requested_ids = [str(x) for x in active_docs if x]
-            else:
-                requested_ids = []
-            if requested_ids:
+            # Untrusted request input. SourceVisibilityService partitions
+            # into invalid (malformed UUID shape) / missing (well-formed
+            # but not visible) / visible. We translate the first into
+            # ValueError -> 400 and the second into PermissionError ->
+            # 403 at the route layer. Silent drop is what let the
+            # original MCP grounding regression ship; we never want it
+            # on a request body path.
+            requested = (
+                [active_docs] if isinstance(active_docs, str)
+                else list(active_docs) if isinstance(active_docs, list)
+                else []
+            )
+            if requested:
                 with db_readonly() as conn:
-                    visible = SourcesRepository(conn).list_visible_by_ids(
-                        self.initial_user_id or "", requested_ids,
+                    resolved = SourceVisibilityService(conn).resolve(
+                        self.initial_user_id, requested,
                     )
-                missing = [sid for sid in requested_ids if sid not in visible]
-                if missing:
+                if resolved.invalid:
+                    raise ValueError(
+                        f"Malformed source ID: {resolved.invalid[0]}"
+                    )
+                if resolved.missing:
                     raise PermissionError(
-                        f"Source not found or not visible: {missing[0]}"
+                        f"Source not found or not visible: "
+                        f"{resolved.missing[0]}"
                     )
             self.source = {"active_docs": active_docs}
             return
