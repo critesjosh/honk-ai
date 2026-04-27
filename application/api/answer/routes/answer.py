@@ -144,6 +144,12 @@ class AnswerResource(Resource, BaseAnswerResource):
             extra_info = stream_result.get("extra")
             if extra_info:
                 result.update(extra_info)
+        except PermissionError as e:
+            logger.warning(
+                f"/api/answer - permission denied: {str(e)}",
+                extra={"error": str(e)},
+            )
+            return make_response({"error": str(e)}, 403)
         except Exception as e:
             logger.error(
                 f"/api/answer - error: {str(e)} - traceback: {traceback.format_exc()}",

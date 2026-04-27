@@ -385,11 +385,28 @@ class TestConfigureSource:
         assert sp.source == {}
 
     def test_request_active_docs_used(self):
+        """Direct active_docs from a JWT user is now authorized via
+        list_visible_by_ids before reaching ``self.source``. Mock the
+        resolver so this stays a unit test; integration coverage lives
+        in the repo + endpoint tests.
+        """
+        from unittest.mock import MagicMock, patch
         from application.api.answer.services.stream_processor import (
             StreamProcessor,
         )
-        sp = StreamProcessor({"active_docs": "abc"}, {"sub": "u"})
-        sp._configure_source()
+
+        with patch(
+            "application.api.answer.services.stream_processor.db_readonly"
+        ) as mock_db_ro, patch(
+            "application.api.answer.services.stream_processor.SourcesRepository"
+        ) as MockSrcRepo:
+            mock_db_ro.return_value.__enter__ = lambda self: MagicMock()
+            mock_db_ro.return_value.__exit__ = lambda *a: None
+            MockSrcRepo.return_value.list_visible_by_ids.return_value = {
+                "abc": {"id": "abc"}
+            }
+            sp = StreamProcessor({"active_docs": "abc"}, {"sub": "u"})
+            sp._configure_source()
         assert sp.source == {"active_docs": "abc"}
 
     def test_request_active_docs_default(self):

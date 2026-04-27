@@ -471,10 +471,31 @@ class StreamProcessor:
             return
         if "active_docs" in self.data:
             active_docs = self.data["active_docs"]
-            if active_docs and active_docs != "default":
-                self.source = {"active_docs": active_docs}
-            else:
+            if not active_docs or active_docs == "default":
                 self.source = {}
+                return
+            # Normalize to a list of UUID strings, then authorize each one
+            # against the requesting user's visibility scope (owned OR
+            # is_public=TRUE). Untrusted request input — we 403 on any
+            # invisible UUID rather than silently dropping (silent drop
+            # is what let the original MCP grounding regression ship).
+            if isinstance(active_docs, str):
+                requested_ids = [active_docs]
+            elif isinstance(active_docs, list):
+                requested_ids = [str(x) for x in active_docs if x]
+            else:
+                requested_ids = []
+            if requested_ids:
+                with db_readonly() as conn:
+                    visible = SourcesRepository(conn).list_visible_by_ids(
+                        self.initial_user_id or "", requested_ids,
+                    )
+                missing = [sid for sid in requested_ids if sid not in visible]
+                if missing:
+                    raise PermissionError(
+                        f"Source not found or not visible: {missing[0]}"
+                    )
+            self.source = {"active_docs": active_docs}
             return
         self.source = {}
         self.all_sources = []
