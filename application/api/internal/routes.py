@@ -214,7 +214,15 @@ def create_mcp_key():
                     ),
                     {"ids": candidate_uuids},
                 )
-                valid_source_ids = [str(row[0]) for row in existing.fetchall()]
+                # Postgres returns rows in heap order (no ORDER BY), so we
+                # can't rely on the SELECT to preserve AZTEC_SOURCE_IDS
+                # order. Intersect with the canonical order from .env so
+                # primary/extras land in the developer-question-weighted
+                # sequence documented in CLAUDE.md.
+                existing_set = {str(row[0]) for row in existing.fetchall()}
+                valid_source_ids = [
+                    sid for sid in candidate_uuids if sid in existing_set
+                ]
             else:
                 valid_source_ids = []
 

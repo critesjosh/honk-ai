@@ -359,3 +359,86 @@ class TestClearFolderForAll:
         repo.clear_folder_for_all(folder["id"], "user-1")
         assert repo.get(a1["id"], "user-1")["folder_id"] is None
         assert repo.get(a2["id"], "user-1")["folder_id"] is None
+
+
+class TestUpsertMcpKey:
+    """Behavior contract for the MCP-key upsert.
+
+    Insert: writes every field. Update on conflict: refreshes the fields
+    sourced from the latest provisioning call (name, description,
+    source_id, extra_source_ids, chunks, retriever) but preserves the
+    pre-existing API key so users don't lose access in their already-
+    configured MCP clients.
+    """
+
+    @staticmethod
+    def _src(conn, name: str = "s") -> str:
+        from application.storage.db.repositories.sources import SourcesRepository
+
+        row = SourcesRepository(conn).create(name, user_id="local")
+        return str(row["id"])
+
+    @staticmethod
+    def _upsert(conn, *, key, source_id, extras, name="Aztec MCP - u"):
+        return _repo(conn).upsert_mcp_key(
+            mcp_provider="discord",
+            mcp_provider_user_id="discord-42",
+            mcp_purpose="aztec_mcp",
+            user_id="discord:42",
+            name=name,
+            description="d",
+            key=key,
+            source_id=source_id,
+            extra_source_ids=extras,
+        )
+
+    def test_insert_then_upsert_refreshes_extra_source_ids(self, pg_conn):
+        a = self._src(pg_conn, "a")
+        b = self._src(pg_conn, "b")
+        c = self._src(pg_conn, "c")
+
+        first = self._upsert(pg_conn, key="key-1", source_id=a, extras=[b])
+        assert [str(x) for x in first["extra_source_ids"]] == [b]
+
+        # Re-provision with a different order and a new source.
+        second = self._upsert(pg_conn, key="key-2", source_id=b, extras=[a, c])
+        assert second["id"] == first["id"]
+        assert str(second["source_id"]) == b
+        assert [str(x) for x in second["extra_source_ids"]] == [a, c]
+
+    def test_upsert_preserves_existing_key(self, pg_conn):
+        """Existing user's API key must NOT change on re-provision —
+        otherwise their already-configured MCP client breaks."""
+        a = self._src(pg_conn, "a")
+
+        first = self._upsert(pg_conn, key="key-original", source_id=a, extras=[])
+        assert first["key"] == "key-original"
+
+        second = self._upsert(pg_conn, key="key-NEW-WONT-APPLY", source_id=a, extras=[])
+        assert second["id"] == first["id"]
+        assert second["key"] == "key-original"
+
+    def test_upsert_refreshes_name_description_chunks_retriever(self, pg_conn):
+        a = self._src(pg_conn, "a")
+        first = self._upsert(
+            pg_conn, key="k", source_id=a, extras=[], name="Aztec MCP - alice",
+        )
+
+        second = _repo(pg_conn).upsert_mcp_key(
+            mcp_provider="discord",
+            mcp_provider_user_id="discord-42",
+            mcp_purpose="aztec_mcp",
+            user_id="discord:42",
+            name="Aztec MCP - alice-renamed",
+            description="d2",
+            key="k2",
+            source_id=a,
+            extra_source_ids=[],
+            chunks=5,
+            retriever="hybrid",
+        )
+        assert second["id"] == first["id"]
+        assert second["name"] == "Aztec MCP - alice-renamed"
+        assert second["description"] == "d2"
+        assert second["chunks"] == 5
+        assert second["retriever"] == "hybrid"

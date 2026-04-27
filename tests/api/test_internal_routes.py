@@ -318,3 +318,127 @@ class TestUploadIndex:
         assert r.status_code == 200
         assert r.json == {"status": "ok"}
         assert fake_storage.save_file.call_count == 2
+
+
+class TestCreateMcpKey:
+    """End-to-end tests for /api/internal/create_mcp_key.
+
+    Covers the AZTEC_SOURCE_IDS-order-preservation fix and the conflict
+    behavior (key preserved, sources refreshed) that together restore
+    correct retrieval for re-provisioned Discord MCP agents.
+    """
+
+    _PROV_KEY = "test-prov-key"
+    _AUTH = {"X-Provisioning-Key": _PROV_KEY}
+
+    @staticmethod
+    def _make_sources(pg_conn, count: int = 5) -> list[str]:
+        from application.storage.db.repositories.sources import SourcesRepository
+
+        repo = SourcesRepository(pg_conn)
+        return [str(repo.create(f"src-{i}", user_id="local")["id"]) for i in range(count)]
+
+    def test_preserves_aztec_source_ids_order_on_create(self, pg_conn):
+        """The primary source must be the FIRST UUID in AZTEC_SOURCE_IDS,
+        not whatever Postgres returns from a SELECT without ORDER BY.
+
+        Regression for the bug where Step 2's upsert refresh started
+        writing source_id from a heap-ordered SELECT.
+        """
+        ids = self._make_sources(pg_conn, count=5)
+        # Reverse so heap order is unlikely to match AZTEC order.
+        canonical_order = list(reversed(ids))
+        env_value = ",".join(canonical_order)
+
+        app = _make_app()
+        with patch(
+            "application.api.internal.routes.settings.MCP_PROVISIONING_KEY",
+            self._PROV_KEY,
+        ), patch(
+            "application.api.internal.routes.settings.AZTEC_SOURCE_IDS",
+            env_value,
+        ), _patch_db(pg_conn):
+            with app.test_client() as c:
+                r = c.post(
+                    "/api/internal/create_mcp_key",
+                    headers=self._AUTH,
+                    json={"discord_user_id": "u1", "discord_username": "alice"},
+                )
+
+        assert r.status_code == 200
+        assert r.json["created"] is True
+
+        from application.storage.db.repositories.agents import AgentsRepository
+
+        agent = AgentsRepository(pg_conn).find_by_key(r.json["api_key"])
+        assert str(agent["source_id"]) == canonical_order[0]
+        assert [str(x) for x in agent["extra_source_ids"]] == canonical_order[1:]
+
+    def test_re_provision_preserves_key_and_refreshes_sources(self, pg_conn):
+        """Re-running /mcp-key for an existing user must keep their key
+        (so their MCP client doesn't break) but refresh the source order
+        in case AZTEC_SOURCE_IDS changed.
+        """
+        ids = self._make_sources(pg_conn, count=3)
+
+        app = _make_app()
+        with patch(
+            "application.api.internal.routes.settings.MCP_PROVISIONING_KEY",
+            self._PROV_KEY,
+        ), patch(
+            "application.api.internal.routes.settings.AZTEC_SOURCE_IDS",
+            ",".join(ids),
+        ), _patch_db(pg_conn):
+            with app.test_client() as c:
+                first = c.post(
+                    "/api/internal/create_mcp_key",
+                    headers=self._AUTH,
+                    json={"discord_user_id": "u-rep", "discord_username": "bob"},
+                )
+        assert first.status_code == 200
+        assert first.json["created"] is True
+        original_key = first.json["api_key"]
+
+        # Reorder AZTEC_SOURCE_IDS, re-provision.
+        reordered = [ids[2], ids[0], ids[1]]
+        with patch(
+            "application.api.internal.routes.settings.MCP_PROVISIONING_KEY",
+            self._PROV_KEY,
+        ), patch(
+            "application.api.internal.routes.settings.AZTEC_SOURCE_IDS",
+            ",".join(reordered),
+        ), _patch_db(pg_conn):
+            with app.test_client() as c:
+                second = c.post(
+                    "/api/internal/create_mcp_key",
+                    headers=self._AUTH,
+                    json={"discord_user_id": "u-rep", "discord_username": "bob"},
+                )
+        assert second.status_code == 200
+        # NOTE: don't assert on `created` here — the endpoint computes it
+        # from `created_at == updated_at`, which collapses inside a single
+        # test transaction because Postgres `now()` is transaction-bound.
+        # In prod the two calls land in separate transactions and the flag
+        # is reliable. The behavior we actually care about is key-preserved
+        # + sources-refreshed below.
+        assert second.json["api_key"] == original_key
+
+        from application.storage.db.repositories.agents import AgentsRepository
+
+        agent = AgentsRepository(pg_conn).find_by_key(original_key)
+        assert str(agent["source_id"]) == reordered[0]
+        assert [str(x) for x in agent["extra_source_ids"]] == reordered[1:]
+
+    def test_rejects_unknown_provisioning_key(self, pg_conn):
+        app = _make_app()
+        with patch(
+            "application.api.internal.routes.settings.MCP_PROVISIONING_KEY",
+            self._PROV_KEY,
+        ), _patch_db(pg_conn):
+            with app.test_client() as c:
+                r = c.post(
+                    "/api/internal/create_mcp_key",
+                    headers={"X-Provisioning-Key": "wrong"},
+                    json={"discord_user_id": "u", "discord_username": "x"},
+                )
+        assert r.status_code == 401
