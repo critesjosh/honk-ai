@@ -2,8 +2,28 @@
 """Evaluation harness for the Aztec DocsGPT RAG system.
 
 Two modes:
-  --mode retriever   Direct retriever probe (source-coverage assertions).
-  --mode stream      Full /stream endpoint (answer quality + banned identifiers).
+  --mode retriever   Direct retriever probe (source-coverage + apiref hit
+                     assertions for the ``identifier`` bucket).
+  --mode stream      Full /stream endpoint (answer quality, banned
+                     identifiers, first-citation source-type for the
+                     ``identifier`` bucket).
+
+Buckets
+-------
+Each golden query carries a ``bucket`` field:
+
+  identifier   The user is asking about a specific function / type /
+               import path. The answer is most likely in an apiref
+               source (post-Phase-2 of PLAN-rag-apiref.md). For these
+               we assert that the expected ``.nr`` file appears in the
+               top-3 retrieved chunks (retriever mode) and is the first
+               cited source (stream mode).
+  concept      The user is asking a conceptual / how-it-works question.
+               The expected source is a markdown concept doc. We assert
+               the first hit comes from the configured concept prefix
+               (regression guard against an over-eager apiref bias).
+  example      "Show me a contract" / "give me an example" — concept and
+               apiref are both fine, we just assert source diversity.
 
 Usage (from inside the backend container or with PYTHONPATH=/app):
   python scripts/eval/eval_retrieval.py --mode retriever
@@ -27,6 +47,12 @@ SOURCE_PREFIXES = (
     "version-v4.2.0/",
 )
 
+# Path prefixes considered "apiref-shaped". A retrieval/citation is an
+# apiref hit if the chunk's ``metadata.source`` (raw corpus path, not the
+# rewritten public URL) starts with one of these. Examples / circuits are
+# deliberately excluded — they are full implementation, not apiref.
+APIREF_PREFIXES = ("aztec-nr/", "noir-stdlib/")
+
 
 def bucket(path: str) -> str:
     if not isinstance(path, str):
@@ -35,6 +61,26 @@ def bucket(path: str) -> str:
         if path.startswith(pfx):
             return pfx.rstrip("/")
     return path.split("/", 1)[0] if "/" in path else path
+
+
+def is_apiref(path: str) -> bool:
+    return isinstance(path, str) and path.startswith(APIREF_PREFIXES)
+
+
+def _strip_txt(p: str) -> str:
+    """Match retrieved corpus paths to the canonical .nr path used in
+    ``expected_apiref_paths``. Pre-apiref corpora store paths as
+    ``foo.nr.txt``; post-apiref the same logical file is ``foo.nr.md``.
+    Either should match the canonical ``foo.nr`` path in the assertion."""
+    if not isinstance(p, str):
+        return p
+    for suffix in (".nr.txt", ".nr.md", ".txt", ".md"):
+        if p.endswith(suffix):
+            base = p[: -len(suffix)]
+            if base.endswith(".nr"):
+                return base
+            return base + ".nr" if suffix in (".txt", ".md") and ".nr" not in p else base
+    return p
 
 
 def load_golden_queries() -> list:
@@ -59,8 +105,11 @@ def run_retriever_eval(settings_module: str = "application.core.settings"):
     for q in queries:
         tag = q["tag"]
         question = q["query"]
+        bucket_name = q.get("bucket", "concept")
         expected = q.get("expected_source_prefixes", [])
         min_sources = q.get("min_distinct_sources", 1)
+        expected_apiref_paths = q.get("expected_apiref_paths", []) or []
+        expected_concept_prefix = q.get("expected_concept_prefix", "")
 
         t0 = time.time()
         rag = ClassicRAG(
@@ -85,24 +134,68 @@ def run_retriever_eval(settings_module: str = "application.core.settings"):
         # Check minimum distinct sources
         diversity_pass = distinct_sources >= min_sources
 
-        passed = source_pass and diversity_pass
+        # Bucket-specific assertions
+        top3_paths = [_strip_txt(d.get("source", "")) for d in docs[:3]]
+        top3_apiref_hit = False
+        first_source_path = _strip_txt(docs[0].get("source", "")) if docs else ""
+        first_is_concept = bool(
+            expected_concept_prefix and first_source_path.startswith(expected_concept_prefix)
+        )
+
+        if bucket_name == "identifier":
+            # Top-3 must include any of the expected apiref files (canonical
+            # .nr path), or at minimum a path under an apiref prefix.
+            if expected_apiref_paths:
+                top3_apiref_hit = any(p in top3_paths for p in expected_apiref_paths)
+            else:
+                top3_apiref_hit = any(is_apiref(p) for p in top3_paths)
+            bucket_pass = top3_apiref_hit
+        elif bucket_name == "concept":
+            # Concept regression guard: first hit should NOT come from
+            # apiref unless the user explicitly asked for an identifier
+            # (which would have made it an "identifier" bucket query).
+            # We only enforce this softly — if expected_concept_prefix is
+            # set we require the first hit to start with it.
+            if expected_concept_prefix:
+                bucket_pass = first_is_concept
+            else:
+                bucket_pass = True
+        else:  # example
+            bucket_pass = True
+
+        passed = source_pass and diversity_pass and bucket_pass
 
         result = {
             "tag": tag,
+            "bucket": bucket_name,
             "passed": passed,
             "elapsed_s": round(elapsed, 2),
             "total_docs": len(docs),
             "distinct_sources": distinct_sources,
             "source_tally": dict(tally.most_common()),
+            "top3_paths": top3_paths,
             "missing_expected": missing,
             "diversity_pass": diversity_pass,
+            "bucket_pass": bucket_pass,
+            "top3_apiref_hit": top3_apiref_hit if bucket_name == "identifier" else None,
+            "first_is_concept": first_is_concept if bucket_name == "concept" else None,
         }
         results.append(result)
 
         status = "PASS" if passed else "FAIL"
-        print(f"  [{status}] {tag}: {len(docs)} docs, {distinct_sources} sources, {elapsed:.1f}s")
+        print(
+            f"  [{status}] {tag} ({bucket_name}): {len(docs)} docs, "
+            f"{distinct_sources} sources, {elapsed:.1f}s"
+        )
         if missing:
             print(f"         missing: {missing}")
+        if bucket_name == "identifier" and not top3_apiref_hit:
+            print(f"         NO apiref hit in top-3: {top3_paths}")
+        if bucket_name == "concept" and expected_concept_prefix and not first_is_concept:
+            print(
+                f"         first hit not concept ({expected_concept_prefix}): "
+                f"{first_source_path}"
+            )
 
     return results
 
@@ -120,9 +213,11 @@ def run_stream_eval(api_key: str, base_url: str = "http://localhost:7091"):
     for q in queries:
         tag = q["tag"]
         question = q["query"]
+        bucket_name = q.get("bucket", "concept")
         history = q.get("history", [])
         banned = q.get("banned_identifiers", [])
         max_time = q.get("max_response_time_s", 15)
+        expected_apiref_paths = q.get("expected_apiref_paths", []) or []
 
         t0 = time.time()
         try:
@@ -186,13 +281,34 @@ def run_stream_eval(api_key: str, base_url: str = "http://localhost:7091"):
                 source_titles.add(src)
         diversity_pass = len(source_titles) >= min_sources
 
+        # Bucket-specific: identifier queries must cite an apiref source
+        # FIRST. Sources have already been rewritten to public URLs; we
+        # match on the rewritten URL containing one of the expected
+        # apiref segments (e.g. "aztec-nr/aztec/src/hash.nr").
+        first_cited_apiref = False
+        if bucket_name == "identifier" and sources:
+            first_url = sources[0].get("source", "") or ""
+            if expected_apiref_paths:
+                first_cited_apiref = any(
+                    p.split("/", 1)[1] in first_url if "/" in p else p in first_url
+                    for p in expected_apiref_paths
+                )
+            else:
+                first_cited_apiref = any(
+                    pfx.rstrip("/") in first_url for pfx in APIREF_PREFIXES
+                )
+            bucket_pass = first_cited_apiref
+        else:
+            bucket_pass = True
+
         passed = (
             banned_pass and time_pass and content_pass
-            and table_pass and diversity_pass
+            and table_pass and diversity_pass and bucket_pass
         )
 
         result = {
             "tag": tag,
+            "bucket": bucket_name,
             "passed": passed,
             "elapsed_s": round(elapsed, 2),
             "answer_len": len(answer),
@@ -202,6 +318,8 @@ def run_stream_eval(api_key: str, base_url: str = "http://localhost:7091"):
             "has_table": has_table,
             "time_pass": time_pass,
             "diversity_pass": diversity_pass,
+            "bucket_pass": bucket_pass,
+            "first_cited_apiref": first_cited_apiref if bucket_name == "identifier" else None,
         }
         results.append(result)
 
@@ -217,13 +335,29 @@ def run_stream_eval(api_key: str, base_url: str = "http://localhost:7091"):
             flags.append("empty!")
         if not diversity_pass:
             flags.append(f"low-diversity:{len(source_titles)}<{min_sources}")
+        if bucket_name == "identifier" and not first_cited_apiref:
+            flags.append("no-apiref-first")
         flag_str = f" ({', '.join(flags)})" if flags else ""
-        print(f"  [{status}] {tag}: {elapsed:.1f}s, {len(answer)} chars, {len(sources)} sources{flag_str}")
+        print(
+            f"  [{status}] {tag} ({bucket_name}): {elapsed:.1f}s, "
+            f"{len(answer)} chars, {len(sources)} sources{flag_str}"
+        )
 
     return results
 
 
 # ── Main ────────────────────────────────────────────────────────────────────
+
+
+def _summarize(results: list) -> dict:
+    by_bucket: dict = {}
+    for r in results:
+        b = r.get("bucket", "?")
+        by_bucket.setdefault(b, {"total": 0, "passed": 0})
+        by_bucket[b]["total"] += 1
+        if r.get("passed"):
+            by_bucket[b]["passed"] += 1
+    return by_bucket
 
 
 def main():
@@ -244,9 +378,32 @@ def main():
         "--json-out",
         help="Write structured results to this JSON file",
     )
+    parser.add_argument(
+        "--bucket",
+        choices=["identifier", "concept", "example", "all"],
+        default="all",
+        help="Restrict evaluation to one bucket (default: all)",
+    )
     args = parser.parse_args()
 
-    print(f"Running {args.mode} eval with {len(load_golden_queries())} golden queries\n")
+    queries = load_golden_queries()
+    if args.bucket != "all":
+        original = len(queries)
+        queries = [q for q in queries if q.get("bucket") == args.bucket]
+        # Mutate the on-disk-loaded list reference used by the runners by
+        # monkey-patching ``load_golden_queries`` for this invocation.
+        global load_golden_queries
+        _filtered = list(queries)
+
+        def _loader():
+            return _filtered
+
+        load_golden_queries = _loader
+        print(
+            f"Filtered to bucket={args.bucket}: {len(queries)}/{original} queries"
+        )
+
+    print(f"Running {args.mode} eval with {len(queries)} golden queries\n")
 
     if args.mode == "retriever":
         results = run_retriever_eval()
@@ -260,7 +417,10 @@ def main():
     passed = sum(1 for r in results if r.get("passed"))
     total = len(results)
     print(f"\n{'=' * 40}")
-    print(f"  {passed}/{total} passed")
+    print(f"  {passed}/{total} passed overall")
+    by_bucket = _summarize(results)
+    for b, counts in sorted(by_bucket.items()):
+        print(f"    {b:11s}: {counts['passed']}/{counts['total']}")
     print(f"{'=' * 40}")
 
     if args.json_out:

@@ -303,6 +303,15 @@ class SimpleDirectoryReader(BaseReader):
             else:
                 base_metadata['source'] = str(input_file)
 
+            # Aztec-fork: tag apiref-shaped files so downstream chunking
+            # exempts them from the <50 token discard. The apiref
+            # transform (scripts/ingest/noir_apiref.py) emits files
+            # named ``foo.nr.md`` — a code-extension followed by ``.md``
+            # is the convention. See PLAN-rag-apiref.md / Phase 1.4.
+            name = input_file.name.lower()
+            if name.endswith(('.nr.md', '.ts.md', '.sol.md')):
+                base_metadata['chunk_type'] = 'apiref'
+
             if self.file_metadata is not None:
                 custom_metadata = self.file_metadata(input_file.name)
                 base_metadata.update(custom_metadata)

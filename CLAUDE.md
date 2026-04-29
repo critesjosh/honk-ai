@@ -125,6 +125,8 @@ Before iterating on a bug someone's reporting, run `docker ps` and check whether
 
 ## Data sources (knowledge base corpus)
 
+> **Reproducible ingest:** the full re-ingest workflow (build all 12 corpora, upload, swap the agent's source list) lives under `scripts/ingest/` — see `scripts/ingest/README.md` for the version-bump checklist. `scripts/ingest/corpora.py` is the single source of truth for corpus paths, extensions, and transforms.
+
 All indexed content comes from the sibling **`aztec-packages` repo** pinned at the `v4.2.0` git tag. On the dev host the repo lives at `/mnt/user-data/josh/aztec-packages/`; the worktree used for ingest is typically checked out at `/tmp/aztec-v4.2.0`:
 
 ```bash
@@ -133,30 +135,38 @@ git -C ../aztec-packages worktree add --detach /tmp/aztec-v4.2.0 v4.2.0
 
 **Twelve corpora** are ingested into the `sources` table (one row per corpus, UUID auto-generated) and `documents` table (one row per chunk, pgvector 3072-dim embeddings via OpenAI `text-embedding-3-large`). UUIDs for the ones the MCP bot should serve go into `AZTEC_SOURCE_IDS` in `.env`:
 
-| Source (display name) | Path in aztec-packages | File ext | Count |
-|---|---|---|---|
-| Aztec Developer Docs v4.2.0 | `docs/developer_versioned_docs/version-v4.2.0/` | .md .mdx .json | 96 |
-| Aztec Network Docs v4.2.0 | `docs/network_versioned_docs/version-v4.2.0/` | .md | 39 |
-| Aztec.nr Framework v4.2.0 | `noir-projects/aztec-nr/` | .nr → .txt | 223 |
-| Aztec Example Contracts v4.2.0 | `noir-projects/noir-contracts/contracts/` | .nr → .txt | 207 |
-| Aztec Protocol Circuits v4.2.0 | `noir-projects/noir-protocol-circuits/` | .nr → .txt | 454 |
-| aztec.js SDK v4.2.0 | `yarn-project/aztec.js/src/` | .ts → .txt | 73 |
-| Aztec CLI v4.2.0 | `yarn-project/cli/src/` + `yarn-project/cli-wallet/src/` | .ts → .txt | 93 |
-| Aztec E2E Tests v4.2.0 | `yarn-project/end-to-end/src/` | .ts → .txt | 245 |
-| Aztec L1 Contracts v4.2.0 | `l1-contracts/` | .sol → .txt | 347 |
-| Aztec TypeScript API v4.2.0 | `docs/static/typescript-api/testnet/` | .md .txt | 10 |
-| Noir Language Docs v4.2.0 | `noir-lang/noir` @ `842974fcf…`: `docs/docs/` | .md .mdx | 84 |
-| Noir stdlib v4.2.0 | `noir-lang/noir` @ `842974fcf…`: `noir_stdlib/src/` | .nr → .txt | 49 |
+| Source (display name) | Path in aztec-packages | Transform | File ext | Count |
+|---|---|---|---|---|
+| Aztec Developer Docs v4.2.0 | `docs/developer_versioned_docs/version-v4.2.0/` | passthrough | .md .mdx .json | 96 |
+| Aztec Network Docs v4.2.0 | `docs/network_versioned_docs/version-v4.2.0/` | passthrough | .md | 39 |
+| **Aztec.nr Framework v4.2.0 (apiref)** | `noir-projects/aztec-nr/` | **noir_apiref** | .nr → .nr.md | 223 |
+| Aztec Example Contracts v4.2.0 | `noir-projects/noir-contracts/contracts/` | rename_code_to_txt | .nr → .nr.txt | 207 |
+| Aztec Protocol Circuits v4.2.0 | `noir-projects/noir-protocol-circuits/` | rename_code_to_txt | .nr → .nr.txt | 454 |
+| aztec.js SDK v4.2.0 | `yarn-project/aztec.js/src/` | rename_code_to_txt | .ts → .ts.txt | 73 |
+| Aztec CLI v4.2.0 | `yarn-project/cli/src/` + `yarn-project/cli-wallet/src/` | rename_code_to_txt | .ts → .ts.txt | 93 |
+| Aztec E2E Tests v4.2.0 | `yarn-project/end-to-end/src/` | rename_code_to_txt | .ts → .ts.txt | 245 |
+| Aztec L1 Contracts v4.2.0 | `l1-contracts/` | rename_code_to_txt | .sol → .sol.txt | 347 |
+| Aztec TypeScript API v4.2.0 | `docs/static/typescript-api/testnet/` | passthrough | .md .txt | 10 |
+| Noir Language Docs v4.2.0 | `noir-lang/noir` @ `842974fcf…`: `docs/docs/` | passthrough | .md .mdx | 84 |
+| **Noir stdlib v4.2.0 (apiref)** | `noir-lang/noir` @ `842974fcf…`: `noir_stdlib/src/` | **noir_apiref** | .nr → .nr.md | 49 |
 
-### Why `.txt` rename?
-The backend's `SUPPORTED_SOURCE_EXTENSIONS` allowlist (in `application/parser/file/constants.py`) accepts `.md .mdx .rst .pdf .txt .docx .csv .epub .html .json .xlsx .pptx` plus a few media types. Source-code extensions (`.nr .ts .sol .hpp .cpp`) are silently skipped. The ingest scripts zip source files with a `.txt` suffix appended — e.g. `Token.nr` → `aztec-nr/token/Token.nr.txt` — so the ingest pipeline indexes them. The original path is preserved in each chunk's `metadata.source`.
+### Three transforms, three intents
+
+The 12 corpora split into three buckets by transform:
+
+- **`passthrough`** — markdown corpora ingested as-is. The DocsGPT parser allowlist accepts these natively.
+- **`rename_code_to_txt`** — body-bearing source code with `.txt` appended so the parser allowlist accepts it. `Token.nr` → `aztec-nr/token/Token.nr.txt`. Used for examples / circuits / TS / Solidity, where the body IS the answer the user wants (how to write a token contract, how to call this RPC method, etc.). The original path is preserved in each chunk's `metadata.source`.
+- **`noir_apiref`** — `.nr` files run through `scripts/ingest/noir_apiref.py` to produce a Markdown view of just the public surface (doc comments + signatures, no bodies, no `//` line comments, no `#[test]` items). Output is `foo.nr.md`. Used for `aztec-nr` and `noir-stdlib`, where users asking about identifier signatures need to see the API ref, not implementation noise. (See `PLAN-rag-apiref.md` for the why.) The chunker (`application/parser/chunking.py`) detects these by file extension via `application/parser/file/bulk.py` and tags them `chunk_type=apiref`, exempting them from the global `<50` token discard so signature-only chunks survive.
 
 ### How ingest runs
-1. Zip a corpus locally (Python's `zipfile`, preserving relative paths, appending `.txt` to code extensions).
-2. `POST /api/upload` with `user`, `name`, and the zip file. Backend extracts the zip into `application/inputs/{user}/{safe_name}/` and enqueues a Celery `ingest` task.
-3. Worker walks the extracted tree, chunks each file, drops chunks with `token_count < 50` (`application/parser/chunking.py`), embeds survivors via OpenAI, writes to `documents`.
-4. Poll `GET /api/task_status?task_id=<id>` until `SUCCESS`.
-5. `SELECT id FROM sources ORDER BY created_at` → paste UUIDs into `AZTEC_SOURCE_IDS` → restart backend + worker (`docker compose … up -d --force-recreate backend worker` — a plain `restart` does not reload env_file).
+The full reproducible workflow is in `scripts/ingest/README.md`. Short version:
+
+1. `python -m scripts.ingest.build --aztec-pkg /tmp/aztec-vNEW --noir /tmp/noir-vNEW --out /tmp/build` builds zips for all 12 corpora.
+2. `python -m scripts.ingest.upload --build-dir /tmp/build --base-url ... --token "$INTERNAL_KEY" --out /tmp/build/upload_manifest.json` uploads each zip to `POST /api/upload`, polls `GET /api/task_status?task_id=...` until `SUCCESS`, captures the resulting `sources.id` per corpus.
+3. `python -m scripts.ingest.swap_sources --upload-manifest ... --agent-id $PROD_AGENT_ID --out /tmp/swap.sql` generates SQL (does NOT execute) to point the agent's `source_id` + `extra_source_ids` at the new corpora, plus the canonical-order `AZTEC_SOURCE_IDS` block to paste into `.env`.
+4. Run `psql -f /tmp/swap.sql`, update `.env`, then `docker compose … up -d --force-recreate backend worker`.
+
+Worker internals: walks the extracted tree, chunks each file, drops chunks with `token_count < 50` (UNLESS `metadata.chunk_type == "apiref"` — see `application/parser/chunking.py`), embeds survivors via OpenAI, writes to `documents`.
 
 Re-ingest: today the endpoint has **no idempotency**. Re-uploading the same zip with the same name creates a duplicate `sources` row and duplicate `documents` chunks — burning OpenAI credits. To cleanly re-ingest, first wipe the old source: `DELETE FROM sources WHERE name = '...';` then `PGVectorStore.delete_index()` (or `DELETE FROM documents WHERE source_id = '<uuid>';`) before POSTing again. An idempotent `?replace=true` path is scoped in `TODO.md` post-deploy items.
 
