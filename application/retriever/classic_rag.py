@@ -110,6 +110,30 @@ class ClassicRAG(BaseRetriever):
             logging.error(f"Error rephrasing query: {e}", exc_info=True)
             return self.original_question
 
+    # Aztec-fork: parser-friendliness suffixes appended at ingest time
+    # to satisfy the DocsGPT extension allowlist. We strip these from
+    # the filename shown to the LLM so faithfulness rules ("only cite
+    # filenames that appear as chunk headers") don't push the model to
+    # echo "hash.nr.md" or "Token.nr.txt" into its prose.
+    #
+    # A name like "hash.nr.md" → "hash.nr" (the canonical code path).
+    # Plain ".md" / ".txt" filenames (e.g. concept docs ending in
+    # exactly ".md") are left alone — only the doubled
+    # ``.<code>.<parser>`` shape is treated as the hack.
+    _AZTEC_PARSER_SUFFIXES = (".md", ".txt")
+    _AZTEC_CODE_EXTENSIONS = (".nr", ".ts", ".sol")
+
+    @classmethod
+    def _strip_extension_hack(cls, name: str) -> str:
+        if not isinstance(name, str):
+            return name
+        for psuf in cls._AZTEC_PARSER_SUFFIXES:
+            if name.endswith(psuf):
+                base = name[: -len(psuf)]
+                if any(base.endswith(cext) for cext in cls._AZTEC_CODE_EXTENSIONS):
+                    return base
+        return name
+
     def _extract_doc_fields(self, doc):
         """Normalise page_content + metadata + derived fields from a Document
         or dict-shaped result into the fields the retrieval output uses."""
@@ -124,6 +148,7 @@ class ClassicRAG(BaseRetriever):
         if not isinstance(title, str):
             title = str(title)
         title = title.split("/")[-1]
+        title = self._strip_extension_hack(title)
 
         filename = (
             metadata.get("filename")
@@ -136,6 +161,11 @@ class ClassicRAG(BaseRetriever):
             filename = title
         if not filename:
             filename = title
+        # Strip the parser-friendliness suffix from the LLM-visible
+        # filename. The original `metadata.source` (with suffix) is
+        # preserved in the SSE source frame; only the chunk header
+        # the LLM grounds against gets the canonical extension.
+        filename = self._strip_extension_hack(filename)
 
         source_path = (
             metadata.get("source")
