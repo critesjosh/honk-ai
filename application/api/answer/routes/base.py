@@ -103,18 +103,28 @@ def _aztec_source_url(source_path: str) -> str:
         return f"{_NOIR_GITHUB_BASE}/docs/docs/{rest}"
     if source_path.startswith("noir-stdlib/"):
         rest = source_path[len("noir-stdlib/"):]
-        if rest.endswith(".txt"):
-            rest = rest[:-4]
+        for suffix in (".txt", ".md"):
+            if rest.endswith(suffix):
+                rest = rest[: -len(suffix)]
+                break
         return f"{_NOIR_GITHUB_BASE}/noir_stdlib/src/{rest}"
 
     # Code / non-developer-docs → GitHub blob at v4.2.0
     for corpus_prefix, repo_prefix in _SOURCE_TO_REPO_PREFIX:
         if source_path.startswith(corpus_prefix):
             rest = source_path[len(corpus_prefix):]
-            # Ingest appends .txt to code extensions (.nr/.ts/.sol/...) so
-            # parser recognises them — strip it to point at the real file.
-            if rest.endswith(".txt"):
-                rest = rest[:-4]
+            # Ingest pipelines append a parser-friendly extension to code
+            # files so the DocsGPT parser allowlist accepts them:
+            #   - body-bearing corpora (e.g. noir-contracts) append ``.txt``:
+            #     ``Token.nr`` → ``Token.nr.txt``
+            #   - apiref corpora (aztec-nr, noir-stdlib) append ``.md``:
+            #     ``hash.nr`` → ``hash.nr.md`` (markdown rendered)
+            # In both cases the canonical file the user wants linked is
+            # the original ``.nr`` (or ``.ts`` / ``.sol``).
+            for suffix in (".txt", ".md"):
+                if rest.endswith(suffix):
+                    rest = rest[: -len(suffix)]
+                    break
             return f"{_AZTEC_GITHUB_BASE}/{repo_prefix}{rest}"
 
     return source_path

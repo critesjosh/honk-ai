@@ -1,0 +1,177 @@
+"""Generate the SQL to swap an agent's source list to the freshly-uploaded corpora.
+
+This script does NOT execute SQL by default. It prints the UPDATE
+statements you need to run via ``psql`` against the production
+Postgres, plus the ``AZTEC_SOURCE_IDS`` block to paste into ``.env``.
+
+Why dry-run by default
+----------------------
+Production agent edits via the UI are blocked
+(``VITE_DISABLE_AGENT_EDIT=true``) and SQL-driven changes are
+explicitly the operating model. We don't want a bug here to silently
+clobber an agent — so the default is "show me the SQL" and the user
+runs it.
+
+Usage::
+
+    python -m scripts.ingest.swap_sources \
+        --upload-manifest /tmp/aztec-corpora-build/upload_manifest.json \
+        --agent-id <uuid>
+        [--apiref-only]                 # rotate apiref UUIDs in place
+        [--prompt-id <uuid>]             # also pin the system prompt
+        [--out /tmp/swap.sql]            # write SQL to a file
+
+After running the printed SQL, also update ``AZTEC_SOURCE_IDS`` in
+``.env`` to the printed canonical-order block, then re-run
+``up -d --force-recreate backend worker``.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from pathlib import Path
+from typing import List, Optional
+
+# corpora module imported indirectly via the canonical-order list.
+# We don't need CORPORA itself — the slug ordering is captured below.
+
+
+# Canonical retrieval order (developer-question-weighted). Mirror of
+# the AZTEC_SOURCE_IDS comment block in .env.
+_CANONICAL_ORDER: tuple = (
+    "aztec_developer_docs",
+    "aztec_nr_apiref",
+    "noir_language_docs",
+    "aztec_example_contracts",
+    "aztec_js_sdk",
+    "aztec_typescript_api",
+    "noir_stdlib_apiref",
+    "aztec_cli",
+    "aztec_network_docs",
+    "aztec_e2e_tests",
+    "aztec_protocol_circuits",
+    "aztec_l1_contracts",
+)
+
+
+def _ordered(uploads: dict) -> List[dict]:
+    by_slug = {u["slug"]: u for u in uploads if u.get("source_id")}
+    return [by_slug[s] for s in _CANONICAL_ORDER if s in by_slug]
+
+
+def main(argv: Optional[List[str]] = None) -> int:
+    parser = argparse.ArgumentParser(
+        description="Generate SQL to swap agent source lists after re-ingest."
+    )
+    parser.add_argument("--upload-manifest", required=True,
+                        help="Path to the upload manifest produced by scripts.ingest.upload")
+    parser.add_argument("--agent-id", required=True,
+                        help="UUID of the production agent (target of the UPDATE)")
+    parser.add_argument("--apiref-only", action="store_true",
+                        help="Only rotate the apiref UUIDs in extra_source_ids; "
+                             "preserves the rest of the agent's source list")
+    parser.add_argument("--allow-partial", action="store_true",
+                        help="Allow default-mode SQL generation even when the "
+                             "upload manifest is missing some of the 12 canonical "
+                             "corpora. WITHOUT this flag, default mode refuses to "
+                             "emit SQL that would truncate the agent's source list.")
+    parser.add_argument("--prompt-id", default=None,
+                        help="If set, also UPDATE prompt_id on the agent")
+    parser.add_argument("--out", default=None,
+                        help="Write the SQL to this file (default: stdout)")
+    args = parser.parse_args(argv)
+
+    uploads = json.loads(Path(args.upload_manifest).read_text())
+    ordered = _ordered(uploads)
+    if not ordered:
+        print("ERROR: upload manifest contains no successful uploads.", file=sys.stderr)
+        return 2
+
+    # Default-mode safety: refuse to emit a partial UPDATE that would
+    # silently truncate the agent's source list. The full UPDATE
+    # overwrites extra_source_ids, so a manifest missing 11 of 12
+    # corpora would leave the agent with only the uploaded one. The
+    # operator must opt in via --allow-partial OR --apiref-only.
+    if not args.apiref_only and not args.allow_partial:
+        present = {u["slug"] for u in ordered}
+        missing = [s for s in _CANONICAL_ORDER if s not in present]
+        if missing:
+            print(
+                "ERROR: upload manifest is missing canonical corpora:\n  "
+                + ", ".join(missing)
+                + "\n\nDefault-mode SQL would truncate the agent's source "
+                + "list to only the uploaded corpora. Use one of:\n"
+                + "  --apiref-only      (rotate just the apiref UUIDs)\n"
+                + "  --allow-partial    (acknowledge the partial set)\n"
+                + "  or upload all 12 corpora before generating SQL.",
+                file=sys.stderr,
+            )
+            return 2
+
+    primary = ordered[0]
+    extras = ordered[1:]
+    extras_array = "ARRAY[" + ",".join(f"'{u['source_id']}'::uuid" for u in extras) + "]"
+
+    sql_lines = [
+        "-- Generated by scripts/ingest/swap_sources.py",
+        "-- Review carefully before executing.",
+        "BEGIN;",
+        "",
+    ]
+
+    if args.apiref_only:
+        sql_lines.append(
+            "-- TODO(operator): replace the OLD aztec-nr / noir-stdlib UUIDs "
+            "in the agent's extra_source_ids with the NEW apiref UUIDs:"
+        )
+        for u in uploads:
+            if u["slug"] in ("aztec_nr_apiref", "noir_stdlib_apiref"):
+                sql_lines.append(f"--   {u['slug']:25s} → {u['source_id']}")
+        sql_lines.append(
+            "-- Inspect the current array first:"
+        )
+        sql_lines.append(
+            f"-- SELECT source_id, extra_source_ids FROM agents "
+            f"WHERE id = '{args.agent_id}';"
+        )
+    else:
+        sql_lines += [
+            "UPDATE agents",
+            f"   SET source_id        = '{primary['source_id']}'::uuid,",
+            f"       extra_source_ids = {extras_array}::uuid[]",
+            f" WHERE id = '{args.agent_id}'::uuid;",
+            "",
+        ]
+        if args.prompt_id:
+            sql_lines += [
+                f"UPDATE agents SET prompt_id = '{args.prompt_id}'::uuid",
+                f" WHERE id = '{args.agent_id}'::uuid;",
+                "",
+            ]
+
+    sql_lines += ["COMMIT;", ""]
+
+    env_lines = [
+        "# AZTEC_SOURCE_IDS canonical-order block",
+        "# Paste this into .env (replacing the existing block) and",
+        "# `docker compose up -d --force-recreate backend worker` to apply.",
+        "AZTEC_SOURCE_IDS=" + ",".join(u["source_id"] for u in ordered),
+        "",
+    ]
+    for u in ordered:
+        env_lines.append(f"#   {u['slug']:25s} {u['name']:50s} → {u['source_id']}")
+
+    output = "\n".join(sql_lines + ["", "-- ---------- .env block ----------"] + env_lines)
+
+    if args.out:
+        Path(args.out).write_text(output, encoding="utf-8")
+        print(f"wrote: {args.out}")
+    else:
+        print(output)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

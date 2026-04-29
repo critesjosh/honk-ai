@@ -66,14 +66,24 @@ class Chunker:
             doc = documents[i]
             tokens = self.encoding.encode(doc.text)
             token_count = len(tokens)
+            extra_info = doc.extra_info or {}
+            # Apiref chunks (signature + docstring per public item) are
+            # often short — a one-line `pub fn foo(...) -> T;` plus its
+            # docstring may sit at 30–60 tokens. The blanket <50 token
+            # discard would silently drop the highest-precision API
+            # surface, defeating the whole point of the apiref pipeline.
+            # The apiref ingest tags every input file with
+            # `chunk_type=apiref` (see scripts/ingest/aztec_corpora.py),
+            # which we honor here.
+            is_apiref = extra_info.get("chunk_type") == "apiref"
 
             if self.min_tokens <= token_count <= self.max_tokens:
-                doc.extra_info = doc.extra_info or {}
+                doc.extra_info = extra_info
                 doc.extra_info["token_count"] = token_count
                 processed_docs.append(doc)
                 i += 1
             elif token_count < self.min_tokens:
-                if token_count < 50:
+                if token_count < 50 and not is_apiref:
                     logger.debug(
                         "Discarding stub chunk (%d tokens): %s",
                         token_count,
@@ -81,7 +91,7 @@ class Chunker:
                     )
                     i += 1
                     continue
-                doc.extra_info = doc.extra_info or {}
+                doc.extra_info = extra_info
                 doc.extra_info["token_count"] = token_count
                 processed_docs.append(doc)
                 i += 1
