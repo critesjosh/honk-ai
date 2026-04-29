@@ -64,6 +64,20 @@ class SourceTree:
     # Top-level directory inside the zip that this tree lands under
     # (e.g. "cli"). Trailing slash is optional and stripped on use.
     zip_prefix: str
+    # Optional fnmatch-style patterns for files to exclude — relative
+    # to ``path``. Matches against the file's relative path INSIDE the
+    # source tree, NOT against just the basename. Use this for
+    # surgical removals like transitional release-note / migration
+    # files that mention every renamed identifier in both spellings
+    # and dominate identifier-shaped queries despite never being the
+    # canonical answer. Example::
+    #
+    #     exclude_paths=("docs/resources/migration_notes.*",)
+    #
+    # Patterns that match a directory exclude every file beneath it::
+    #
+    #     exclude_paths=("operators/reference/changelog/*",)
+    exclude_paths: Tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -112,7 +126,23 @@ CORPORA: Tuple[Corpus, ...] = (
         name="Aztec Developer Docs v4.2.0",
         slug="aztec_developer_docs",
         source_root="aztec-packages",
-        trees=(SourceTree("docs/developer_versioned_docs/version-v4.2.0", "version-v4.2.0/docs"),),
+        trees=(
+            SourceTree(
+                "docs/developer_versioned_docs/version-v4.2.0",
+                "version-v4.2.0/docs",
+                exclude_paths=(
+                    # Migration notes accumulate every renamed identifier
+                    # in both old and new spellings, so they dominate
+                    # identifier-shaped queries despite never being the
+                    # canonical answer. 285 chunks at v4.2.0 — biggest
+                    # single source of off-target citations in the
+                    # widget. If we ever need migration content again,
+                    # carve it into a separate corpus that's only
+                    # included for migration-shaped queries.
+                    "docs/resources/migration_notes.*",
+                ),
+            ),
+        ),
         include_extensions=(".md", ".mdx", ".json"),
         transform="passthrough",
     ),
@@ -120,7 +150,19 @@ CORPORA: Tuple[Corpus, ...] = (
         name="Aztec Network Docs v4.2.0",
         slug="aztec_network_docs",
         source_root="aztec-packages",
-        trees=(SourceTree("docs/network_versioned_docs/version-v4.2.0", "version-v4.2.0/operators"),),
+        trees=(
+            SourceTree(
+                "docs/network_versioned_docs/version-v4.2.0",
+                "version-v4.2.0/operators",
+                # Same logic as migration_notes above — release notes
+                # mention every renamed config / flag / RPC method
+                # but aren't the canonical reference for any of them.
+                exclude_paths=(
+                    "operators/reference/changelog/*",
+                    "reference/changelog/*",
+                ),
+            ),
+        ),
         include_extensions=(".md",),
         transform="passthrough",
     ),

@@ -19,6 +19,7 @@ Re-run is idempotent: existing outputs are overwritten.
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import json
 import logging
 import shutil
@@ -65,15 +66,32 @@ def _resolve_source_dir(corpus: Corpus, tree: SourceTree, roots: dict) -> Path:
     return full
 
 
-def _walk_files(src_dir: Path, extensions: tuple) -> List[Path]:
+def _walk_files(
+    src_dir: Path,
+    extensions: tuple,
+    exclude_paths: tuple = (),
+) -> List[Path]:
+    """Walk ``src_dir`` and return matching files in stable order.
+
+    ``exclude_paths`` is a tuple of fnmatch patterns evaluated against
+    each file's relative path under ``src_dir`` (forward-slash form,
+    no leading slash). Patterns may target directories — e.g.
+    ``"foo/bar/*"`` excludes every file under ``foo/bar``.
+    """
     out: List[Path] = []
     ext_lower = tuple(e.lower() for e in extensions)
     for path in src_dir.rglob("*"):
         if not path.is_file():
             continue
+        rel = path.relative_to(src_dir)
+        rel_posix = rel.as_posix()
         # Skip if any ignored segment appears in the path
-        rel_parts = path.relative_to(src_dir).parts
-        if any(p in _IGNORED_DIR_NAMES for p in rel_parts):
+        if any(p in _IGNORED_DIR_NAMES for p in rel.parts):
+            continue
+        # Skip per-corpus exclusions
+        if exclude_paths and any(
+            fnmatch.fnmatch(rel_posix, pat) for pat in exclude_paths
+        ):
             continue
         if path.suffix.lower() in ext_lower:
             out.append(path)
@@ -92,7 +110,7 @@ def _build_passthrough(
     for src_dir, tree in zip(src_dirs, corpus.trees):
         rel_root = staging / tree.zip_prefix.rstrip("/")
         rel_root.mkdir(parents=True, exist_ok=True)
-        for f in _walk_files(src_dir, corpus.include_extensions):
+        for f in _walk_files(src_dir, corpus.include_extensions, tree.exclude_paths):
             rel = f.relative_to(src_dir)
             target = rel_root / rel
             target.parent.mkdir(parents=True, exist_ok=True)
@@ -110,7 +128,7 @@ def _build_rename_code_to_txt(
     for src_dir, tree in zip(src_dirs, corpus.trees):
         rel_root = staging / tree.zip_prefix.rstrip("/")
         rel_root.mkdir(parents=True, exist_ok=True)
-        for f in _walk_files(src_dir, corpus.include_extensions):
+        for f in _walk_files(src_dir, corpus.include_extensions, tree.exclude_paths):
             rel = f.relative_to(src_dir)
             target = rel_root / (str(rel) + ".txt")
             target.parent.mkdir(parents=True, exist_ok=True)
