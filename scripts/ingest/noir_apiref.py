@@ -942,10 +942,19 @@ def transform_tree(
     input_root: Path,
     output_root: Path,
     rel_prefix: str = "",
+    exclude_paths: tuple = (),
 ) -> dict:
     """Walk ``input_root`` recursively, emit one `.nr.md` per `.nr`
     under ``output_root``. Returns a manifest dict.
+
+    ``exclude_paths`` is a tuple of fnmatch patterns evaluated against
+    each ``.nr`` file's path relative to ``input_root`` (forward-slash
+    form). Same semantics as ``SourceTree.exclude_paths`` over in
+    ``scripts/ingest/corpora.py`` — the build CLI threads the value
+    through, so an apiref corpus can declare exclusions just like a
+    passthrough corpus.
     """
+    import fnmatch as _fn
     output_root.mkdir(parents=True, exist_ok=True)
     manifest = {
         "input_root": str(input_root),
@@ -963,6 +972,14 @@ def transform_tree(
     }
 
     nr_files = sorted(input_root.rglob("*.nr"))
+    if exclude_paths:
+        nr_files = [
+            f for f in nr_files
+            if not any(
+                _fn.fnmatch(f.relative_to(input_root).as_posix(), pat)
+                for pat in exclude_paths
+            )
+        ]
     for nr in nr_files:
         manifest["files_seen"] += 1
         result = transform_file(nr, input_root)

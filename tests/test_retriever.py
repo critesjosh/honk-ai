@@ -492,3 +492,62 @@ class TestClassicRAGSearch:
         rag = _make_rag(source={"question": "q"})
         docs = rag.search()
         assert docs == []
+
+
+# ── Aztec extension-hack stripper ────────────────────────────────────────────
+
+
+@pytest.mark.unit
+class TestStripExtensionHack:
+    """``ClassicRAG._strip_extension_hack`` strips the
+    parser-friendliness suffix appended at ingest time so the LLM
+    sees canonical filenames in chunk headers (``hash.nr`` not
+    ``hash.nr.md``). Plain ``.md`` / ``.txt`` filenames must NOT be
+    stripped — only the doubled ``.<code>.<parser>`` shape."""
+
+    @pytest.mark.parametrize(
+        "name,expected",
+        [
+            # Apiref Markdown view of code → strip the .md
+            ("hash.nr.md", "hash.nr"),
+            ("lifecycle.nr.md", "lifecycle.nr"),
+            ("foo.ts.md", "foo.ts"),
+            ("Bar.sol.md", "Bar.sol"),
+            # Body-bearing code with .txt parser-friendliness suffix
+            ("Token.nr.txt", "Token.nr"),
+            ("foo.ts.txt", "foo.ts"),
+            ("Bar.sol.txt", "Bar.sol"),
+            # Plain markdown / text concept docs — leave alone
+            ("overview.md", "overview.md"),
+            ("release_notes.md", "release_notes.md"),
+            ("api.txt", "api.txt"),
+            # Other extensions untouched
+            ("foo.json", "foo.json"),
+            ("bar.nr", "bar.nr"),
+            ("Token.sol", "Token.sol"),
+            # Edge cases
+            ("", ""),
+            (None, None),
+        ],
+    )
+    def test_strip_extension_hack(self, name, expected):
+        from application.retriever.classic_rag import ClassicRAG
+        assert ClassicRAG._strip_extension_hack(name) == expected
+
+    def test_strips_within_extract_doc_fields(self, _patch_llm_creator):
+        """Confirms the integration: the stripped filename is what
+        gets baked into the chunk header the LLM grounds against;
+        the raw `metadata.source` (used by the URL rewriter) keeps
+        the suffix so source-URL mapping continues to work."""
+        rag = _make_rag(source={"question": "q"})
+        doc = Mock()
+        doc.page_content = "content"
+        doc.metadata = {
+            "title": "hash.nr.md",
+            "source": "aztec-nr/aztec/src/hash.nr.md",
+            "filename": "hash.nr.md",
+        }
+        _content, _md, title, filename, source = rag._extract_doc_fields(doc)
+        assert filename == "hash.nr"
+        assert title == "hash.nr"
+        assert source == "aztec-nr/aztec/src/hash.nr.md"

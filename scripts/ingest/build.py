@@ -154,6 +154,7 @@ def _build_noir_apiref(
             input_root=src_dir,
             output_root=out_dir,
             rel_prefix=tree.zip_prefix.rstrip("/"),
+            exclude_paths=tree.exclude_paths,
         )
         aggregate["files_seen"] += manifest["files_seen"]
         aggregate["files_emitted"] += manifest["files_emitted"]
