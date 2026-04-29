@@ -15,7 +15,7 @@ Aztec-specific additions on top of upstream:
 - **Custom settings**: `MCP_PROVISIONING_KEY`, `AZTEC_SOURCE_IDS`, `CORS_ALLOWED_ORIGINS`, `EMBEDDINGS_DIMENSION`, `RAG_MAX_DOC_TOKENS`, `VITE_DISABLE_AGENT_EDIT`.
 - **RAG context cap** (`settings.RAG_MAX_DOC_TOKENS`, default 6000, set to **10000** in prod `.env`) — caps `calculate_doc_token_budget()` in `utils.py`. Upstream defaults to the full model window (~198k for Claude Sonnet 4.6), which makes every answer slow; the cap keeps generation well under the 15s ceiling while still grounded. Bumped from 6000 → 10000 when the corpus grew to 12 sources to reduce late-source starvation (ClassicRAG iterates sources FIFO and breaks when budget fills, so later sources contribute 0 docs under tight budgets).
 - **CORS glob patterns** (`application/app.py:after_request`) — `CORS_ALLOWED_ORIGINS` supports `fnmatch`-style globs. Used for Netlify preview URLs (`https://deploy-preview-*--aztec-docs-dev.netlify.app`) and localhost dev (`http://localhost:*`).
-- **Widget source rewriting** (`api/answer/routes/base.py:_aztec_source_url`) — remaps corpus paths in the emitted `{type: "source"}` SSE frame into public URLs. Developer Docs → `https://docs.aztec.network/developers/docs/...`; everything else → GitHub at `v4.2.0`. Sources are deduped by rewritten public URL before emission, then capped at 10 (`_MAX_SOURCES_EMITTED`). Bumped from 5 → 10 because a single answer typically references chunks across 6–10 distinct files; the old cap dropped citations from the long tail.
+- **Widget source rewriting** (`api/answer/routes/base.py:_aztec_source_url`) — remaps corpus paths in the emitted `{type: "source"}` SSE frame into public URLs. Developer Docs → `https://docs.aztec.network/developers/docs/...`; everything else → GitHub at `v4.2.0`. Strips both `.txt` (body-bearing code corpora — `Token.nr.txt` → `Token.nr`) AND `.md` (apiref corpora — `hash.nr.md` → `hash.nr`) before producing the GitHub blob URL, so users never see the parser-friendliness extension hack in citations. Sources are deduped by rewritten public URL before emission, then capped at 10 (`_MAX_SOURCES_EMITTED`). Bumped from 5 → 10 because a single answer typically references chunks across 6–10 distinct files; the old cap dropped citations from the long tail.
 - **Global rerank retrieval** (`application/retriever/classic_rag.py:_get_data`, `application/vectorstore/pgvector.py:search_by_vector_with_score`) — replaces the upstream FIFO per-source loop. Embeds the question **once**, then issues a single SQL query with `WHERE source_id = ANY(%s)` against pgvector and greedy-packs the globally-sorted candidates into the token budget. Dedup key is `(source_path, leading 200 chars)` so adjacent near-identical chunks don't starve other sources. Background: with 12 sources and a 9 k budget, the FIFO version had sources #1–#2 consume the entire budget (29 chunks) and sources #4–#12 contribute zero. Direct probe of `std::hash::poseidon2` retrieved 0 chunks from the noir-stdlib corpus despite that being the canonical home of that identifier. Properties asserted by tests (`tests/test_retriever.py`, `tests/vectorstore/test_pgvector.py`): question is embedded exactly once, retrieval is invariant to `AZTEC_SOURCE_IDS` ordering, results are packed in ascending distance order, near-identical chunks are deduped, and backends without `search_by_vector_with_score` fail loudly instead of silently degrading.
 - **Rephrase auth fix** (`application/retriever/classic_rag.py:__init__`) — `ClassicRAG` previously defaulted `api_key` to `settings.API_KEY`, which in prod is an agent UUID, not an OpenRouter key. `_rephrase_query()` got 401 from OpenRouter on every multi-turn query, silently fell back to the raw question, and follow-ups like "how does it differ?" went to retrieval without conversation context. Fix: default `api_key=None` so the LLM backend's own provider-key fallback (`OPEN_ROUTER_API_KEY` / `OPENAI_API_KEY`) resolves. One-line change with outsized impact on multi-turn answer quality.
 - **Agent sources_list ordering fix** (`stream_processor._get_data_from_api_key`) — the upstream code dropped `agent.source_id` (primary) when `extra_source_ids` existed. Our version prepends the primary to `sources_list` so it's searched first. **Bug pattern**: editing an agent via the DocsGPT UI can re-clear `source_id` and rewrite `extra_source_ids` in a default order (often with E2E tests first) and can also swap `prompt_id`. If retrieval degrades after a UI edit, re-apply the canonical order + prompt via SQL. Prefer `VITE_DISABLE_AGENT_EDIT=true` in prod.
@@ -27,7 +27,10 @@ Aztec-specific additions on top of upstream:
 - **Reasoning-disable shim for OpenRouter** (`llm/openai.py:_should_disable_reasoning`) — for models like `x-ai/grok-4.1-fast` that emit chain-of-thought tokens by default and stream no answer content, injects `extra_body={"reasoning": {"exclude": true}}`. Extend via `_REASONING_DISABLED_MODEL_PREFIXES`.
 - **Agent edit feature flag** (`VITE_DISABLE_AGENT_EDIT=true` build ARG, `frontend/Dockerfile.prod`) — hides the agent create/edit form in the UI (`NewAgent.tsx`, `AgentsList.tsx`, `AgentCard.tsx`). Replaces the form with a notice directing admins to manage agents via SQL or `/api/internal/create_mcp_key`. Use in prod to prevent UI-side config drift.
 - **Canonical Aztec system prompt** (`application/prompts/aztec_4_2_0_grounded.txt`) — the production system prompt for the `Aztec 4.2.0` / `docs.aztec.network` agents. **Source of truth lives in the `prompts` table in Postgres**, the file is the audit-tracked copy. Iterated through 6 versions to fight identifier-fabrication on weaker models (the widget primary is `x-ai/grok-4.1-fast` for cost; faithfulness rules in the prompt compensate). To update: edit the file, `docker cp` into postgres, then `UPDATE prompts SET content = pg_read_file('/tmp/<file>') WHERE id='0780959b-3c18-4ad9-8284-691665233a6f';`. A sync script in `scripts/db/` would be a sensible follow-up.
-- **Eval harness** (`scripts/eval/eval_retrieval.py`, `scripts/eval/golden_queries.json`) — 15 golden queries with two run modes: `--mode retriever` probes `ClassicRAG._get_data()` directly and asserts source-coverage / diversity; `--mode stream` hits `/stream` end-to-end and asserts banned-identifier absence, no Markdown tables (Discord-format rule), source diversity, and `max_response_time_s`. Includes a multi-turn follow-up query that exercises the rephrase auth fix. See `scripts/eval/README.md` for invocation. Run before merging any retrieval-path or system-prompt change.
+- **Eval harness** (`scripts/eval/eval_retrieval.py`, `scripts/eval/golden_queries.json`) — 25 golden queries, each tagged with a `bucket` of `identifier` / `concept` / `example`, and two run modes:
+  - `--mode retriever` probes `ClassicRAG._get_data()` directly. Identifier queries assert the expected `.nr` apiref file appears in the **top-3** retrieved chunks; concept queries guard against an over-eager apiref bias by asserting the first hit comes from the configured concept prefix.
+  - `--mode stream` hits `/stream` end-to-end and asserts banned-identifier absence, no Markdown tables (Discord-format rule), source diversity, `max_response_time_s`, and (for identifier queries) that the **first cited source** is from the apiref corpus.
+  - Includes a multi-turn follow-up query that exercises the rephrase auth fix. `--bucket {identifier,concept,example,all}` filters which queries to run. See `scripts/eval/README.md` for invocation. Run before merging any retrieval-path or system-prompt change.
 
 ## Development environment
 
@@ -135,20 +138,20 @@ git -C ../aztec-packages worktree add --detach /tmp/aztec-v4.2.0 v4.2.0
 
 **Twelve corpora** are ingested into the `sources` table (one row per corpus, UUID auto-generated) and `documents` table (one row per chunk, pgvector 3072-dim embeddings via OpenAI `text-embedding-3-large`). UUIDs for the ones the MCP bot should serve go into `AZTEC_SOURCE_IDS` in `.env`:
 
-| Source (display name) | Path in aztec-packages | Transform | File ext | Count |
+| Source (display name) | Path in aztec-packages | Transform | Excludes | File ext |
 |---|---|---|---|---|
-| Aztec Developer Docs v4.2.0 | `docs/developer_versioned_docs/version-v4.2.0/` | passthrough | .md .mdx .json | 96 |
-| Aztec Network Docs v4.2.0 | `docs/network_versioned_docs/version-v4.2.0/` | passthrough | .md | 39 |
-| **Aztec.nr Framework v4.2.0 (apiref)** | `noir-projects/aztec-nr/` | **noir_apiref** | .nr → .nr.md | 223 |
-| Aztec Example Contracts v4.2.0 | `noir-projects/noir-contracts/contracts/` | rename_code_to_txt | .nr → .nr.txt | 207 |
-| Aztec Protocol Circuits v4.2.0 | `noir-projects/noir-protocol-circuits/` | rename_code_to_txt | .nr → .nr.txt | 454 |
-| aztec.js SDK v4.2.0 | `yarn-project/aztec.js/src/` | rename_code_to_txt | .ts → .ts.txt | 73 |
-| Aztec CLI v4.2.0 | `yarn-project/cli/src/` + `yarn-project/cli-wallet/src/` | rename_code_to_txt | .ts → .ts.txt | 93 |
-| Aztec E2E Tests v4.2.0 | `yarn-project/end-to-end/src/` | rename_code_to_txt | .ts → .ts.txt | 245 |
-| Aztec L1 Contracts v4.2.0 | `l1-contracts/` | rename_code_to_txt | .sol → .sol.txt | 347 |
-| Aztec TypeScript API v4.2.0 | `docs/static/typescript-api/testnet/` | passthrough | .md .txt | 10 |
-| Noir Language Docs v4.2.0 | `noir-lang/noir` @ `842974fcf…`: `docs/docs/` | passthrough | .md .mdx | 84 |
-| **Noir stdlib v4.2.0 (apiref)** | `noir-lang/noir` @ `842974fcf…`: `noir_stdlib/src/` | **noir_apiref** | .nr → .nr.md | 49 |
+| **Aztec Developer Docs v4.2.0 (clean)** | `docs/developer_versioned_docs/version-v4.2.0/` | passthrough | `docs/resources/migration_notes.*` | .md .mdx .json |
+| **Aztec Network Docs v4.2.0 (clean)** | `docs/network_versioned_docs/version-v4.2.0/` | passthrough | `operators/reference/changelog/*`, `reference/changelog/*` | .md |
+| **Aztec.nr Framework v4.2.0 (apiref)** | `noir-projects/aztec-nr/` | **noir_apiref** | — | .nr → .nr.md |
+| Aztec Example Contracts v4.2.0 | `noir-projects/noir-contracts/contracts/` | rename_code_to_txt | — | .nr → .nr.txt |
+| Aztec Protocol Circuits v4.2.0 | `noir-projects/noir-protocol-circuits/` | rename_code_to_txt | — | .nr → .nr.txt |
+| aztec.js SDK v4.2.0 | `yarn-project/aztec.js/src/` | rename_code_to_txt | — | .ts → .ts.txt |
+| Aztec CLI v4.2.0 | `yarn-project/cli/src/` + `yarn-project/cli-wallet/src/` | rename_code_to_txt | — | .ts → .ts.txt |
+| Aztec E2E Tests v4.2.0 | `yarn-project/end-to-end/src/` | rename_code_to_txt | — | .ts → .ts.txt |
+| Aztec L1 Contracts v4.2.0 | `l1-contracts/` | rename_code_to_txt | — | .sol → .sol.txt |
+| Aztec TypeScript API v4.2.0 | `docs/static/typescript-api/testnet/` | passthrough | — | .md .txt |
+| Noir Language Docs v4.2.0 | `noir-lang/noir` @ `842974fcf…`: `docs/docs/` | passthrough | — | .md .mdx |
+| **Noir stdlib v4.2.0 (apiref)** | `noir-lang/noir` @ `842974fcf…`: `noir_stdlib/src/` | **noir_apiref** | — | .nr → .nr.md |
 
 ### Three transforms, three intents
 
@@ -157,6 +160,15 @@ The 12 corpora split into three buckets by transform:
 - **`passthrough`** — markdown corpora ingested as-is. The DocsGPT parser allowlist accepts these natively.
 - **`rename_code_to_txt`** — body-bearing source code with `.txt` appended so the parser allowlist accepts it. `Token.nr` → `aztec-nr/token/Token.nr.txt`. Used for examples / circuits / TS / Solidity, where the body IS the answer the user wants (how to write a token contract, how to call this RPC method, etc.). The original path is preserved in each chunk's `metadata.source`.
 - **`noir_apiref`** — `.nr` files run through `scripts/ingest/noir_apiref.py` to produce a Markdown view of just the public surface (doc comments + signatures, no bodies, no `//` line comments, no `#[test]` items). Output is `foo.nr.md`. Used for `aztec-nr` and `noir-stdlib`, where users asking about identifier signatures need to see the API ref, not implementation noise. (See `PLAN-rag-apiref.md` for the why.) The chunker (`application/parser/chunking.py`) detects these by file extension via `application/parser/file/bulk.py` and tags them `chunk_type=apiref`, exempting them from the global `<50` token discard so signature-only chunks survive.
+
+### Per-corpus exclusions (`exclude_paths`)
+
+`SourceTree.exclude_paths` (in `scripts/ingest/corpora.py`) is a tuple of fnmatch patterns evaluated against each file's path relative to the source tree. Used for surgical removal of transitional content that mentions every renamed identifier in both spellings — those files embed well for identifier queries but are never the canonical answer. Currently:
+
+- **Aztec Developer Docs** excludes `docs/resources/migration_notes.*` (was 285 chunks at v4.2.0 — biggest single source of off-target citations on the production widget).
+- **Aztec Network Docs** excludes `operators/reference/changelog/*` and `reference/changelog/*` (~60 chunks of release notes).
+
+If migration content becomes a recurring user need, the cleaner long-term fix is a separate "migration" corpus that's only included when the query is migration-shaped (Phase 4 of `PLAN-rag-apiref.md`).
 
 ### How ingest runs
 The full reproducible workflow is in `scripts/ingest/README.md`. Short version:

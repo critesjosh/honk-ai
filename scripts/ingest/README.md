@@ -39,6 +39,24 @@ full table. The most important distinction is between:
     contracts.) Bodies stay in for these because *the example/test
     body IS the answer* the user wants.
 
+### Per-corpus path exclusions
+
+`SourceTree.exclude_paths` is a tuple of fnmatch patterns evaluated
+against each file's path relative to the tree's source directory.
+Patterns may target individual files (`docs/resources/migration_notes.*`)
+or whole directories (`operators/reference/changelog/*`). Use it to
+surgically drop transitional content like migration notes / release
+changelogs — they mention every renamed identifier in both old and
+new spellings, so they embed well for identifier queries but are
+never the canonical answer.
+
+Currently active exclusions:
+
+  * **Aztec Developer Docs** — `docs/resources/migration_notes.*`
+    (was 285 of ~1000 chunks at v4.2.0)
+  * **Aztec Network Docs** — `operators/reference/changelog/*` and
+    `reference/changelog/*` (~60 chunks of release notes)
+
 ## End-to-end version bump (≈ 1 hour, mostly waiting on embeds)
 
 Outline; details below.
@@ -223,3 +241,47 @@ for trait/impl blocks).
     (which cascades to `documents`). A `?replace=true` mode is on
     `TODO.md`. The `swap_sources.py` SQL output references the *new*
     UUIDs only; you wire in the cleanup of old UUIDs by hand.
+
+## Gotchas
+
+### `is_public` defaults to `false`
+
+Freshly-ingested `sources` rows default to `is_public=false`. The
+backend's `SourceVisibilityService.resolve()` (called from
+`stream_processor._configure_source`) silently filters out any source
+that the requesting agent doesn't own AND isn't `is_public=true`.
+That means a freshly-uploaded source will be invisible to retrieval
+on agents that didn't run the upload — including all the Discord MCP
+agents (which own nothing) and the production widget agent (user
+`local`, owns nothing).
+
+Symptom: SQL shows the agent's `extra_source_ids` includes the new
+UUID, but `/stream` answers never cite it; direct
+`ClassicRAG._get_data()` probes do retrieve it because they bypass
+the visibility check.
+
+Fix:
+```sql
+UPDATE sources SET is_public = true WHERE id = '<new_uuid>'::uuid;
+```
+
+This step is currently manual — `scripts/ingest/upload.py` should
+ideally set `is_public=true` on success. Tracked as a follow-up.
+
+### `swap_sources.py --allow-partial`
+
+By default `swap_sources.py` refuses to emit SQL when the upload
+manifest is missing any of the 12 canonical corpora. The default
+mode rewrites `extra_source_ids` wholesale — a partial manifest
+would silently truncate the agent's source list. Use one of:
+
+  * `--apiref-only` to rotate just the apiref UUIDs in place via
+    `array_replace` (preserves all other slot positions)
+  * `--allow-partial` to acknowledge that you intentionally only
+    uploaded a subset
+  * Upload all 12 corpora before generating SQL
+
+For an in-place rotation of a small subset (e.g. just `apiref`, or
+just `(clean)` rebuilds), prefer the `--apiref-only`-style approach
+or hand-write the `array_replace` SQL — it's more surgical and
+preserves slot order without the risk of dropping unrelated entries.
