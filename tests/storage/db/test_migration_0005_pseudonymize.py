@@ -351,7 +351,7 @@ class TestPseudonymizeMigrationLayerA:
             _seed_discord_user(pg_conn, "u1")
             self._run(pg_conn)
 
-        # 1+2: per table, raw is gone, pseudo present.
+        # 1+2: per table, raw is gone.
         for table in ("users", "conversations", "conversation_messages",
                       "user_logs", "token_usage", "agents"):
             old_count = pg_conn.execute(
@@ -359,8 +359,26 @@ class TestPseudonymizeMigrationLayerA:
                     f"SELECT count(*) FROM {table} "
                     f"WHERE user_id LIKE 'discord:%'"
                 )
-            ).scalar() if table != "agents" else 0
-            assert old_count == 0
+            ).scalar()
+            assert old_count == 0, (
+                f"{table} still has plaintext rows after migration"
+            )
+
+        # ``agents`` also has the raw Discord ID in
+        # ``mcp_provider_user_id`` — assert THAT is gone too. Earlier
+        # this branch silently set ``old_count = 0`` for the agents
+        # table, which made the test pass even if the most sensitive
+        # plaintext (the actual Discord snowflake) survived. Codex
+        # review caught it.
+        agents_raw_pid = pg_conn.execute(
+            text(
+                "SELECT count(*) FROM agents "
+                "WHERE mcp_provider_user_id ~ '^[0-9]+$'"
+            )
+        ).scalar()
+        assert agents_raw_pid == 0, (
+            "agents.mcp_provider_user_id still contains a Discord snowflake"
+        )
         # 3: control row survived.
         assert (
             pg_conn.execute(
@@ -486,6 +504,36 @@ class TestPseudonymizeMigrationLayerA:
         assert after == before, (
             "migration touched rows before raising on missing pepper"
         )
+
+    def test_non_hex_pepper_aborts(self, pg_conn, monkeypatch):
+        """Migration's pepper validation must mirror the app's settings
+        validator — otherwise an operator could run Alembic with an
+        invalid pepper, commit pseudonyms, then later boot the app with
+        a corrected pepper that produces different HMACs and breaks
+        /forget-me silently."""
+        _seed_discord_user(pg_conn, "u-bad")
+        before = pg_conn.execute(
+            text(
+                "SELECT count(*) FROM users WHERE user_id LIKE 'discord:%'"
+            )
+        ).scalar()
+
+        with _pepper_env(monkeypatch, "x" * 64):  # 64 chars but not hex
+            with pytest.raises(RuntimeError, match="hex-encoded"):
+                self._run(pg_conn)
+
+        after = pg_conn.execute(
+            text(
+                "SELECT count(*) FROM users WHERE user_id LIKE 'discord:%'"
+            )
+        ).scalar()
+        assert after == before
+
+    def test_short_pepper_aborts(self, pg_conn, monkeypatch):
+        _seed_discord_user(pg_conn, "u-short")
+        with _pepper_env(monkeypatch, "ab" * 8):  # 8 bytes decoded
+            with pytest.raises(RuntimeError, match="16 bytes"):
+                self._run(pg_conn)
 
 
 # ---------------------------------------------------------------------------

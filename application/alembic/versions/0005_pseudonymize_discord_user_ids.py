@@ -98,21 +98,49 @@ def _pseudo_canonical(raw_id: str, pepper: str) -> str:
     return _DISCORD_PSEUDO_PREFIX + _pseudo_bare(raw_id, pepper)
 
 
-def do_pseudonymize_discord_users(conn) -> dict[str, int]:
-    """The migration's actual logic, exposed as an importable callable
-    so the test suite can drive it directly without fighting Alembic.
+def _validate_pepper(pepper: str) -> None:
+    """Same contract as ``Settings.USER_ID_PEPPER``'s validator —
+    duplicated here so the migration cannot run with an invalid-but-
+    nonempty pepper that would later disagree with the running app's
+    pseudonyms.
 
-    Returns a per-table dict of ``rows_rewritten`` for diagnostic
-    logging. Raises ``RuntimeError`` if ``USER_ID_PEPPER`` is unset
-    so the caller can abort before any UPDATE runs.
+    If this drifts, an operator could run Alembic with e.g.
+    ``USER_ID_PEPPER=xxx...`` (32 hex-looking but invalid chars),
+    commit pseudonyms, then boot the app with a corrected pepper.
+    The corrected pepper produces different HMACs, so
+    ``/api/internal/forget_discord_user`` would silently fail to
+    find anything.
     """
-    pepper = os.environ.get("USER_ID_PEPPER", "")
     if not pepper:
         raise RuntimeError(
             "USER_ID_PEPPER must be set in the environment before this "
             "migration runs. Without it, pseudonymization is a silent "
             "no-op. Aborting."
         )
+    try:
+        decoded = bytes.fromhex(pepper)
+    except ValueError as exc:
+        raise RuntimeError(
+            "USER_ID_PEPPER must be hex-encoded (run `openssl rand -hex 32`)."
+        ) from exc
+    if len(decoded) < 16:
+        raise RuntimeError(
+            f"USER_ID_PEPPER must decode to >=16 bytes; got {len(decoded)}. "
+            "Use `openssl rand -hex 32` for 32 bytes (recommended)."
+        )
+
+
+def do_pseudonymize_discord_users(conn) -> dict[str, int]:
+    """The migration's actual logic, exposed as an importable callable
+    so the test suite can drive it directly without fighting Alembic.
+
+    Returns a per-table dict of ``rows_rewritten`` for diagnostic
+    logging. Raises ``RuntimeError`` if ``USER_ID_PEPPER`` is missing
+    or invalid (same contract as the app's settings validator) so
+    the caller can abort before any UPDATE runs.
+    """
+    pepper = os.environ.get("USER_ID_PEPPER", "")
+    _validate_pepper(pepper)
 
     # 1. Discover every distinct raw Discord ID still in plaintext form.
     raw_ids = [
