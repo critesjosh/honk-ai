@@ -27,35 +27,10 @@ services:
     depends_on:
       - caddy
 
-  # Tactical second cloudflared replica pinned to the US region.
-  # CF's documented HA pattern is one cloudflared per *host* (different
-  # hosts in different regions). Running two on the same host is a
-  # mitigation, not the canonical setup — adopted here because we hit
-  # a CF routing failure where US-edge requests (cf-ray …-ORD) got
-  # 502 Bad Gateway trying to reach our LHR-anchored tunnel via CF's
-  # backbone, while LHR-edge requests succeeded fine. With this
-  # companion registering 4 connections at US edges, the failure mode
-  # for US users is contained. Long-term, replace this with a small
-  # US-region VPS running cloudflared with the same tunnel token.
-  cloudflared-us:
-    image: cloudflare/cloudflared:2026.3.0
-    restart: unless-stopped
-    command: tunnel --no-autoupdate --region us run
-    environment:
-      - TUNNEL_TOKEN=${CLOUDFLARE_TUNNEL_TOKEN:?CLOUDFLARE_TUNNEL_TOKEN must be set in .env}
-    depends_on:
-      - caddy
-
   caddy:
     image: caddy:2-alpine
     restart: unless-stopped
-    # Loopback-only host port for the SSH reverse tunnel to ci-bastion.
-    # 127.0.0.1 (NOT 0.0.0.0) — never publicly reachable on josh-box.
-    # The systemd-user service `aztec-docs-tunnel` carries this port to
-    # bastion's localhost:5080, where cloudflared on bastion picks it up.
-    # See PLAN-bastion-relay.md.
-    ports:
-      - "127.0.0.1:5080:80"
+    # No host ports. cloudflared reaches caddy:80 via the compose network.
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
