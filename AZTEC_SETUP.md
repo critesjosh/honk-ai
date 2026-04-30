@@ -48,7 +48,7 @@ Do **not** reuse the dev compose on the public internet. Use `deployment/docker-
 
 ### 1. Provision secrets
 
-Generate once, treat as unrotatable (especially `ENCRYPTION_SECRET_KEY`). Populate `.env` on the server:
+Generate once, treat as unrotatable (especially `ENCRYPTION_SECRET_KEY` and `USER_ID_PEPPER`). Populate `.env` on the server:
 
 ```bash
 openssl rand -hex 32   # POSTGRES_PASSWORD
@@ -56,7 +56,16 @@ openssl rand -hex 32   # JWT_SECRET_KEY
 openssl rand -hex 32   # ENCRYPTION_SECRET_KEY
 openssl rand -hex 32   # INTERNAL_KEY
 openssl rand -hex 32   # MCP_PROVISIONING_KEY
+openssl rand -hex 32   # USER_ID_PEPPER          # required at boot; HMAC pepper for pseudonymized Discord user IDs
 ```
+
+`USER_ID_PEPPER` is **required at backend boot** — the settings validator
+fail-closes if it's missing, non-hex, or decodes to <16 bytes. It's also
+required by migration `0005_pseudonymize_user_ids`, which aborts before
+any UPDATE if the env var isn't right. **Do not rotate it** — every
+existing pseudonym is derived from it, so rotation orphans every
+Discord user's stored row and forces them to re-provision via
+`/mcp-key`.
 
 Minimum prod `.env`:
 
@@ -71,6 +80,7 @@ JWT_SECRET_KEY=<generated>
 ENCRYPTION_SECRET_KEY=<generated>
 INTERNAL_KEY=<generated>
 MCP_PROVISIONING_KEY=<generated>
+USER_ID_PEPPER=<generated>
 AUTO_MIGRATE=false
 AUTO_CREATE_DB=false
 VERSION_CHECK=false
@@ -100,7 +110,19 @@ docker compose -f deployment/docker-compose-hub.yaml run --rm backend python scr
 docker compose -f deployment/docker-compose-hub.yaml up -d
 ```
 
-Subsequent releases apply migrations the same way — never rely on `AUTO_MIGRATE=true` in prod.
+Subsequent releases apply migrations the same way — never rely on `AUTO_MIGRATE=true` in prod:
+
+```bash
+docker compose -f deployment/docker-compose-hub.yaml --env-file .env exec backend \
+  alembic -c application/alembic.ini upgrade head
+
+# After migration 0005 (privacy / pseudonymization) ran, verify post-conditions:
+docker cp scripts/db/verify_pseudonymization.sql docsgpt-aztec-postgres-1:/tmp/
+docker compose -f deployment/docker-compose-hub.yaml --env-file .env exec postgres \
+  psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -f /tmp/verify_pseudonymization.sql
+# Every "negative sentinel" must read 0; positive sentinels >0 if any
+# Discord users have provisioned an MCP key.
+```
 
 ### 4. Put Cloudflare Access in front
 
