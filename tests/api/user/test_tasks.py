@@ -200,18 +200,21 @@ class TestSetupPeriodicTasks:
 
         setup_periodic_tasks(sender)
 
-        assert sender.add_periodic_task.call_count == 4
+        assert sender.add_periodic_task.call_count == 5
 
         calls = sender.add_periodic_task.call_args_list
 
-        # daily
+        # daily sync
         assert calls[0][0][0] == timedelta(days=1)
-        # weekly
+        # weekly sync
         assert calls[1][0][0] == timedelta(weeks=1)
-        # monthly
+        # monthly sync
         assert calls[2][0][0] == timedelta(days=30)
         # pending_tool_state TTL cleanup (60s)
         assert calls[3][0][0] == timedelta(seconds=60)
+        # 1-year retention purge (privacy compliance)
+        assert calls[4][0][0] == timedelta(days=1)
+        assert calls[4][1].get("name") == "purge-old-user-data"
 
 
 class TestMcpOauthTask:
