@@ -30,7 +30,14 @@ services:
   caddy:
     image: caddy:2-alpine
     restart: unless-stopped
-    # No host ports. cloudflared reaches caddy:80 via the compose network.
+    # Loopback-only host port for the SSH reverse tunnel to ci-bastion.
+    # 127.0.0.1 (NOT 0.0.0.0) — never publicly reachable on josh-box.
+    # The systemd-user service `aztec-docs-tunnel` (file outside this
+    # repo, on josh-box at ~/.config/systemd/user/) carries this port to
+    # bastion's localhost:5080, where cloudflared on bastion picks it
+    # up and serves it to Cloudflare. See PLAN-bastion-relay.md.
+    ports:
+      - "127.0.0.1:5080:80"
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data

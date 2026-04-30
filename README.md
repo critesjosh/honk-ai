@@ -62,12 +62,16 @@
   prevents blockchain-state test fixtures from burning OpenAI embedding credit.
 - **Chunking filter** (`application/parser/chunking.py`) drops chunks with
   `token_count < 50`.
-- **Cloudflare Tunnel deployment topology** — `deployment/docker-compose-hub.yaml`
-  runs cloudflared as an outbound-only connector; no public IP required.
-  Caddy (`deployment/Caddyfile`) sits behind it in HTTP-only mode and
-  handles path routing, streaming (`flush_interval -1` for SSE), security
-  headers, and `Cf-Access-Authenticated-User-Email → X-Auth-Email`
-  propagation.
+- **Cloudflare Tunnel deployment topology** — Caddy
+  (`deployment/Caddyfile`) sits in HTTP-only mode behind a Cloudflare
+  Tunnel; no public IP required on the origin host. Handles path
+  routing, streaming (`flush_interval -1` for SSE), security headers,
+  and `Cf-Access-Authenticated-User-Email → X-Auth-Email`
+  propagation. The Aztec deployment additionally anchors the tunnel on
+  a separate bastion host in a CF-friendly region (us-east-2)
+  reached over an outbound SSH reverse tunnel — see
+  `PLAN-bastion-relay.md` for why and how. Generic single-host
+  CF-Tunnel-on-origin deployments still work with the same compose.
 - **Slim backend image (1.34 GB)** — `application/Dockerfile` drops torch,
   transformers, sentence-transformers, docling, rapidocr, onnxruntime, and
   the bundled mpnet model in favor of remote OpenAI embeddings. The

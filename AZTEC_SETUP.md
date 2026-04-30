@@ -128,7 +128,7 @@ docker compose -f deployment/docker-compose-hub.yaml --env-file .env exec postgr
 
 1. Add the public hostname to Cloudflare.
 2. Create an **Access application** covering `https://$PUBLIC_HOSTNAME/*` with the SSO policy of your choice.
-3. Either provision a **Cloudflare Tunnel** from the server (`cloudflared`) — preferred, no public IP — or add a firewall rule allowing only Cloudflare's IP ranges to reach port 443.
+3. Either provision a **Cloudflare Tunnel** from the server (`cloudflared`) — preferred, no public IP — or add a firewall rule allowing only Cloudflare's IP ranges to reach port 443. If your origin sits in a region where CF backbone routing has been flaky (we hit this with a LHR-anchored tunnel), the same compose can be run with cloudflared on a separate bastion in a CF-friendly region, fronted by an SSH reverse tunnel. See `PLAN-bastion-relay.md` for the topology, decisions, and a step-by-step migration runbook.
 4. Caddy already trusts Cloudflare as its upstream proxy (see `deployment/Caddyfile`) and propagates `Cf-Access-Authenticated-User-Email` as `X-Auth-Email` to the backend.
 
 For programmatic clients (the Discord bot, CI), issue a **Service Token** in Cloudflare Access so they can pass the `CF-Access-Client-Id` and `CF-Access-Client-Secret` headers without SSO.
