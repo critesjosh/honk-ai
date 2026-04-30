@@ -92,6 +92,13 @@ class Settings(BaseSettings):
     MCP_OAUTH_REDIRECT_URI: Optional[str] = None  # public callback URL for MCP OAuth
     INTERNAL_KEY: Optional[str] = None  # internal api key for worker-to-backend auth
     MCP_PROVISIONING_KEY: Optional[str] = None  # dedicated key for MCP key provisioning endpoint
+    # HMAC pepper for pseudonymizing stored user identifiers (e.g.
+    # Discord user IDs). Required at startup — fail-closed: an unset
+    # or insufficient-entropy pepper would silently turn pseudonymization
+    # into the identity function. ``openssl rand -hex 32`` is the canonical
+    # recipe; the validator rejects non-hex inputs and inputs that decode
+    # to fewer than 16 bytes.
+    USER_ID_PEPPER: str = ""
     AZTEC_SOURCE_IDS: Optional[str] = None  # comma-separated Postgres source UUIDs for Aztec MCP agents
     CORS_ALLOWED_ORIGINS: Optional[str] = None  # comma-separated origin URLs; empty = same-origin only; "*" = any (insecure)
 
@@ -204,6 +211,33 @@ class Settings(BaseSettings):
     @classmethod
     def _normalize_pgvector_connection_string_validator(cls, v):
         return normalize_pgvector_connection_string(v)
+
+    @field_validator("USER_ID_PEPPER", mode="after")
+    @classmethod
+    def _validate_user_id_pepper(cls, v: str) -> str:
+        """Reject empty / non-hex / low-entropy peppers at boot.
+
+        Decoded byte length matters, not string length. ``"x" * 32``
+        passes a naive length check but isn't valid hex; ``"abcd"`` is
+        valid hex but only 2 bytes of entropy. Both should fail loudly
+        before the app starts serving traffic.
+        """
+        if not v:
+            raise ValueError(
+                "USER_ID_PEPPER must be set. Generate with `openssl rand -hex 32`."
+            )
+        try:
+            decoded = bytes.fromhex(v)
+        except ValueError as exc:
+            raise ValueError(
+                "USER_ID_PEPPER must be hex-encoded (run `openssl rand -hex 32`)."
+            ) from exc
+        if len(decoded) < 16:
+            raise ValueError(
+                f"USER_ID_PEPPER must decode to >=16 bytes; got {len(decoded)}. "
+                "Use `openssl rand -hex 32` for 32 bytes (recommended)."
+            )
+        return v
 
     @field_validator(
         "API_KEY",

@@ -597,9 +597,25 @@ class TestForgetDiscordUser:
 
     def test_deletes_real_user_data_end_to_end(self, pg_conn):
         """Round-trip: create an MCP agent + a conversation + a message
-        for ``discord:u-real``, call /forget_discord_user, assert all
-        three rows are gone (messages cascade-deleted via FK)."""
+        for the pseudo of ``u-real``, call /forget_discord_user with
+        the *raw* ID, assert all three rows are gone (messages
+        cascade-deleted via FK)."""
         from sqlalchemy import text as sql_text
+
+        from application.pseudonyms import (
+            canonical_user_id,
+            pseudonymize_provider_user_id,
+        )
+
+        # The conftest sets USER_ID_PEPPER='0'*64 for the test process;
+        # compute the pseudonyms the same way the route would.
+        test_pepper = "0" * 64
+        pseudo_uid = canonical_user_id(
+            "discord", "u-real", pepper=test_pepper
+        )
+        bare_pseudo = pseudonymize_provider_user_id(
+            "u-real", pepper=test_pepper
+        )
 
         # Seed a public source so create_mcp_key succeeds.
         ids = TestCreateMcpKey._make_sources(pg_conn, count=1)
@@ -622,15 +638,15 @@ class TestForgetDiscordUser:
                     },
                 )
         assert provision.status_code == 200
-        canonical = "discord:u-real"
 
-        # Insert a conversation + message + log entry for this user.
+        # Insert a conversation + message + log entry under the pseudo
+        # (matching what the streaming path would have written).
         conv_id = pg_conn.execute(
             sql_text(
                 "INSERT INTO conversations (user_id, name) VALUES (:uid, :n) "
                 "RETURNING id"
             ),
-            {"uid": canonical, "n": "test-conv"},
+            {"uid": pseudo_uid, "n": "test-conv"},
         ).scalar()
         pg_conn.execute(
             sql_text(
@@ -638,14 +654,14 @@ class TestForgetDiscordUser:
                 "(conversation_id, user_id, position, prompt, response) "
                 "VALUES (:cid, :uid, 0, 'q', 'a')"
             ),
-            {"cid": conv_id, "uid": canonical},
+            {"cid": conv_id, "uid": pseudo_uid},
         )
         pg_conn.execute(
             sql_text(
                 "INSERT INTO user_logs (user_id, endpoint, data) "
                 "VALUES (:uid, '/api/answer', '{}'::jsonb)"
             ),
-            {"uid": canonical},
+            {"uid": pseudo_uid},
         )
         pg_conn.execute(
             sql_text(
@@ -653,26 +669,39 @@ class TestForgetDiscordUser:
                 "(user_id, prompt_tokens, generated_tokens) "
                 "VALUES (:uid, 10, 20)"
             ),
-            {"uid": canonical},
+            {"uid": pseudo_uid},
         )
 
-        # Sanity: rows exist before forget.
+        # Sanity: rows exist under the pseudo, NOT under the raw ID.
         before_agents = pg_conn.execute(
             sql_text(
                 "SELECT count(*) FROM agents "
                 "WHERE mcp_provider = 'discord' "
-                "AND mcp_provider_user_id = 'u-real'"
+                "AND mcp_provider_user_id = :pseudo"
+            ),
+            {"pseudo": bare_pseudo},
+        ).scalar()
+        before_raw_agents = pg_conn.execute(
+            sql_text(
+                "SELECT count(*) FROM agents "
+                "WHERE mcp_provider_user_id = 'u-real'"
             )
         ).scalar()
         before_msgs = pg_conn.execute(
             sql_text(
                 "SELECT count(*) FROM conversation_messages WHERE user_id = :uid"
             ),
-            {"uid": canonical},
+            {"uid": pseudo_uid},
         ).scalar()
         assert before_agents == 1
+        assert before_raw_agents == 0, (
+            "raw Discord ID leaked into agents.mcp_provider_user_id"
+        )
         assert before_msgs == 1
 
+        # /forget-me is called with the RAW ID — endpoint contract is
+        # unchanged. Storage representation is the only thing that
+        # differs.
         with patch(
             "application.api.internal.routes.settings.MCP_PROVISIONING_KEY",
             self._PROV_KEY,
@@ -691,13 +720,15 @@ class TestForgetDiscordUser:
         assert deleted["user_logs"] == 1
         assert deleted["token_usage"] == 1
 
-        # Verify everything is actually gone.
+        # Verify everything is actually gone — query under the pseudo,
+        # which is what was actually written.
         assert (
             pg_conn.execute(
                 sql_text(
                     "SELECT count(*) FROM agents "
-                    "WHERE mcp_provider_user_id = 'u-real'"
-                )
+                    "WHERE mcp_provider_user_id = :pseudo"
+                ),
+                {"pseudo": bare_pseudo},
             ).scalar()
             == 0
         )
@@ -706,7 +737,7 @@ class TestForgetDiscordUser:
                 sql_text(
                     "SELECT count(*) FROM conversations WHERE user_id = :uid"
                 ),
-                {"uid": canonical},
+                {"uid": pseudo_uid},
             ).scalar()
             == 0
         )
@@ -718,14 +749,304 @@ class TestForgetDiscordUser:
                     "SELECT count(*) FROM conversation_messages "
                     "WHERE user_id = :uid"
                 ),
-                {"uid": canonical},
+                {"uid": pseudo_uid},
             ).scalar()
             == 0
         )
         assert (
             pg_conn.execute(
                 sql_text("SELECT count(*) FROM users WHERE user_id = :uid"),
-                {"uid": canonical},
+                {"uid": pseudo_uid},
             ).scalar()
             == 0
+        )
+
+
+class TestPseudonymizationContract:
+    """The privacy-anonymization contract.
+
+    These tests are the regression guard for the change that
+    HMAC-pseudonymizes Discord user identifiers across every
+    user-keyed table. They assert the end-to-end shape (raw ID never
+    reaches the DB) and the create/forget parity (the same helper is
+    called on both the write and delete paths).
+    """
+
+    _PROV_KEY = "test-prov-key"
+    _AUTH = {"X-Provisioning-Key": _PROV_KEY}
+    # Realistic 18-digit Discord snowflake.
+    _RAW = "123456789012345678"
+
+    def _make_app_with_provisioning(self, pg_conn, sources_count=1):
+        ids = TestCreateMcpKey._make_sources(pg_conn, count=sources_count)
+        return ids
+
+    def _provision(self, pg_conn, *, raw_id=_RAW, username="alice"):
+        ids = self._make_app_with_provisioning(pg_conn)
+        app = _make_app()
+        with patch(
+            "application.api.internal.routes.settings.MCP_PROVISIONING_KEY",
+            self._PROV_KEY,
+        ), patch(
+            "application.api.internal.routes.settings.AZTEC_SOURCE_IDS",
+            ",".join(ids),
+        ), _patch_db(pg_conn):
+            with app.test_client() as c:
+                r = c.post(
+                    "/api/internal/create_mcp_key",
+                    headers=self._AUTH,
+                    json={
+                        "discord_user_id": raw_id,
+                        "discord_username": username,
+                    },
+                )
+        return r
+
+    def test_no_raw_discord_id_in_agents_table(self, pg_conn):
+        """The single most important regression guard. An accidental
+        revert of the pseudonymization is one logic error away from
+        silently writing plaintext again — this test pins the
+        contract at the SQL level."""
+        from sqlalchemy import text as sql_text
+
+        r = self._provision(pg_conn)
+        assert r.status_code == 200
+
+        # The raw 18-digit Discord ID must not appear anywhere in
+        # mcp_provider_user_id.
+        raw_count = pg_conn.execute(
+            sql_text(
+                "SELECT count(*) FROM agents "
+                "WHERE mcp_provider_user_id = :raw"
+            ),
+            {"raw": self._RAW},
+        ).scalar()
+        assert raw_count == 0, "raw Discord ID leaked into agents.mcp_provider_user_id"
+
+    def test_pseudo_present_in_agents_table(self, pg_conn):
+        """``mcp_provider_user_id`` is the bare 32-char hex (no prefix)."""
+        from sqlalchemy import text as sql_text
+
+        self._provision(pg_conn)
+        match_count = pg_conn.execute(
+            sql_text(
+                "SELECT count(*) FROM agents "
+                "WHERE mcp_provider = 'discord' "
+                "AND mcp_provider_user_id ~ '^[a-f0-9]{32}$'"
+            )
+        ).scalar()
+        assert match_count == 1
+
+    def test_user_id_carries_prefix(self, pg_conn):
+        """``agents.user_id`` is the prefixed pseudo."""
+        from sqlalchemy import text as sql_text
+
+        self._provision(pg_conn)
+        match_count = pg_conn.execute(
+            sql_text(
+                "SELECT count(*) FROM agents "
+                "WHERE user_id ~ '^discord_p_v1:[a-f0-9]{32}$'"
+            )
+        ).scalar()
+        assert match_count == 1
+
+    def test_name_is_constant(self, pg_conn):
+        """No Discord username embedded in agents.name."""
+        from sqlalchemy import text as sql_text
+
+        # Provision with a memorable username so the assertion is
+        # meaningful — if the rename regresses the test sees it.
+        self._provision(pg_conn, username="some-distinctive-name")
+        names = pg_conn.execute(
+            sql_text(
+                "SELECT name FROM agents WHERE mcp_provider = 'discord'"
+            )
+        ).fetchall()
+        assert [row[0] for row in names] == ["Aztec MCP"]
+
+    def test_idempotency_under_different_username(self, pg_conn):
+        """Calling /mcp-key twice with the same Discord ID and
+        DIFFERENT usernames produces one row, and api_key /
+        mcp_provider_user_id / user_id are all unchanged across the
+        two calls. Catches drift in the upsert + helper paths.
+        """
+        from sqlalchemy import text as sql_text
+
+        r1 = self._provision(pg_conn, username="alice-original")
+        r2 = self._provision(pg_conn, username="alice-renamed")
+        assert r1.status_code == 200 and r2.status_code == 200
+        assert r1.json["api_key"] == r2.json["api_key"]
+
+        rows = pg_conn.execute(
+            sql_text(
+                "SELECT count(*), max(key), max(mcp_provider_user_id), "
+                "       max(user_id), max(name) "
+                "FROM agents WHERE mcp_provider = 'discord'"
+            )
+        ).fetchone()
+        assert rows[0] == 1, "expected exactly one Discord agent row"
+        assert rows[1] == r1.json["api_key"]
+        # mcp_provider_user_id and user_id are deterministic from the
+        # same raw ID + pepper, so they have to be identical.
+        assert rows[2] is not None and len(rows[2]) == 32
+        assert rows[3].startswith("discord_p_v1:")
+        assert rows[4] == "Aztec MCP"
+
+    def test_distinct_ids_produce_distinct_pseudos(self, pg_conn):
+        """SQL-level collision sanity check on the helper."""
+        from sqlalchemy import text as sql_text
+
+        self._provision(pg_conn, raw_id="111111111111111111", username="a")
+        self._provision(pg_conn, raw_id="222222222222222222", username="b")
+        distinct = pg_conn.execute(
+            sql_text(
+                "SELECT count(DISTINCT mcp_provider_user_id) FROM agents "
+                "WHERE mcp_provider = 'discord'"
+            )
+        ).scalar()
+        assert distinct == 2
+
+    def test_pseudonymize_create_forget_parity(self, pg_conn):
+        """Three-property contract test (codex review — most
+        important single test for this PR). If the helper drifts
+        between the create and forget paths, /forget-me silently fails
+        to find the rows and this test catches it.
+        """
+        from sqlalchemy import text as sql_text
+
+        # 1. /mcp-key with raw ID.
+        r = self._provision(pg_conn)
+        assert r.status_code == 200
+        # Agent row exists, raw ID NOT findable, pseudo IS findable.
+        assert (
+            pg_conn.execute(
+                sql_text(
+                    "SELECT count(*) FROM agents "
+                    "WHERE mcp_provider_user_id = :raw"
+                ),
+                {"raw": self._RAW},
+            ).scalar()
+            == 0
+        )
+        assert (
+            pg_conn.execute(
+                sql_text(
+                    "SELECT count(*) FROM agents "
+                    "WHERE mcp_provider = 'discord'"
+                )
+            ).scalar()
+            == 1
+        )
+
+        # 2. /forget-me with the same RAW ID.
+        app = _make_app()
+        with patch(
+            "application.api.internal.routes.settings.MCP_PROVISIONING_KEY",
+            self._PROV_KEY,
+        ), _patch_db(pg_conn):
+            with app.test_client() as c:
+                forget = c.post(
+                    "/api/internal/forget_discord_user",
+                    headers=self._AUTH,
+                    json={"discord_user_id": self._RAW},
+                )
+        assert forget.status_code == 200
+        assert forget.json["deleted"]["agents"] == 1, (
+            "/forget-me failed to find rows written by /mcp-key — "
+            "create and forget paths are computing different pseudonyms"
+        )
+
+        # 3. SELECT for the raw ID returns 0 in EVERY user-keyed table.
+        # Reuse the same EXPECTED_TABLES set the existing
+        # TestForgetDiscordUser pins so the negative-lookup and
+        # response-shape assertions stay in sync.
+        for table in TestForgetDiscordUser.EXPECTED_TABLES:
+            # ``agents`` has the raw ID in ``mcp_provider_user_id``;
+            # every other table has it in ``user_id``.
+            col = (
+                "mcp_provider_user_id"
+                if table == "agents"
+                else "user_id"
+            )
+            count = pg_conn.execute(
+                sql_text(
+                    f"SELECT count(*) FROM {table} "
+                    f"WHERE {col} = :raw OR {col} = :prefixed"
+                ),
+                {"raw": self._RAW, "prefixed": f"discord:{self._RAW}"},
+            ).scalar()
+            assert count == 0, (
+                f"{table} has plaintext rows after /forget-me; "
+                f"either the migration missed it or the route does"
+            )
+
+
+class TestStreamPseudonymPropagation:
+    """Verify the pseudonym propagates from the agent row into the
+    stream's identity context (and therefore into ``conversations``
+    + ``conversation_messages`` rows written downstream).
+
+    The full ``/stream`` route depends on retired Mongo fixtures
+    (``mock_mongo_db``) and an LLM stub that no longer exists in this
+    fork — extending those tests is a trap. The useful seam is
+    ``StreamProcessor._get_data_from_api_key``: that's the function
+    that reads ``agents.user_id`` and exposes it as the ``data["user"]``
+    that downstream code propagates into ``decoded_token["sub"]``,
+    which is what ``ConversationsRepository.create`` writes as
+    ``conversations.user_id``. If this single hop preserves the
+    pseudo, the rest is trivial.
+    """
+
+    _PROV_KEY = "test-prov-key"
+    _AUTH = {"X-Provisioning-Key": _PROV_KEY}
+
+    def test_get_data_from_api_key_returns_pseudonymous_user(self, pg_conn):
+        import re
+
+        from application.api.answer.services.stream_processor import (
+            StreamProcessor,
+        )
+
+        ids = TestCreateMcpKey._make_sources(pg_conn, count=1)
+        app = _make_app()
+        with patch(
+            "application.api.internal.routes.settings.MCP_PROVISIONING_KEY",
+            self._PROV_KEY,
+        ), patch(
+            "application.api.internal.routes.settings.AZTEC_SOURCE_IDS",
+            ",".join(ids),
+        ), _patch_db(pg_conn):
+            with app.test_client() as c:
+                r = c.post(
+                    "/api/internal/create_mcp_key",
+                    headers=self._AUTH,
+                    json={
+                        "discord_user_id": "42",
+                        "discord_username": "x",
+                    },
+                )
+        assert r.status_code == 200
+        api_key = r.json["api_key"]
+
+        # Build a minimal StreamProcessor and call _get_data_from_api_key.
+        # The class is instantiated with bare-minimum args; we only need
+        # the method's logic.
+        with _patch_db(pg_conn), patch(
+            "application.api.answer.services.stream_processor.db_readonly"
+        ) as db_readonly_patch:
+            from contextlib import contextmanager
+
+            @contextmanager
+            def _yield_pg_conn():
+                yield pg_conn
+
+            db_readonly_patch.side_effect = lambda: _yield_pg_conn()
+
+            sp = StreamProcessor.__new__(StreamProcessor)  # bypass __init__
+            data = sp._get_data_from_api_key(api_key)
+
+        # data["user"] is what propagates into decoded_token["sub"]
+        # which conversations.user_id derives from.
+        assert re.fullmatch(r"discord_p_v1:[a-f0-9]{32}", data["user"]), (
+            f"agent identity not pseudonymized: data['user']={data['user']!r}"
         )
