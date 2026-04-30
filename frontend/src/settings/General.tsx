@@ -2,12 +2,14 @@ import React from 'react';
 import { useTranslation } from 'react-i18next';
 import { useDispatch, useSelector } from 'react-redux';
 
+import conversationService from '../api/services/conversationService';
 import Dropdown from '../components/Dropdown';
 import { useDarkTheme } from '../hooks';
 import {
   selectChunks,
   selectPrompt,
   selectPrompts,
+  selectToken,
   setChunks,
   setModalStateDeleteConv,
   setPrompt,
@@ -42,6 +44,7 @@ export default function General() {
     isDarkTheme ? 'Dark' : 'Light',
   );
   const dispatch = useDispatch();
+  const token = useSelector(selectToken);
   const locale = localStorage.getItem('docsgpt-locale');
   const [selectedLanguage, setSelectedLanguage] = React.useState(
     locale
@@ -115,6 +118,34 @@ export default function General() {
       </div>
       <hr className="border-border dark:border-border my-4 w-[calc(min(665px,100%))] border-t" />
       <div className="flex flex-col gap-2">
+        <button
+          title="Download a JSON copy of all your conversations"
+          className="border-foreground text-foreground hover:bg-foreground hover:text-background flex w-fit cursor-pointer items-center justify-between rounded-3xl border border-solid bg-transparent px-5 py-3 text-sm font-medium tracking-[0.015em] transition-colors"
+          onClick={async () => {
+            try {
+              const data = await conversationService
+                .exportAll(token)
+                .then((r) => r.json());
+              const blob = new Blob([JSON.stringify(data, null, 2)], {
+                type: 'application/json',
+              });
+              const url = URL.createObjectURL(blob);
+              const a = document.createElement('a');
+              a.href = url;
+              a.download = `docsgpt-conversations-${new Date()
+                .toISOString()
+                .slice(0, 10)}.json`;
+              document.body.appendChild(a);
+              a.click();
+              document.body.removeChild(a);
+              URL.revokeObjectURL(url);
+            } catch (err) {
+              console.error('Export failed', err);
+            }
+          }}
+        >
+          Export my data (JSON)
+        </button>
         <button
           title={t('settings.general.deleteAllLabel')}
           className="border-destructive text-destructive hover:bg-destructive flex w-fit cursor-pointer items-center justify-between rounded-3xl border border-solid bg-transparent px-5 py-3 text-sm font-medium tracking-[0.015em] transition-colors hover:font-bold hover:tracking-normal hover:text-white"

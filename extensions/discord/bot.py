@@ -242,6 +242,89 @@ async def mcp_key(interaction: discord.Interaction):
     await interaction.followup.send(instructions, ephemeral=True)
 
 
+@bot.tree.command(
+    name="forget-me",
+    description="Erase your Aztec DocsGPT data (MCP key + conversation history)",
+)
+async def forget_me(interaction: discord.Interaction):
+    """Calls the backend forget endpoint (GDPR Article 17 — right to erasure).
+
+    Unlike ``/mcp-key`` this is intentionally allowed in DMs — the bot
+    accepts and stores DM conversations (see ``on_message`` handler), so
+    the erasure path must be reachable from the same surface where the
+    data was created. Inside guilds it's still gated to ``NOIR_GUILD_ID``.
+    """
+    is_dm = interaction.guild_id is None
+    if not is_dm and NOIR_GUILD_ID and interaction.guild_id != NOIR_GUILD_ID:
+        await interaction.response.send_message(
+            "This command is only available in the Noir Discord or in a DM.",
+            ephemeral=True,
+        )
+        return
+
+    if not MCP_PROVISIONING_KEY:
+        await interaction.response.send_message(
+            "Account erasure is not configured. Please contact an admin.",
+            ephemeral=True,
+        )
+        return
+
+    await interaction.response.defer(ephemeral=True)
+
+    payload = {"discord_user_id": str(interaction.user.id)}
+    headers = {
+        "Content-Type": "application/json",
+        "X-Provisioning-Key": MCP_PROVISIONING_KEY,
+    }
+
+    try:
+        timeout = aiohttp.ClientTimeout(total=30)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.post(
+                f"{BASE_API_URL}/api/internal/forget_discord_user",
+                json=payload,
+                headers=headers,
+            ) as resp:
+                if resp.status != 200:
+                    error_text = await resp.text()
+                    logger.error(f"/forget-me failed: {resp.status} {error_text}")
+                    await interaction.followup.send(
+                        "Sorry, there was an error erasing your data. "
+                        "Please try again later.",
+                        ephemeral=True,
+                    )
+                    return
+                data = await resp.json()
+    except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+        logger.error(f"/forget-me connection error: {e}")
+        await interaction.followup.send(
+            "Sorry, the service is temporarily unavailable. "
+            "Please try again later.",
+            ephemeral=True,
+        )
+        return
+
+    # Drop the in-memory conversation history too.
+    conversation_histories.pop(interaction.user.id, None)
+
+    deleted = data.get("deleted", {})
+    summary_lines = ["**Done.** Your Aztec DocsGPT data has been erased:"]
+    if deleted.get("agents"):
+        summary_lines.append(
+            f"• MCP API key revoked ({deleted['agents']} agent record)"
+        )
+    if deleted.get("conversations"):
+        summary_lines.append(
+            f"• {deleted['conversations']} conversation(s) deleted"
+        )
+    if not deleted.get("agents") and not deleted.get("conversations"):
+        summary_lines.append("• No data was found for your Discord ID.")
+    summary_lines.append(
+        "\nYou can run `/mcp-key` again any time to provision a fresh key."
+    )
+    await interaction.followup.send("\n".join(summary_lines), ephemeral=True)
+
+
 async def generate_answer(question, messages, conversation_id):
     """Generates an answer using the streaming API endpoint."""
     payload = {

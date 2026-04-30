@@ -558,6 +558,25 @@ export default function Navigation({ navOpen, setNavOpen }: NavigationProps) {
             </NavLink>
           </div>
           <div className="text-foreground flex flex-col justify-end dark:text-white">
+            <div className="text-muted-foreground flex items-center justify-center gap-2 px-4 pt-1 text-[11px] leading-tight">
+              <a
+                href="https://aztec.network/privacy-policy"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="hover:underline"
+              >
+                Privacy
+              </a>
+              <span aria-hidden="true">·</span>
+              <a
+                href="https://aztec.network/terms-of-service"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="hover:underline"
+              >
+                Terms
+              </a>
+            </div>
             <div className="flex items-center justify-between py-1">
               <Help />
 
