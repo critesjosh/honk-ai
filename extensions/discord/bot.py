@@ -117,12 +117,28 @@ def split_string(input_str):
 
 @bot.event
 async def setup_hook():
-    """Sync slash commands once on startup (not on every reconnect)."""
+    """Sync slash commands once on startup (not on every reconnect).
+
+    When ``NOIR_GUILD_ID`` is set we register commands at the guild
+    scope (instant) AND tear down any prior global registrations.
+    Without that teardown a deploy that started without the env var
+    leaves global commands hanging around — Discord then renders both
+    copies in the configured guild and users see every command twice.
+    """
     if NOIR_GUILD_ID:
         noir_guild = discord.Object(id=NOIR_GUILD_ID)
+        # Copy globals → guild tree, push, then wipe globals on
+        # Discord's side. The decorator-defined commands re-populate
+        # the in-memory global tree on every restart, so this dance
+        # has to run every time.
         bot.tree.copy_global_to(guild=noir_guild)
         await bot.tree.sync(guild=noir_guild)
-        logger.info(f"Slash commands synced to guild {NOIR_GUILD_ID}")
+        bot.tree.clear_commands(guild=None)
+        await bot.tree.sync()
+        logger.info(
+            f"Slash commands synced to guild {NOIR_GUILD_ID}; "
+            "global registrations cleared"
+        )
     else:
         await bot.tree.sync()
         logger.info("Slash commands synced globally")
@@ -244,7 +260,7 @@ async def mcp_key(interaction: discord.Interaction):
 
 @bot.tree.command(
     name="forget-me",
-    description="Erase your Aztec DocsGPT data (MCP key + conversation history)",
+    description="Erase your Honk AI data (MCP key + conversation history)",
 )
 async def forget_me(interaction: discord.Interaction):
     """Calls the backend forget endpoint (GDPR Article 17 — right to erasure).
@@ -308,7 +324,7 @@ async def forget_me(interaction: discord.Interaction):
     conversation_histories.pop(interaction.user.id, None)
 
     deleted = data.get("deleted", {})
-    summary_lines = ["**Done.** Your Aztec DocsGPT data has been erased:"]
+    summary_lines = ["**Done.** Your Honk AI data has been erased:"]
     if deleted.get("agents"):
         summary_lines.append(
             f"• MCP API key revoked ({deleted['agents']} agent record)"
