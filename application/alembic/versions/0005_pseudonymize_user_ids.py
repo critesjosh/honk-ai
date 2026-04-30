@@ -36,7 +36,7 @@ Migration order (sandwich, per codex review):
    row where ``mcp_provider = 'discord'``.
 5. **Delete** the old ``users`` row last.
 
-Revision ID: 0005_pseudonymize_discord_user_ids
+Revision ID: 0005_pseudonymize_user_ids
 Revises: 0004_sources_is_public
 """
 
@@ -51,7 +51,7 @@ from alembic import op
 from sqlalchemy import text
 
 
-revision: str = "0005_pseudonymize_discord_user_ids"
+revision: str = "0005_pseudonymize_user_ids"
 down_revision: Union[str, None] = "0004_sources_is_public"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
@@ -232,7 +232,7 @@ def downgrade() -> None:
     # reverse this migration. Operators who need to roll back must
     # restore from a pre-migration backup.
     raise RuntimeError(
-        "0005_pseudonymize_discord_user_ids cannot be downgraded — "
+        "0005_pseudonymize_user_ids cannot be downgraded — "
         "the original Discord IDs are intentionally not recoverable "
         "from the stored pseudonyms. Restore from backup if needed."
     )

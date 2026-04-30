@@ -1,4 +1,4 @@
-"""Tests for migration ``0005_pseudonymize_discord_user_ids``.
+"""Tests for migration ``0005_pseudonymize_user_ids``.
 
 Two layers (per plan + codex review):
 
@@ -290,7 +290,7 @@ class TestPseudonymizeMigrationLayerA:
         # it is via importlib.import_module (regular ``from ... import``
         # syntax disallows leading digits in identifiers).
         mod = import_module(
-            "application.alembic.versions.0005_pseudonymize_discord_user_ids"
+            "application.alembic.versions.0005_pseudonymize_user_ids"
         )
         return mod.do_pseudonymize_discord_users(pg_conn)
 

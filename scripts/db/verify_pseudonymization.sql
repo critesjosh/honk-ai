@@ -1,5 +1,5 @@
 -- verify_pseudonymization.sql — post-deploy verification for
--- migration 0005_pseudonymize_discord_user_ids.
+-- migration 0005_pseudonymize_user_ids.
 --
 -- Usage:
 --   docker compose exec postgres psql -U "$POSTGRES_USER" \
