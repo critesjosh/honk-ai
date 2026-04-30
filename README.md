@@ -34,6 +34,17 @@
 - **MCP key provisioning** — `POST /api/internal/create_mcp_key`
   self-authenticates via `MCP_PROVISIONING_KEY` and upserts a per-Discord-user
   agent row (`agents.mcp_provider`, `mcp_provider_user_id`, `mcp_purpose`).
+- **Pseudonymized user identifiers** (`application/pseudonyms.py`, migration
+  `0005_pseudonymize_user_ids`) — Discord user IDs are HMAC-SHA256'd with a
+  server-side `USER_ID_PEPPER` before being stored. `user_id` columns hold
+  `discord_p_v1:<32hex>`; `agents.mcp_provider_user_id` holds the bare
+  32-char hex; `agents.name` is the constant `"Aztec MCP"` (Discord
+  display names never reach the DB). `USER_ID_PEPPER` is **required at
+  boot and unrotatable** — generate once via `openssl rand -hex 32` and
+  treat as you would `ENCRYPTION_SECRET_KEY`. `/api/internal/forget_discord_user`
+  + the Discord `/forget-me` slash command satisfy GDPR right-to-erasure
+  by computing the same pseudonym and deleting all matching rows.
+  Post-deploy verification: `scripts/db/verify_pseudonymization.sql`.
 - **Discord bot** (`extensions/discord/`) — containerized and bundled into
   the production compose. Implements the `/mcp-key` slash command and
   @-mention chat passthrough. Reaches the backend on the internal compose
