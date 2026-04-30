@@ -37,6 +37,14 @@ import os
 os.environ.setdefault("AUTO_MIGRATE", "false")
 os.environ.setdefault("AUTO_CREATE_DB", "false")
 
+# Pseudonymization pepper — required by ``application.core.settings``
+# at construction time. Tests don't need a real one; this dummy value
+# is 32 bytes (64 hex) so the entropy validator passes. ``setdefault``
+# means a real shell-set ``USER_ID_PEPPER`` still wins, this only fills
+# in for ad-hoc dev runs and CI. Not a security footgun: never written
+# to a real DB, never used outside the ephemeral test process.
+os.environ.setdefault("USER_ID_PEPPER", "0" * 64)
+
 import subprocess
 import sys
 from pathlib import Path

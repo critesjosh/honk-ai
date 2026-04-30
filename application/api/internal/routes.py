@@ -8,6 +8,10 @@ from werkzeug.utils import secure_filename
 import logging
 
 from application.core.settings import settings
+from application.pseudonyms import (
+    canonical_user_id,
+    pseudonymize_provider_user_id,
+)
 from application.storage.db.base_repository import looks_like_uuid
 from application.storage.db.repositories.agents import AgentsRepository
 from application.storage.db.repositories.sources import SourcesRepository
@@ -196,7 +200,17 @@ def create_mcp_key():
     if not discord_username:
         return jsonify({"error": "discord_username is required"}), 400
 
-    sanitized_username = discord_username[:50]
+    # ``discord_username`` is intentionally NOT used for storage anymore
+    # (it would re-introduce the very PII we're pseudonymizing away).
+    # We still require it in the payload so the bot's request shape
+    # doesn't change and so the `/mcp-key` flow can be extended later
+    # to send the user a personalized confirmation message in Discord.
+    pseudo_provider_user_id = pseudonymize_provider_user_id(
+        discord_user_id, pepper=settings.USER_ID_PEPPER
+    )
+    pseudo_canonical_user_id = canonical_user_id(
+        "discord", discord_user_id, pepper=settings.USER_ID_PEPPER
+    )
 
     if not settings.AZTEC_SOURCE_IDS:
         logger.error("AZTEC_SOURCE_IDS is not configured")
@@ -251,10 +265,15 @@ def create_mcp_key():
 
             agent = AgentsRepository(conn).upsert_mcp_key(
                 mcp_provider="discord",
-                mcp_provider_user_id=discord_user_id,
+                mcp_provider_user_id=pseudo_provider_user_id,
                 mcp_purpose="aztec_mcp",
-                user_id=f"discord:{discord_user_id}",
-                name=f"Aztec MCP - {sanitized_username}",
+                user_id=pseudo_canonical_user_id,
+                # Constant — the username used to be embedded here
+                # (``"Aztec MCP - alice"``) but that re-introduced the
+                # PII we're pseudonymizing away. Operators can pivot on
+                # ``id`` / ``last_used_at`` / a prefix of
+                # ``mcp_provider_user_id`` in psql instead.
+                name="Aztec MCP",
                 description="Aztec knowledge base access via MCP",
                 key=str(uuid.uuid4()),
                 source_id=primary,
@@ -302,7 +321,18 @@ def forget_discord_user():
     if not discord_user_id:
         return jsonify({"error": "discord_user_id is required"}), 400
 
-    canonical_user_id = f"discord:{discord_user_id}"
+    # Compute the pseudonyms the row was written under. The endpoint's
+    # request shape is unchanged (callers still pass the raw Discord
+    # ID); only the storage representation changed. If the helper
+    # drifts between create and forget, /forget-me silently fails to
+    # find rows — locked down by the parity contract test in
+    # tests/api/test_internal_routes.py.
+    pseudo_provider_user_id = pseudonymize_provider_user_id(
+        discord_user_id, pepper=settings.USER_ID_PEPPER
+    )
+    pseudo_canonical_user_id = canonical_user_id(
+        "discord", discord_user_id, pepper=settings.USER_ID_PEPPER
+    )
     # Order matters: every child table has FK user_id → users(user_id)
     # ON DELETE RESTRICT (see ``application/storage/db/models.py`` header
     # comment + migration 0015_user_id_fk), so the parent ``users`` row
@@ -316,23 +346,23 @@ def forget_discord_user():
     # user_id so the delete works whether or not the user has tools.
     delete_specs = (
         ("agents", "mcp_provider = 'discord' AND mcp_provider_user_id = :did",
-            {"did": discord_user_id}),
-        ("conversations", "user_id = :uid", {"uid": canonical_user_id}),
-        ("attachments", "user_id = :uid", {"uid": canonical_user_id}),
-        ("memories", "user_id = :uid", {"uid": canonical_user_id}),
-        ("todos", "user_id = :uid", {"uid": canonical_user_id}),
-        ("notes", "user_id = :uid", {"uid": canonical_user_id}),
-        ("connector_sessions", "user_id = :uid", {"uid": canonical_user_id}),
-        ("workflow_runs", "user_id = :uid", {"uid": canonical_user_id}),
-        ("workflows", "user_id = :uid", {"uid": canonical_user_id}),
-        ("user_tools", "user_id = :uid", {"uid": canonical_user_id}),
-        ("agent_folders", "user_id = :uid", {"uid": canonical_user_id}),
-        ("sources", "user_id = :uid", {"uid": canonical_user_id}),
-        ("prompts", "user_id = :uid", {"uid": canonical_user_id}),
-        ("user_logs", "user_id = :uid", {"uid": canonical_user_id}),
-        ("stack_logs", "user_id = :uid", {"uid": canonical_user_id}),
-        ("token_usage", "user_id = :uid", {"uid": canonical_user_id}),
-        ("users", "user_id = :uid", {"uid": canonical_user_id}),
+            {"did": pseudo_provider_user_id}),
+        ("conversations", "user_id = :uid", {"uid": pseudo_canonical_user_id}),
+        ("attachments", "user_id = :uid", {"uid": pseudo_canonical_user_id}),
+        ("memories", "user_id = :uid", {"uid": pseudo_canonical_user_id}),
+        ("todos", "user_id = :uid", {"uid": pseudo_canonical_user_id}),
+        ("notes", "user_id = :uid", {"uid": pseudo_canonical_user_id}),
+        ("connector_sessions", "user_id = :uid", {"uid": pseudo_canonical_user_id}),
+        ("workflow_runs", "user_id = :uid", {"uid": pseudo_canonical_user_id}),
+        ("workflows", "user_id = :uid", {"uid": pseudo_canonical_user_id}),
+        ("user_tools", "user_id = :uid", {"uid": pseudo_canonical_user_id}),
+        ("agent_folders", "user_id = :uid", {"uid": pseudo_canonical_user_id}),
+        ("sources", "user_id = :uid", {"uid": pseudo_canonical_user_id}),
+        ("prompts", "user_id = :uid", {"uid": pseudo_canonical_user_id}),
+        ("user_logs", "user_id = :uid", {"uid": pseudo_canonical_user_id}),
+        ("stack_logs", "user_id = :uid", {"uid": pseudo_canonical_user_id}),
+        ("token_usage", "user_id = :uid", {"uid": pseudo_canonical_user_id}),
+        ("users", "user_id = :uid", {"uid": pseudo_canonical_user_id}),
     )
 
     deleted: dict[str, int] = {}
