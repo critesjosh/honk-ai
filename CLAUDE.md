@@ -9,7 +9,7 @@ Open-source AI platform for document-grounded Q&A. Upstream is `arc53/DocsGPT`; 
 Aztec-specific additions on top of upstream:
 - **MCP key provisioning endpoint** at `POST /api/internal/create_mcp_key` (self-authenticated via `MCP_PROVISIONING_KEY`, not `INTERNAL_KEY`) that upserts one agent per Discord identity.
 - **Discord `/mcp-key` command** (`extensions/discord/bot.py`) that calls the endpoint.
-- **TypeScript MCP server** (`extensions/mcp-server/`) that exposes DocsGPT agents via MCP.
+- **MCP server consumers**: end users query DocsGPT via [`@aztec/mcp-server`](https://github.com/AztecProtocol/mcp-server) (separate repo, published as [`@aztec/mcp-server`](https://www.npmjs.com/package/@aztec/mcp-server) on npm). DocsGPT semantic-search backend gated on `API_KEY` is being added in [AztecProtocol/mcp-server#18](https://github.com/AztecProtocol/mcp-server/pull/18). The standalone TS MCP server that previously lived at `extensions/mcp-server/` was never published and was removed; that path now contains a single README pointer.
 - **Chunking filter** (`application/parser/chunking.py`) that discards chunks with `token_count < 50`.
 - **Path ignore list** (`application/parser/file/bulk.py` → `_IGNORED_PATH_SEGMENTS`) that skips any file under a `fixtures/`, `dumps/`, `node_modules/`, `target/`, `dist/`, `build/`, `_out/`, `__pycache__/` or `.git/` directory during ingest. Prevents blockchain-state test fixtures and build artefacts from burning embedding credits. Add new deny-list directory names here.
 - **Custom settings**: `MCP_PROVISIONING_KEY`, `AZTEC_SOURCE_IDS`, `CORS_ALLOWED_ORIGINS`, `EMBEDDINGS_DIMENSION`, `RAG_MAX_DOC_TOKENS`, `VITE_DISABLE_AGENT_EDIT`.
