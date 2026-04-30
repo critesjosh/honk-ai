@@ -217,6 +217,179 @@ class TestSetupPeriodicTasks:
         assert calls[4][1].get("name") == "purge-old-user-data"
 
 
+class TestPurgeOldUserData:
+    """Coverage for the daily 1-year retention purge.
+
+    Aligns with the Aztec Foundation privacy policy's 12-month window.
+    The interesting behaviours to lock down here are: (a) the SQL
+    queries actually run end-to-end against the real schema and return
+    a per-table rowcount dict, (b) old messages are dropped while
+    recent ones survive even when the parent conversation was touched
+    yesterday (the codex-review fix), and (c) the safety guard returns
+    a skip dict when ``POSTGRES_URI`` is unset (so the task never
+    half-runs in a misconfigured worker).
+    """
+
+    @pytest.mark.unit
+    def test_skip_path_when_postgres_uri_unset(self, monkeypatch):
+        from application.api.user.tasks import purge_old_user_data
+        from application.core import settings as settings_module
+
+        monkeypatch.setattr(
+            settings_module.settings, "POSTGRES_URI", None, raising=False
+        )
+        result = purge_old_user_data.run(retention_days=365)
+        assert result == {"skipped": "POSTGRES_URI not set"}
+
+    @pytest.mark.integration
+    def test_returns_full_table_set_with_zero_counts_on_empty_db(
+        self, pg_engine, monkeypatch
+    ):
+        """Empty DB ⇒ all five purge targets reachable, all zero."""
+        from application.api.user.tasks import purge_old_user_data
+        from application.storage.db import engine as engine_module
+
+        monkeypatch.setattr(engine_module, "get_engine", lambda: pg_engine)
+
+        result = purge_old_user_data.run(retention_days=99999)
+        assert result["retention_days"] == 99999
+        assert set(result["purged"].keys()) == {
+            "conversation_messages",
+            "conversations",
+            "user_logs",
+            "stack_logs",
+            "token_usage",
+        }
+        for table, n in result["purged"].items():
+            assert n == 0, f"{table} reported non-zero on empty DB"
+
+    @pytest.mark.integration
+    def test_purges_old_messages_keeps_recent_ones(
+        self, pg_engine, monkeypatch
+    ):
+        """Codex-fix regression guard: the cursor is the message's own
+        ``timestamp``, not the parent conversation's ``updated_at``. A
+        thread with one new reply must NOT preserve its old messages.
+        """
+        from sqlalchemy import text
+        from application.api.user.tasks import purge_old_user_data
+        from application.storage.db import engine as engine_module
+
+        monkeypatch.setattr(engine_module, "get_engine", lambda: pg_engine)
+
+        # Insert: one conversation whose updated_at is "yesterday" but
+        # which contains both an OLD (>1y) and a RECENT (<1d) message.
+        with pg_engine.begin() as conn:
+            conv_id = conn.execute(
+                text(
+                    "INSERT INTO conversations (user_id, name, updated_at) "
+                    "VALUES ('test-user', 'mixed-age', now() - interval '1 day') "
+                    "RETURNING id"
+                )
+            ).scalar()
+            conn.execute(
+                text(
+                    "INSERT INTO conversation_messages "
+                    "(conversation_id, user_id, position, prompt, response, timestamp) "
+                    "VALUES (:cid, 'test-user', 0, 'old', 'old', "
+                    "        now() - interval '400 days')"
+                ),
+                {"cid": conv_id},
+            )
+            conn.execute(
+                text(
+                    "INSERT INTO conversation_messages "
+                    "(conversation_id, user_id, position, prompt, response, timestamp) "
+                    "VALUES (:cid, 'test-user', 1, 'new', 'new', now())"
+                ),
+                {"cid": conv_id},
+            )
+
+        result = purge_old_user_data.run(retention_days=365)
+
+        with pg_engine.begin() as conn:
+            remaining = conn.execute(
+                text(
+                    "SELECT prompt FROM conversation_messages "
+                    "WHERE conversation_id = :cid ORDER BY position"
+                ),
+                {"cid": conv_id},
+            ).fetchall()
+
+        assert result["purged"]["conversation_messages"] == 1
+        assert [r[0] for r in remaining] == ["new"], (
+            "old message should be purged, recent message should survive — "
+            "if both are gone the cursor is wrongly keyed on conversation.updated_at"
+        )
+
+    @pytest.mark.integration
+    def test_orphaned_conversation_cleanup(self, pg_engine, monkeypatch):
+        """Once all messages of an old thread are purged, the parent
+        conversation row should be swept up too — but only if it has
+        no remaining messages.
+        """
+        from sqlalchemy import text
+        from application.api.user.tasks import purge_old_user_data
+        from application.storage.db import engine as engine_module
+
+        monkeypatch.setattr(engine_module, "get_engine", lambda: pg_engine)
+
+        with pg_engine.begin() as conn:
+            # Conversation A: only old messages — should disappear.
+            cid_a = conn.execute(
+                text(
+                    "INSERT INTO conversations (user_id, name, updated_at) "
+                    "VALUES ('test-user', 'all-old', now() - interval '500 days') "
+                    "RETURNING id"
+                )
+            ).scalar()
+            conn.execute(
+                text(
+                    "INSERT INTO conversation_messages "
+                    "(conversation_id, user_id, position, prompt, response, timestamp) "
+                    "VALUES (:cid, 'test-user', 0, 'old', 'old', "
+                    "        now() - interval '500 days')"
+                ),
+                {"cid": cid_a},
+            )
+            # Conversation B: has a recent message — must survive even
+            # though updated_at is stale.
+            cid_b = conn.execute(
+                text(
+                    "INSERT INTO conversations (user_id, name, updated_at) "
+                    "VALUES ('test-user', 'has-recent', now() - interval '500 days') "
+                    "RETURNING id"
+                )
+            ).scalar()
+            conn.execute(
+                text(
+                    "INSERT INTO conversation_messages "
+                    "(conversation_id, user_id, position, prompt, response, timestamp) "
+                    "VALUES (:cid, 'test-user', 0, 'fresh', 'fresh', now())"
+                ),
+                {"cid": cid_b},
+            )
+
+        purge_old_user_data.run(retention_days=365)
+
+        with pg_engine.begin() as conn:
+            survivors = {
+                row[0]
+                for row in conn.execute(
+                    text(
+                        "SELECT id FROM conversations WHERE id IN (:a, :b)"
+                    ),
+                    {"a": cid_a, "b": cid_b},
+                ).fetchall()
+            }
+
+        assert cid_a not in survivors, "empty old conversation should be purged"
+        assert cid_b in survivors, (
+            "conversation with a recent message must survive — "
+            "the empty-only filter (NOT EXISTS) regressed"
+        )
+
+
 class TestMcpOauthTask:
     @pytest.mark.unit
     @patch("application.api.user.tasks.mcp_oauth")

@@ -486,3 +486,246 @@ class TestCreateMcpKey:
                 )
         assert r.status_code == 500
         assert "No valid" in (r.json or {}).get("error", "")
+
+
+class TestForgetDiscordUser:
+    """End-to-end tests for /api/internal/forget_discord_user (GDPR Art. 17).
+
+    The endpoint reuses the ``MCP_PROVISIONING_KEY`` trust model from
+    ``create_mcp_key``: same auth header, same self-authenticated route
+    bypass on the ``before_request`` INTERNAL_KEY check.
+    """
+
+    _PROV_KEY = "test-prov-key"
+    _AUTH = {"X-Provisioning-Key": _PROV_KEY}
+
+    # Every user-keyed table the route is expected to clear, plus
+    # ``agents`` (special-cased by mcp_provider lookup). If models.py
+    # grows a new user-keyed table the endpoint should also delete from,
+    # add it here AND in routes.py — the round-trip assertion below
+    # will fail loudly until both are updated.
+    EXPECTED_TABLES = {
+        "agents",
+        "conversations",
+        "attachments",
+        "memories",
+        "todos",
+        "notes",
+        "connector_sessions",
+        "workflow_runs",
+        "workflows",
+        "user_tools",
+        "agent_folders",
+        "sources",
+        "prompts",
+        "user_logs",
+        "stack_logs",
+        "token_usage",
+        "users",
+    }
+
+    def test_rejects_when_provisioning_key_not_configured(self, pg_conn):
+        app = _make_app()
+        with patch(
+            "application.api.internal.routes.settings.MCP_PROVISIONING_KEY", ""
+        ), _patch_db(pg_conn):
+            with app.test_client() as c:
+                r = c.post(
+                    "/api/internal/forget_discord_user",
+                    headers=self._AUTH,
+                    json={"discord_user_id": "u1"},
+                )
+        assert r.status_code == 401
+
+    def test_rejects_unknown_provisioning_key(self, pg_conn):
+        app = _make_app()
+        with patch(
+            "application.api.internal.routes.settings.MCP_PROVISIONING_KEY",
+            self._PROV_KEY,
+        ), _patch_db(pg_conn):
+            with app.test_client() as c:
+                r = c.post(
+                    "/api/internal/forget_discord_user",
+                    headers={"X-Provisioning-Key": "wrong"},
+                    json={"discord_user_id": "u1"},
+                )
+        assert r.status_code == 401
+
+    def test_rejects_missing_discord_user_id(self, pg_conn):
+        app = _make_app()
+        with patch(
+            "application.api.internal.routes.settings.MCP_PROVISIONING_KEY",
+            self._PROV_KEY,
+        ), _patch_db(pg_conn):
+            with app.test_client() as c:
+                r = c.post(
+                    "/api/internal/forget_discord_user",
+                    headers=self._AUTH,
+                    json={},
+                )
+        assert r.status_code == 400
+        assert "discord_user_id" in (r.json or {}).get("error", "")
+
+    def test_unknown_user_returns_full_table_set_with_zero_counts(self, pg_conn):
+        """Schema-completeness contract: a successful response always
+        names every table the route deletes from, even when nothing is
+        actually deleted. Adding a new user-keyed table to models.py
+        without updating routes.py will make this test fail.
+        """
+        app = _make_app()
+        with patch(
+            "application.api.internal.routes.settings.MCP_PROVISIONING_KEY",
+            self._PROV_KEY,
+        ), _patch_db(pg_conn):
+            with app.test_client() as c:
+                r = c.post(
+                    "/api/internal/forget_discord_user",
+                    headers=self._AUTH,
+                    json={"discord_user_id": "no-such-user"},
+                )
+        assert r.status_code == 200
+        body = r.json
+        assert body["success"] is True
+        deleted = body["deleted"]
+        assert set(deleted.keys()) == self.EXPECTED_TABLES, (
+            f"forget_discord_user response shape diverged from EXPECTED_TABLES. "
+            f"missing={self.EXPECTED_TABLES - set(deleted.keys())} "
+            f"extra={set(deleted.keys()) - self.EXPECTED_TABLES}"
+        )
+        for tbl, n in deleted.items():
+            assert n == 0, f"unexpected delete count {n} for {tbl}"
+
+    def test_deletes_real_user_data_end_to_end(self, pg_conn):
+        """Round-trip: create an MCP agent + a conversation + a message
+        for ``discord:u-real``, call /forget_discord_user, assert all
+        three rows are gone (messages cascade-deleted via FK)."""
+        from sqlalchemy import text as sql_text
+
+        # Seed a public source so create_mcp_key succeeds.
+        ids = TestCreateMcpKey._make_sources(pg_conn, count=1)
+
+        app = _make_app()
+        with patch(
+            "application.api.internal.routes.settings.MCP_PROVISIONING_KEY",
+            self._PROV_KEY,
+        ), patch(
+            "application.api.internal.routes.settings.AZTEC_SOURCE_IDS",
+            ",".join(ids),
+        ), _patch_db(pg_conn):
+            with app.test_client() as c:
+                provision = c.post(
+                    "/api/internal/create_mcp_key",
+                    headers=self._AUTH,
+                    json={
+                        "discord_user_id": "u-real",
+                        "discord_username": "real",
+                    },
+                )
+        assert provision.status_code == 200
+        canonical = "discord:u-real"
+
+        # Insert a conversation + message + log entry for this user.
+        conv_id = pg_conn.execute(
+            sql_text(
+                "INSERT INTO conversations (user_id, name) VALUES (:uid, :n) "
+                "RETURNING id"
+            ),
+            {"uid": canonical, "n": "test-conv"},
+        ).scalar()
+        pg_conn.execute(
+            sql_text(
+                "INSERT INTO conversation_messages "
+                "(conversation_id, user_id, position, prompt, response) "
+                "VALUES (:cid, :uid, 0, 'q', 'a')"
+            ),
+            {"cid": conv_id, "uid": canonical},
+        )
+        pg_conn.execute(
+            sql_text(
+                "INSERT INTO user_logs (user_id, endpoint, data) "
+                "VALUES (:uid, '/api/answer', '{}'::jsonb)"
+            ),
+            {"uid": canonical},
+        )
+        pg_conn.execute(
+            sql_text(
+                "INSERT INTO token_usage "
+                "(user_id, prompt_tokens, generated_tokens) "
+                "VALUES (:uid, 10, 20)"
+            ),
+            {"uid": canonical},
+        )
+
+        # Sanity: rows exist before forget.
+        before_agents = pg_conn.execute(
+            sql_text(
+                "SELECT count(*) FROM agents "
+                "WHERE mcp_provider = 'discord' "
+                "AND mcp_provider_user_id = 'u-real'"
+            )
+        ).scalar()
+        before_msgs = pg_conn.execute(
+            sql_text(
+                "SELECT count(*) FROM conversation_messages WHERE user_id = :uid"
+            ),
+            {"uid": canonical},
+        ).scalar()
+        assert before_agents == 1
+        assert before_msgs == 1
+
+        with patch(
+            "application.api.internal.routes.settings.MCP_PROVISIONING_KEY",
+            self._PROV_KEY,
+        ), _patch_db(pg_conn):
+            with app.test_client() as c:
+                r = c.post(
+                    "/api/internal/forget_discord_user",
+                    headers=self._AUTH,
+                    json={"discord_user_id": "u-real"},
+                )
+        assert r.status_code == 200
+        deleted = r.json["deleted"]
+        # Expected non-zero rowcounts:
+        assert deleted["agents"] == 1
+        assert deleted["conversations"] == 1
+        assert deleted["user_logs"] == 1
+        assert deleted["token_usage"] == 1
+
+        # Verify everything is actually gone.
+        assert (
+            pg_conn.execute(
+                sql_text(
+                    "SELECT count(*) FROM agents "
+                    "WHERE mcp_provider_user_id = 'u-real'"
+                )
+            ).scalar()
+            == 0
+        )
+        assert (
+            pg_conn.execute(
+                sql_text(
+                    "SELECT count(*) FROM conversations WHERE user_id = :uid"
+                ),
+                {"uid": canonical},
+            ).scalar()
+            == 0
+        )
+        # FK cascade: messages must be gone even though we didn't
+        # enumerate ``conversation_messages`` in the route's delete list.
+        assert (
+            pg_conn.execute(
+                sql_text(
+                    "SELECT count(*) FROM conversation_messages "
+                    "WHERE user_id = :uid"
+                ),
+                {"uid": canonical},
+            ).scalar()
+            == 0
+        )
+        assert (
+            pg_conn.execute(
+                sql_text("SELECT count(*) FROM users WHERE user_id = :uid"),
+                {"uid": canonical},
+            ).scalar()
+            == 0
+        )
