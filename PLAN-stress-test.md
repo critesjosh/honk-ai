@@ -15,12 +15,13 @@ list with cost/ROI.
 `/stream` (widget + Discord) and `/api/search` (MCP) have different
 latency profiles, so the SLOs are tracked **per endpoint**.
 
-| Endpoint | Metric | Target | Stop-test threshold |
-| --- | --- | --- | --- |
-| `/stream` | P95 first-token | < 3 s | > 6 s sustained 60 s |
-| `/stream` | P95 total stream time | < 15 s | > 25 s sustained 60 s |
-| `/api/search` | P95 total | < 4 s | > 8 s sustained 60 s |
-| any | Error rate (5xx + timeout + disconnect) | < 1 % | > 2 % sustained 60 s |
+| Endpoint | Metric | Target | Stop-test threshold | Implemented in harness? |
+| --- | --- | --- | --- | --- |
+| `/stream` | P95 first-token (`ttft_ms`) | < 3 s | > 6 s sustained 60 s | Tracked, not auto-aborted |
+| `/stream` | P95 total stream time | < 15 s | > 25 s sustained 60 s | **Yes** — auto-abort |
+| `/api/search` | P95 total | < 4 s | > 8 s sustained 60 s | **Yes** — auto-abort |
+| any | Error rate (5xx + timeout + disconnect) | < 1 % | > 2 % sustained 60 s | **Yes** — auto-abort |
+| Postgres | Active connections | < 80 | > 95 of 100 default `max_connections` | Specified, not implemented (no DB access from harness) |
 | Postgres | Active connections | < 80 | > 95 of 100 default `max_connections` |
 
 ---
@@ -169,23 +170,31 @@ rather than starting from zero.
 Per-request capture (timestamps, all monotonic):
 
 - `t_request_start`
-- `t_headers_received`
+- `t_headers_received` — on the prod backend this ≈ first content
+  chunk, because the SSE producer doesn't flush headers until the
+  first byte hits the queue. So `ttft_ms = t_headers_received -
+  t_request_start` is the user-perceived first-token latency.
 - `t_first_sse_data` — first non-comment frame (skip `: ping`)
-- **`t_first_source_frame`** — `{"type": "source"}` arrives
-  *after* retrieval completes and *before* the LLM stream starts.
-  This is the clean phase boundary.
-- **`t_first_answer_token`** — first `{"answer": …}` frame.
+- `t_first_source_frame` — `{"type": "source"}`. **On prod this
+  arrives at end-of-stream**, not after retrieval. The earlier draft
+  of this plan assumed the source frame was the retrieval/LLM
+  boundary; the smoke run disproved that. Recorded for completeness;
+  not used for phase-split.
+- `t_first_answer_token` — first `{"answer": …}` or `{"thought": …}`
+  frame.
 - `t_last_frame`
 - HTTP status, disconnect reason, error payload, byte count
 
 Derived metrics:
 
-- `retrieval_ms = t_first_source_frame − t_headers_received`
-- `llm_ttft_ms = t_first_answer_token − t_first_source_frame`
+- `ttft_ms = t_headers_received − t_request_start`
 - `total_ms = t_last_frame − t_request_start`
 
-This split is the single observation that distinguishes pgvector
-slowness from OpenRouter slowness without needing server-side changes.
+A clean client-side retrieval-vs-LLM phase split is **not extractable**
+on this backend (Codex's recommendation didn't survive the smoke).
+Distinguishing pgvector slowness from OpenRouter slowness requires
+server-side instrumentation (e.g. backend logging of retrieval ms +
+LLM TTFT separately). Out of scope for this harness.
 
 Three "client classes":
 

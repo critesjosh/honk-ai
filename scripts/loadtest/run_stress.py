@@ -188,9 +188,18 @@ DISCORD_MODEL_ID = "z-ai/glm-4.6"
 
 # Canonical Aztec system prompt used by the prod docs.aztec.network agent
 # (verified 2026-04-27: prompts.name = "Aztec 4.2.0 — grounded, Discord-safe",
-# ~6010 chars / ~1500 input tokens). Forcing this on widget+discord payloads
-# makes the LLM input identical to real widget/Discord traffic; without it
-# the loadtest agent's empty prompt_id makes timing measurements optimistic.
+# ~6010 chars / ~1500 input tokens).
+#
+# CAVEAT: passing "prompt_id" in the request body is IGNORED by the
+# /stream backend when the request is api_key-authenticated — the
+# stream_processor resolves prompt_id from the agent row, not the
+# request payload. The harness sends it anyway for completeness, but
+# if the loadtest agent's row has an empty/wrong prompt_id, the LLM
+# input is shorter than real traffic and timing measurements skew
+# optimistic. To force a representative system prompt, update the
+# loadtest agent in Postgres:
+#   UPDATE agents SET prompt_id='0780959b-3c18-4ad9-8284-691665233a6f'
+#     WHERE name LIKE 'Aztec MCP - loadtest-bot%';
 PROD_PROMPT_ID = "0780959b-3c18-4ad9-8284-691665233a6f"
 
 

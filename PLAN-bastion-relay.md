@@ -292,6 +292,18 @@ sudo chmod 600 /etc/cloudflared/aztec-docs.env
 
 ### 5.3 Systemd service
 
+**Before starting cloudflared on bastion**, change the upstream URL in
+the CF Zero Trust dashboard. Token-managed tunnels ignore the
+`--url` flag for ingress override — dashboard config is the source of
+truth. Go to Cloudflare Zero Trust → Networks → Tunnels → tunnel
+`9def7cad-9e33-4cc0-ac97-cf5ca53f70a0` → Public Hostnames → edit
+`aztec.adjacentpossible.dev` → change Service URL from `http://caddy:80`
+to `http://localhost:5080`. (Was: docker-network DNS that worked when
+cloudflared ran inside the prod compose. Will be: bastion's loopback
+that the SSH reverse tunnel forwards to josh-box.) This change applies
+to *all* connectors registered to the tunnel; josh-box's old cloudflared
+will start failing at the same instant — that IS the cutover moment.
+
 `/etc/systemd/system/cloudflared-aztec-docs.service`:
 
 ```ini
@@ -302,7 +314,7 @@ Wants=network-online.target
 
 [Service]
 EnvironmentFile=/etc/cloudflared/aztec-docs.env
-ExecStart=/usr/bin/cloudflared tunnel --url http://localhost:5080 run --token ${CF_TOKEN}
+ExecStart=/usr/bin/cloudflared tunnel run --token ${CF_TOKEN}
 Restart=always
 RestartSec=5
 NoNewPrivileges=yes
@@ -314,11 +326,17 @@ PrivateTmp=yes
 WantedBy=multi-user.target
 ```
 
+Note: NO `--url` flag in ExecStart. Earlier drafts of this plan had
+`--url http://localhost:5080` but it has no effect on token-based
+tunnels. We hit this during the actual cutover — see Revisions §2026-04-30.
+
 ```bash
 sudo systemctl daemon-reload
 sudo systemctl enable --now cloudflared-aztec-docs.service
 sudo journalctl -u cloudflared-aztec-docs.service -f
 # Expect: 4 connections registered at us-east edges (iad, atl, mia, etc.)
+# After dashboard config change: log line "Updated to new configuration
+# config=...service: http://localhost:5080" within ~30 s.
 ```
 
 ---
