@@ -1,160 +1,52 @@
-# DocsGPT MCP Server for Aztec Network
+# MCP server — moved
 
-An [MCP (Model Context Protocol)](https://modelcontextprotocol.io/) server that gives LLMs access to the Aztec Network knowledge base via DocsGPT. Install it to query the v4.2.0 corpus from Claude Desktop, Cursor, Claude Code, or any MCP-compatible client.
+The standalone TypeScript MCP server that previously lived here has
+been **removed from this fork**. It was never published to npm and is
+superseded by the official Aztec MCP server.
 
-## What's indexed
+## Where the actual MCP server lives
 
-The default `Aztec 4.2.0` agent searches all 12 v4.2.0 corpora:
+- **npm:** [`@aztec/mcp-server`](https://www.npmjs.com/package/@aztec/mcp-server)
+- **GitHub:** [`AztecProtocol/mcp-server`](https://github.com/AztecProtocol/mcp-server)
 
-- Aztec Developer Docs (`docs.aztec.network` rendered docs)
-- Aztec Network Docs
-- Aztec.nr Framework (smart-contract framework, Noir)
-- Example Contracts (`noir-contracts`)
-- Aztec Protocol Circuits
-- aztec.js SDK (TypeScript)
-- Aztec CLI + CLI Wallet
-- Aztec E2E Tests (working examples in TypeScript)
-- Aztec L1 Contracts (Solidity)
-- Aztec TypeScript API reference
-- Noir Language Docs (the Noir language itself)
-- Noir stdlib (`std::hash`, `std::ec`, `BoundedVec`, etc.)
+That package implements the MCP server end users install locally to
+query Aztec docs from Claude Desktop, Claude Code, Cursor, Codex, etc.
 
-## Getting Your API Key
+This DocsGPT-Aztec backend's only role in the MCP flow is to:
 
-1. Join the **Noir Discord**: https://discord.com/invite/JtqzkdeQ6G
-2. Run the `/mcp-key` slash command
-3. The bot will send you a personal API key in a private (ephemeral) message
+1. **Provision personal API keys** via the Discord `/mcp-key` command
+   (`extensions/discord/bot.py` → `POST /api/internal/create_mcp_key`).
+2. **Serve the search endpoint** at `/api/search`, hit by the MCP server
+   when `API_KEY` is present (semantic search over the indexed corpora).
 
-**Important:** Use the agent API key from Discord. Do NOT use JWT tokens from the DocsGPT login flow.
+## Configuring an MCP client
 
-## Installation
-
-### From Source
-
-```bash
-cd extensions/mcp-server
-npm install
-npm run build
-```
-
-### From npm (after publishing)
-
-```bash
-npm install -g docsgpt-mcp-server
-```
-
-## Configuration
-
-### Claude Desktop
-
-Add to your `claude_desktop_config.json`:
-
-**From source:**
-
-```json
-{
-  "mcpServers": {
-    "aztec-docs": {
-      "command": "node",
-      "args": ["/path/to/extensions/mcp-server/dist/index.js"],
-      "env": {
-        "API_URL": "http://your-docsgpt:7091",
-        "API_KEY": "your-key-from-discord"
-      }
-    }
-  }
-}
-```
-
-**From npm (after publishing):**
+Run `/mcp-key` in Discord to get a key, then in your MCP client config:
 
 ```json
 {
   "mcpServers": {
     "aztec-docs": {
       "command": "npx",
-      "args": ["docsgpt-mcp-server"],
+      "args": ["-y", "@aztec/mcp-server"],
       "env": {
-        "API_URL": "http://your-docsgpt:7091",
-        "API_KEY": "your-key-from-discord"
+        "API_URL": "https://aztec.adjacentpossible.dev",
+        "API_KEY": "<paste your key here>"
       }
     }
   }
 }
 ```
 
-### Claude Code
+The bot's `/mcp-key` command emits the same snippet for Claude Desktop,
+Claude Code, and Codex.
 
-Add to your MCP server settings:
+## DocsGPT semantic-search backend
 
-```json
-{
-  "mcpServers": {
-    "aztec-docs": {
-      "command": "node",
-      "args": ["/path/to/extensions/mcp-server/dist/index.js"],
-      "env": {
-        "API_URL": "http://your-docsgpt:7091",
-        "API_KEY": "your-key-from-discord"
-      }
-    }
-  }
-}
-```
-
-### Cursor
-
-Add to `.cursor/mcp.json` in your project:
-
-```json
-{
-  "mcpServers": {
-    "aztec-docs": {
-      "command": "node",
-      "args": ["/path/to/extensions/mcp-server/dist/index.js"],
-      "env": {
-        "API_URL": "http://your-docsgpt:7091",
-        "API_KEY": "your-key-from-discord"
-      }
-    }
-  }
-}
-```
-
-## Environment Variables
-
-| Variable | Required | Default | Description |
-|----------|----------|---------|-------------|
-| `API_KEY` | Yes | - | Agent API key from the `/mcp-key` Discord command |
-| `API_URL` | No | `http://localhost:7091` | URL of the DocsGPT backend |
-| `REQUEST_TIMEOUT` | No | `60000` | HTTP request timeout in milliseconds |
-
-## Available Tools
-
-### `ask_aztec`
-
-Ask a question about Aztec Network development. Returns an AI-synthesized answer with source references.
-
-**Parameters:**
-- `question` (string, required) - The question to ask
-- `chunks` (number, optional, default: 2) - Number of document chunks to retrieve
-
-**Example:** "How do I create a private state variable in Aztec.nr?"
-
-### `search_aztec`
-
-Search the Aztec knowledge base for relevant document chunks. Returns raw text excerpts without AI synthesis.
-
-**Parameters:**
-- `query` (string, required) - Search query
-- `chunks` (number, optional, default: 5) - Number of results to return
-
-**Example:** "PrivateContext struct definition"
-
-## Alternative Integration
-
-For programmatic integration without MCP, DocsGPT also exposes an OpenAI-compatible API at `/v1/chat/completions` with Bearer token auth using the same agent API key.
-
-## License
-
-MIT
+DocsGPT semantic search in `@aztec/mcp-server` is gated on the `API_KEY`
+env var and is being added in
+[AztecProtocol/mcp-server#18](https://github.com/AztecProtocol/mcp-server/pull/18).
+Until that PR merges and a new version publishes, the MCP server runs
+in ripgrep-only mode over locally cloned Aztec docs (the `API_KEY` env
+is harmlessly ignored). After it lands, semantic search activates
+automatically with no client-side config changes.

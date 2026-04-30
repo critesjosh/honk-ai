@@ -182,31 +182,36 @@ Dev containers volume-mount `application/core/model_configs.py` so changes to mo
 
 ## MCP server (LLM clients)
 
-The `extensions/mcp-server/` TypeScript package exposes DocsGPT over MCP so Claude Desktop, Claude Code, Cursor, etc. can query the Aztec knowledge base directly.
+End users query the Aztec knowledge base from Claude Desktop, Claude
+Code, Cursor, Codex, etc. via the official Aztec MCP server:
+
+- **npm:** [`@aztec/mcp-server`](https://www.npmjs.com/package/@aztec/mcp-server)
+- **source:** [`AztecProtocol/mcp-server`](https://github.com/AztecProtocol/mcp-server)
+
+This repo provides the **key-provisioning** and **search** endpoints
+that MCP server hits; the MCP server itself lives in
+`aztecprotocol/mcp-server`.
 
 ### Getting a key (Discord `/mcp-key` flow)
 
 1. Join the Noir Discord: https://discord.com/invite/JtqzkdeQ6G
 2. Run `/mcp-key` in any channel.
-3. The bot replies with a personal API key in an ephemeral message.
+3. The bot replies with a personal API key in an ephemeral message,
+   plus a copy-pasteable config snippet for each major MCP client.
 
 Under the hood, the bot calls `POST /api/internal/create_mcp_key` with `X-Provisioning-Key: $MCP_PROVISIONING_KEY`. The endpoint upserts an agent keyed by `(mcp_provider='discord', mcp_provider_user_id=<discord id>, mcp_purpose='aztec_mcp')` — one agent per Discord user per purpose. Returns `{api_key, created}`.
 
-### Installing and configuring
+### Configuring an MCP client
 
-```bash
-cd extensions/mcp-server
-npm install && npm run build
-```
-
-Claude Desktop `claude_desktop_config.json`:
+No local install required — `npx -y @aztec/mcp-server` pulls the
+package on demand. Claude Desktop `claude_desktop_config.json`:
 
 ```json
 {
   "mcpServers": {
     "aztec-docs": {
-      "command": "node",
-      "args": ["/absolute/path/to/DocsGPT/extensions/mcp-server/dist/index.js"],
+      "command": "npx",
+      "args": ["-y", "@aztec/mcp-server"],
       "env": {
         "API_URL": "https://docs.yourcompany.com",
         "API_KEY": "your-key-from-discord"
@@ -216,7 +221,15 @@ Claude Desktop `claude_desktop_config.json`:
 }
 ```
 
-See `extensions/mcp-server/README.md` for Cursor / Claude Code / full config.
+See the [`@aztec/mcp-server` README](https://github.com/AztecProtocol/mcp-server#readme) for Cursor / Claude Code / Codex configs. The Discord `/mcp-key` follow-up emits the same snippets pre-filled with your `API_URL`.
+
+> **Note on semantic search.** DocsGPT-backed semantic search in
+> `@aztec/mcp-server` is gated on `API_KEY` and is being added in
+> [AztecProtocol/mcp-server#18](https://github.com/AztecProtocol/mcp-server/pull/18).
+> Until that PR merges and a new version publishes, the MCP server
+> runs in ripgrep-only mode over locally cloned Aztec docs (`API_KEY`
+> is harmlessly ignored). Once it lands, semantic search activates
+> automatically with no client-side config change.
 
 ## Renaming source code for ingest
 

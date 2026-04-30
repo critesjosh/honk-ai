@@ -38,9 +38,13 @@
   the production compose. Implements the `/mcp-key` slash command and
   @-mention chat passthrough. Reaches the backend on the internal compose
   network (bypasses Cloudflare Access).
-- **Standalone TypeScript MCP server** (`extensions/mcp-server/`) — stdio
-  MCP server that end users install locally (`npx docsgpt-mcp-server`).
-  Exposes a `search_aztec` tool that hits `/api/search` with the user's key.
+- **MCP server** — end users install
+  [`@aztec/mcp-server`](https://www.npmjs.com/package/@aztec/mcp-server)
+  ([source](https://github.com/AztecProtocol/mcp-server)) locally and
+  point it at this backend's `/api/search` with the personal key the
+  Discord bot provisioned. The MCP server itself is **not** in this
+  repo; this repo only provides the key-provisioning and search HTTP
+  endpoints it consumes.
 - **Ingest deny-list** (`application/parser/file/bulk.py:_IGNORED_PATH_SEGMENTS`)
   skips `fixtures/`, `dumps/`, `node_modules/`, `target/`, `dist/`, `build/`,
   `_out/`, `__pycache__/`, and `.git/` directories during corpus ingest —
@@ -132,8 +136,9 @@
   commands (`openssl rand -hex 32` for each `*_KEY`).
 - [`extensions/discord/`](./extensions/discord/) — Discord bot source +
   Dockerfile.
-- [`extensions/mcp-server/`](./extensions/mcp-server/) — TypeScript MCP
-  server (end users run this locally).
+- [`@aztec/mcp-server`](https://github.com/AztecProtocol/mcp-server) —
+  the MCP server end users install locally (lives in a separate repo;
+  `extensions/mcp-server/README.md` here is just a pointer).
 
 ---
 
