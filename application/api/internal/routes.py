@@ -25,7 +25,10 @@ current_dir = os.path.dirname(
 internal = Blueprint("internal", __name__)
 
 
-SELF_AUTHENTICATED_ROUTES = {"/api/internal/create_mcp_key"}
+SELF_AUTHENTICATED_ROUTES = {
+    "/api/internal/create_mcp_key",
+    "/api/internal/forget_discord_user",
+}
 
 
 @internal.before_request
@@ -270,3 +273,79 @@ def create_mcp_key():
     )
 
     return jsonify({"api_key": agent["key"], "created": created}), 200
+
+
+@internal.route("/api/internal/forget_discord_user", methods=["POST"])
+def forget_discord_user():
+    """Erase all data tied to a Discord user (GDPR Article 17).
+
+    Self-authenticates via ``X-Provisioning-Key`` against
+    ``MCP_PROVISIONING_KEY`` (same trust model as create_mcp_key — the
+    Discord bot already holds this key). Deletes:
+
+    - The MCP-provisioned agent for this Discord user.
+    - Every conversation owned by ``user_id = "discord:<id>"`` and its
+      messages (cascade).
+    - Operational rows in ``user_logs``, ``stack_logs``, and
+      ``token_usage`` for the same ``user_id``.
+    """
+    provisioning_key = request.headers.get("X-Provisioning-Key")
+    if (
+        not settings.MCP_PROVISIONING_KEY
+        or not provisioning_key
+        or provisioning_key != settings.MCP_PROVISIONING_KEY
+    ):
+        return jsonify({"error": "Unauthorized"}), 401
+
+    data = request.get_json(silent=True) or {}
+    discord_user_id = (data.get("discord_user_id") or "").strip()
+    if not discord_user_id:
+        return jsonify({"error": "discord_user_id is required"}), 400
+
+    canonical_user_id = f"discord:{discord_user_id}"
+    # Order matters: every child table has FK user_id → users(user_id)
+    # ON DELETE RESTRICT (see ``application/storage/db/models.py`` header
+    # comment + migration 0015_user_id_fk), so the parent ``users`` row
+    # must be deleted last. ``agents`` is special-cased by mcp_provider
+    # since the canonical lookup is on the (provider, provider_user_id)
+    # pair. ``conversation_messages``, ``shared_conversations``, and
+    # ``pending_tool_state`` cascade from ``conversations`` so they're
+    # not enumerated here. ``workflow_nodes``/``workflow_edges`` cascade
+    # from ``workflows``; ``memories``/``todos``/``notes`` are
+    # user-keyed AND cascade from ``user_tools`` — listed under their
+    # user_id so the delete works whether or not the user has tools.
+    delete_specs = (
+        ("agents", "mcp_provider = 'discord' AND mcp_provider_user_id = :did",
+            {"did": discord_user_id}),
+        ("conversations", "user_id = :uid", {"uid": canonical_user_id}),
+        ("attachments", "user_id = :uid", {"uid": canonical_user_id}),
+        ("memories", "user_id = :uid", {"uid": canonical_user_id}),
+        ("todos", "user_id = :uid", {"uid": canonical_user_id}),
+        ("notes", "user_id = :uid", {"uid": canonical_user_id}),
+        ("connector_sessions", "user_id = :uid", {"uid": canonical_user_id}),
+        ("workflow_runs", "user_id = :uid", {"uid": canonical_user_id}),
+        ("workflows", "user_id = :uid", {"uid": canonical_user_id}),
+        ("user_tools", "user_id = :uid", {"uid": canonical_user_id}),
+        ("agent_folders", "user_id = :uid", {"uid": canonical_user_id}),
+        ("sources", "user_id = :uid", {"uid": canonical_user_id}),
+        ("prompts", "user_id = :uid", {"uid": canonical_user_id}),
+        ("user_logs", "user_id = :uid", {"uid": canonical_user_id}),
+        ("stack_logs", "user_id = :uid", {"uid": canonical_user_id}),
+        ("token_usage", "user_id = :uid", {"uid": canonical_user_id}),
+        ("users", "user_id = :uid", {"uid": canonical_user_id}),
+    )
+
+    deleted: dict[str, int] = {}
+    try:
+        with db_session() as conn:
+            for table, where_clause, params in delete_specs:
+                result = conn.execute(
+                    text(f"DELETE FROM {table} WHERE {where_clause}"),
+                    params,
+                )
+                deleted[table] = result.rowcount or 0
+    except Exception:
+        logger.exception("Failed to forget Discord user")
+        return jsonify({"error": "Internal server error"}), 500
+
+    return jsonify({"success": True, "deleted": deleted}), 200

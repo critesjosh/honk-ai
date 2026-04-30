@@ -94,6 +94,7 @@ const endpoints = {
       `/api/shared_conversation/${identifier}`,
     DELETE: (id: string) => `/api/delete_conversation?id=${id}`,
     DELETE_ALL: '/api/delete_all_conversations',
+    EXPORT: '/api/export_conversations',
     UPDATE: '/api/update_conversation_name',
   },
 };

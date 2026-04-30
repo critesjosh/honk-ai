@@ -4,6 +4,7 @@ import datetime
 
 from flask import current_app, jsonify, make_response, request
 from flask_restx import fields, Namespace, Resource
+from sqlalchemy import text
 
 from application.api import api
 from application.storage.db.repositories.attachments import AttachmentsRepository
@@ -44,6 +45,111 @@ class DeleteConversation(Resource):
             )
             return make_response(jsonify({"success": False}), 400)
         return make_response(jsonify({"success": True}), 200)
+
+
+@conversations_ns.route("/export_conversations")
+class ExportConversations(Resource):
+    @api.doc(
+        description=(
+            "Exports every conversation owned by the authenticated user "
+            "as a JSON document (GDPR Article 20 — right to data "
+            "portability). Includes message text, sources, and feedback."
+        ),
+    )
+    def get(self):
+        decoded_token = request.decoded_token
+        if not decoded_token:
+            return make_response(jsonify({"success": False}), 401)
+        user_id = decoded_token.get("sub")
+        try:
+            with db_readonly() as conn:
+                conv_rows = conn.execute(
+                    text(
+                        "SELECT id, name, agent_id, created_at, updated_at, date "
+                        "FROM conversations WHERE user_id = :user_id "
+                        "ORDER BY created_at ASC"
+                    ),
+                    {"user_id": user_id},
+                ).fetchall()
+                repo = ConversationsRepository(conn)
+                attachments_repo = AttachmentsRepository(conn)
+                conversations = []
+                for row in conv_rows:
+                    conv_id = str(row[0])
+                    messages = repo.get_messages(conv_id)
+                    cleaned_messages = []
+                    for m in messages:
+                        attachment_details: list[dict] = []
+                        for attachment_id in m.get("attachments") or []:
+                            try:
+                                att = attachments_repo.get_any(
+                                    str(attachment_id), user_id
+                                )
+                            except Exception:
+                                att = None
+                            if att:
+                                attachment_details.append(
+                                    {
+                                        "id": str(att["id"]),
+                                        "filename": att.get(
+                                            "filename", "Unknown file"
+                                        ),
+                                        "mime_type": att.get("mime_type"),
+                                        "size": att.get("size"),
+                                    }
+                                )
+                        cleaned_messages.append(
+                            {
+                                "position": m.get("position"),
+                                "prompt": m.get("prompt"),
+                                "response": m.get("response"),
+                                "thought": m.get("thought"),
+                                "sources": m.get("sources") or [],
+                                "tool_calls": m.get("tool_calls") or [],
+                                "model_id": m.get("model_id"),
+                                "metadata": m.get("metadata") or {},
+                                "feedback": m.get("feedback"),
+                                "attachments": attachment_details,
+                                "timestamp": (
+                                    m["timestamp"].isoformat()
+                                    if m.get("timestamp")
+                                    else None
+                                ),
+                            }
+                        )
+                    conversations.append(
+                        {
+                            "id": conv_id,
+                            "name": row[1],
+                            "agent_id": str(row[2]) if row[2] else None,
+                            "created_at": (
+                                row[3].isoformat() if row[3] else None
+                            ),
+                            "updated_at": (
+                                row[4].isoformat() if row[4] else None
+                            ),
+                            "messages": cleaned_messages,
+                        }
+                    )
+        except Exception as err:
+            current_app.logger.error(
+                f"Error exporting conversations: {err}", exc_info=True
+            )
+            return make_response(jsonify({"success": False}), 500)
+
+        payload = {
+            "exported_at": datetime.datetime.now(
+                datetime.timezone.utc
+            ).isoformat(),
+            "user_id": user_id,
+            "conversation_count": len(conversations),
+            "conversations": conversations,
+        }
+        response = make_response(jsonify(payload), 200)
+        response.headers["Content-Disposition"] = (
+            'attachment; filename="docsgpt-conversations-export.json"'
+        )
+        return response
 
 
 @conversations_ns.route("/delete_all_conversations")
