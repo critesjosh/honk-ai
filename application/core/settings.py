@@ -100,6 +100,15 @@ class Settings(BaseSettings):
     # to fewer than 16 bytes.
     USER_ID_PEPPER: str = ""
     AZTEC_SOURCE_IDS: Optional[str] = None  # comma-separated Postgres source UUIDs for Aztec MCP agents
+    # Version tag of the Aztec corpus currently indexed in the vector
+    # store (e.g. "v4.2.0"). Surfaced via GET /api/version so MCP
+    # clients can detect a version mismatch between their local
+    # aztec-packages clone and the corpus the backend is answering
+    # from. Empty/unset → endpoint returns the literal "unknown" and
+    # the MCP client treats this as "skip the version gate" (it logs
+    # debug only) so callers don't get permanently locked out before
+    # the operator sets this.
+    AZTEC_CORPUS_VERSION: Optional[str] = None
     CORS_ALLOWED_ORIGINS: Optional[str] = None  # comma-separated origin URLs; empty = same-origin only; "*" = any (insecure)
 
     # Cap on tokens of retrieved documents injected into the LLM prompt.
