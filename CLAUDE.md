@@ -39,7 +39,7 @@ Aztec-specific additions on top of upstream:
 
 Two composes at `deployment/`:
 - `docker-compose.yaml` — **dev compose**. Builds from source, exposes ports on localhost (frontend 5173, backend 7091, Redis 6379, Postgres 5432). Use this in dev / smoke-test.
-- `docker-compose-hub.yaml` — **production compose**. Builds from source, runs an outbound-only `cloudflared` connector (Cloudflare Tunnel), Caddy in HTTP-only mode (TLS lives at the CF edge), plus the Discord bot as a container. **No host ports are published** — nothing on this host faces the public internet. Secrets loaded from `.env`. Use this on the company server.
+- `docker-compose-hub.yaml` — **production compose**. Builds from source, runs Caddy in HTTP-only mode (TLS lives at the CF edge), plus the Discord bot as a container. As of 2026-04-30 the Cloudflare Tunnel anchor lives on `ci-bastion.aztecprotocol.com` (us-east-2) instead of josh-box; Caddy publishes a single loopback port `127.0.0.1:5080:80` for an SSH reverse tunnel that carries traffic to bastion's cloudflared. Nothing else on this host faces the public internet. The previously in-compose `cloudflared` (and its tactical `cloudflared-us` replica) services were removed during the migration; bastion is the sole tunnel anchor. Secrets loaded from `.env`. See `PLAN-bastion-relay.md` for the full topology, why it was migrated off LHR-anchored CF Tunnel, and the systemd-user unit on josh-box that holds the SSH leg open.
 
 Configuration lives in `.env` at repo root. It is gitignored. `.env-template` holds placeholders and secret-generation instructions.
 
@@ -96,16 +96,18 @@ Vite bakes env vars at build time. Production uses `frontend/Dockerfile.prod` (m
 
 ## Current production deployment (josh-box)
 
-**Prod compose is live** on this host and reachable externally via Cloudflare Tunnel. Both composes run side-by-side — check container names to know which backend you're hitting:
+**Prod compose is live** on this host. Public ingress reaches Caddy via a Cloudflare Tunnel anchored on the company bastion (`ci-bastion.aztecprotocol.com`, AWS us-east-2), bridged to josh-box by an outbound SSH reverse tunnel. Both composes run side-by-side — check container names to know which backend you're hitting:
 
 | Compose | Project / container prefix | Images | Purpose |
 |---|---|---|---|
-| `deployment/docker-compose-hub.yaml` | `docsgpt-aztec-*` | `aztec/docsgpt:0.17.0-aztec.1`, `aztec/docsgpt-fe:0.17.0-aztec.1` | **production** — Cloudflare Tunnel → Caddy → frontend/backend; discord-bot container; no host ports |
+| `deployment/docker-compose-hub.yaml` | `docsgpt-aztec-*` | `aztec/docsgpt:0.17.0-aztec.1`, `aztec/docsgpt-fe:0.17.0-aztec.1` | **production** — CF Tunnel (anchored on bastion) → SSH reverse tunnel → Caddy → frontend/backend; discord-bot container; only Caddy on `127.0.0.1:5080` (loopback) |
 | `deployment/docker-compose.yaml` | `docsgpt-oss-*` | `docsgpt-oss-backend:latest`, `docsgpt-oss-worker:latest`, `docsgpt-oss-frontend:latest` | dev smoke-test — publishes 5173/7091/5432/6379 on localhost |
+
+Public ingress path (post 2026-04-30 bastion-relay migration): `Internet → CF anycast edge → CF Tunnel → cloudflared on ci-bastion (us-east-2) → bastion's localhost:5080 → SSH reverse tunnel (systemd-user `aztec-docs-tunnel.service` on josh-box) → josh-box's 127.0.0.1:5080 → Caddy → backend`. Full architecture, decisions, and post-mortem in `PLAN-bastion-relay.md`.
 
 Production config (in `.env`, shared by both composes):
 - `PUBLIC_HOSTNAME=aztec.adjacentpossible.dev`
-- `CLOUDFLARE_TUNNEL_TOKEN=<set>` — cloudflared connector registered to the Zero Trust dashboard; tunnel ingress routes `$PUBLIC_HOSTNAME` → `caddy:80`
+- `CLOUDFLARE_TUNNEL_TOKEN=<set>` — same token as before, but cloudflared now runs on bastion (not in this compose). CF dashboard's Public Hostname Service URL was changed from `http://caddy:80` → `http://localhost:5080` so bastion's cloudflared resolves the upstream correctly. Token-based tunnels ignore the `--url` flag for ingress override; dashboard config is the source of truth.
 - `LLM_PROVIDER=openrouter`, `LLM_NAME=z-ai/glm-4.6` — default model served by both composes
 - `POSTGRES_PASSWORD=docsgpt` (TODO: rotate to `openssl rand -hex 32` before opening to real users; the `.env` comment flags this)
 - `EMBEDDINGS_*` via OpenAI `text-embedding-3-large` (3072-dim)

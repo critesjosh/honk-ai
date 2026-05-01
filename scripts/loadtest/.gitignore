@@ -1,0 +1,5 @@
+.venv/
+.api_key
+results/
+*.csv
+__pycache__/
