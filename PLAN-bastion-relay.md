@@ -409,7 +409,6 @@ Other future improvements worth queuing as separate work:
 
 - **Healthcheck on bastion** that distinguishes "CF tunnel up, SSH leg down" from "origin unhealthy". Cron'd `curl localhost:5080/api/health` → log to journal or push to a status channel.
 - **Second relay for actual multi-region HA** (Hetzner FRA, fly.io anycast). Only if bastion-as-SPOF becomes uncomfortable.
-- **Decommission `cloudflared-us` workaround** introduced 2026-04-28. After the bastion cutover, both `cloudflared` and `cloudflared-us` services on josh-box can be removed from the compose.
 
 ---
 
@@ -418,11 +417,26 @@ Other future improvements worth queuing as separate work:
 - [ ] Coordinate with bastion admin: confirm the new long-running services (cloudflared + the `:5080` listen port) are acceptable, not at risk of cleanup-cron termination.
 - [ ] Verify bastion's outbound to CF tunnel endpoints isn't firewalled.
 - [ ] Confirm josh-box's egress IP is static enough to use in `from="..."` on the bastion `authorized_keys` line. If not, drop the `from=` restriction and rely on the `permitlisten=` + key-only auth.
-- [ ] Decide whether to keep josh-box's `cloudflared` and `cloudflared-us` units stopped-but-defined (rollback ergonomics) or remove them (cleanup). Recommend stopped-but-defined for ~7 days, then remove.
 
 ---
 
 ## Revisions
+
+**2026-04-30 (cutover complete; rollback retired):**
+- Cutover applied to prod 2026-04-30 ~18:51 UTC. After ~30 minutes of
+  clean public traffic, the operator decided not to keep the rollback
+  path. `cloudflared` and `cloudflared-us` service blocks removed
+  entirely from `deployment/docker-compose-hub.yaml`. Bastion is the
+  sole tunnel anchor going forward.
+- §6.4 still describes a 24h rollback window — kept as runbook
+  guidance for future migrations, but for THIS migration the rollback
+  was not retained.
+- The `--url http://localhost:5080` flag in bastion's cloudflared
+  ExecStart is **harmlessly redundant** — token-managed tunnels resolve
+  ingress from the dashboard config, and `--url` is ignored. Earlier
+  drafts of §5.3 and the post-cutover correction here flipped between
+  "include `--url`" and "don't include `--url`" — the truth is
+  "include or omit; functionally identical."
 
 **2026-04-29 (Codex review pass):**
 - §1 trust model: explicit acknowledgment of bastion-local Access bypass. Accepted; documented.

@@ -15,23 +15,6 @@
 name: docsgpt-aztec
 services:
 
-  # RETIRED 2026-04-30: this in-compose cloudflared was the original public
-  # ingress anchor (LHR). It was migrated to ci-bastion (us-east-2) over an
-  # SSH reverse tunnel — see PLAN-bastion-relay.md. Kept here under the
-  # `rollback` profile during the 24h stability window so a plain
-  # `docker compose up -d` will NOT start it. The follow-up cleanup PR
-  # removes this block entirely. To restart for rollback:
-  #   docker compose -f deployment/docker-compose-hub.yaml --env-file .env --profile rollback up -d cloudflared
-  cloudflared:
-    image: cloudflare/cloudflared:2026.3.0
-    restart: unless-stopped
-    profiles: ["rollback"]
-    command: tunnel --no-autoupdate run
-    environment:
-      - TUNNEL_TOKEN=${CLOUDFLARE_TUNNEL_TOKEN:?CLOUDFLARE_TUNNEL_TOKEN must be set in .env}
-    depends_on:
-      - caddy
-
   caddy:
     image: caddy:2-alpine
     restart: unless-stopped
