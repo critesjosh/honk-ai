@@ -121,6 +121,7 @@ services:
       - PUBLIC_HOSTNAME=${PUBLIC_HOSTNAME}
       - API_KEY=${API_KEY}
       - MCP_PROVISIONING_KEY=${MCP_PROVISIONING_KEY}
+      - NOIR_GUILD_IDS=${NOIR_GUILD_IDS:-}
       - NOIR_GUILD_ID=${NOIR_GUILD_ID:-0}
       - BOT_ROLE_ID=${BOT_ROLE_ID:-}
     depends_on:

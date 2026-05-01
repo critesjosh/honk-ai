@@ -23,7 +23,39 @@ API_KEY = os.getenv("API_KEY")
 
 # MCP key provisioning
 MCP_PROVISIONING_KEY = os.getenv("MCP_PROVISIONING_KEY", "")
-NOIR_GUILD_ID = int(os.getenv("NOIR_GUILD_ID", "0"))
+
+
+def _parse_guild_ids() -> list[int]:
+    """Parse the configured guild allowlist.
+
+    Accepts either ``NOIR_GUILD_IDS`` (new, comma-separated list) or
+    ``NOIR_GUILD_ID`` (legacy, single value). When both are set the
+    legacy value is merged in so an env that was migrated mid-deploy
+    doesn't drop coverage. Empty / "0" entries are filtered out so a
+    placeholder line in ``.env-template`` doesn't accidentally enable
+    a "match-anything" gate.
+    """
+    raw_list = os.getenv("NOIR_GUILD_IDS", "")
+    raw_single = os.getenv("NOIR_GUILD_ID", "")
+    parts = [p.strip() for p in raw_list.split(",")] + [raw_single.strip()]
+    out: list[int] = []
+    seen: set[int] = set()
+    for p in parts:
+        if not p or p == "0":
+            continue
+        try:
+            gid = int(p)
+        except ValueError:
+            logger.warning("Ignoring non-integer guild id in NOIR_GUILD_IDS: %r", p)
+            continue
+        if gid in seen:
+            continue
+        out.append(gid)
+        seen.add(gid)
+    return out
+
+
+NOIR_GUILD_IDS: list[int] = _parse_guild_ids()
 BOT_ROLE_ID = os.getenv("BOT_ROLE_ID", "1492704234842493050")
 
 # Public URL users hit from their MCP clients. Prefer PUBLIC_HOSTNAME
@@ -119,26 +151,54 @@ def split_string(input_str):
 async def setup_hook():
     """Sync slash commands once on startup (not on every reconnect).
 
-    When ``NOIR_GUILD_ID`` is set we register commands at the guild
-    scope (instant) AND tear down any prior global registrations.
-    Without that teardown a deploy that started without the env var
-    leaves global commands hanging around — Discord then renders both
-    copies in the configured guild and users see every command twice.
+    When ``NOIR_GUILD_IDS`` is non-empty we register commands at the
+    guild scope (instant propagation) for each configured guild AND
+    tear down any prior global registrations. Without that teardown a
+    deploy that started without the env var leaves global commands
+    hanging around — Discord then renders both copies in the
+    configured guild and users see every command twice.
     """
-    if NOIR_GUILD_ID:
-        noir_guild = discord.Object(id=NOIR_GUILD_ID)
-        # Copy globals → guild tree, push, then wipe globals on
+    if NOIR_GUILD_IDS:
+        # Copy globals → each guild tree, push, then wipe globals on
         # Discord's side. The decorator-defined commands re-populate
         # the in-memory global tree on every restart, so this dance
         # has to run every time.
-        bot.tree.copy_global_to(guild=noir_guild)
-        await bot.tree.sync(guild=noir_guild)
-        bot.tree.clear_commands(guild=None)
-        await bot.tree.sync()
-        logger.info(
-            f"Slash commands synced to guild {NOIR_GUILD_ID}; "
-            "global registrations cleared"
-        )
+        #
+        # Per-guild error isolation: a single bad guild (bot kicked,
+        # missing applications.commands scope, transient HTTP error)
+        # must not abort startup and skip remaining guilds. We log
+        # failures and continue; the global wipe only runs if at
+        # least one guild succeeded so a fully-broken config doesn't
+        # also clear the global commands that might be the user's
+        # only working surface.
+        succeeded: list[int] = []
+        failed: list[int] = []
+        for gid in NOIR_GUILD_IDS:
+            guild_obj = discord.Object(id=gid)
+            try:
+                bot.tree.copy_global_to(guild=guild_obj)
+                await bot.tree.sync(guild=guild_obj)
+                succeeded.append(gid)
+            except discord.DiscordException as exc:
+                logger.warning(
+                    "Failed to sync slash commands to guild %s: %s", gid, exc
+                )
+                failed.append(gid)
+
+        if succeeded:
+            bot.tree.clear_commands(guild=None)
+            await bot.tree.sync()
+            logger.info(
+                "Slash commands synced to guilds %s; global registrations cleared%s",
+                succeeded,
+                f" (failed for guilds {failed})" if failed else "",
+            )
+        else:
+            logger.error(
+                "Slash command sync failed for ALL configured guilds %s; "
+                "leaving any existing registrations untouched",
+                NOIR_GUILD_IDS,
+            )
     else:
         await bot.tree.sync()
         logger.info("Slash commands synced globally")
@@ -155,10 +215,11 @@ async def on_ready():
 )
 async def mcp_key(interaction: discord.Interaction):
     """Provisions a personal MCP API key via ephemeral message."""
-    # Guild restriction
-    if NOIR_GUILD_ID and interaction.guild_id != NOIR_GUILD_ID:
+    # Guild restriction — empty list = no restriction (commands sync
+    # globally in that case, see ``setup_hook``).
+    if NOIR_GUILD_IDS and interaction.guild_id not in NOIR_GUILD_IDS:
         await interaction.response.send_message(
-            "This command is only available in the Noir Discord.",
+            "This command is not available in this server.",
             ephemeral=True,
         )
         return
@@ -268,12 +329,12 @@ async def forget_me(interaction: discord.Interaction):
     Unlike ``/mcp-key`` this is intentionally allowed in DMs — the bot
     accepts and stores DM conversations (see ``on_message`` handler), so
     the erasure path must be reachable from the same surface where the
-    data was created. Inside guilds it's still gated to ``NOIR_GUILD_ID``.
+    data was created. Inside guilds it's still gated to ``NOIR_GUILD_IDS``.
     """
     is_dm = interaction.guild_id is None
-    if not is_dm and NOIR_GUILD_ID and interaction.guild_id != NOIR_GUILD_ID:
+    if not is_dm and NOIR_GUILD_IDS and interaction.guild_id not in NOIR_GUILD_IDS:
         await interaction.response.send_message(
-            "This command is only available in the Noir Discord or in a DM.",
+            "This command is not available in this server. Try a DM with the bot instead.",
             ephemeral=True,
         )
         return
