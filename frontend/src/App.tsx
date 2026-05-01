@@ -6,7 +6,6 @@ import { Outlet, Route, Routes } from 'react-router-dom';
 import Agents from './agents';
 import SharedAgentGate from './agents/SharedAgentGate';
 import ActionButtons from './components/ActionButtons';
-import AgeGate from './components/AgeGate';
 import Spinner from './components/Spinner';
 import UploadToast from './components/UploadToast';
 import Conversation from './conversation/Conversation';
@@ -67,7 +66,6 @@ export default function App() {
   }
   return (
     <div className="relative h-full overflow-hidden">
-      <AgeGate />
       {notificationLink && notificationText && showNotification && (
         <Notification
           notificationText={notificationText}
