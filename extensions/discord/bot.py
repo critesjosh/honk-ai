@@ -291,7 +291,7 @@ async def mcp_key(interaction: discord.Interaction):
         '  "mcpServers": {\n'
         '    "aztec-docs": {\n'
         '      "command": "npx",\n'
-        '      "args": ["-y", "@aztec/mcp-server"],\n'
+        '      "args": ["-y", "@aztec/mcp-server@latest"],\n'
         '      "env": {\n'
         f'        "API_URL": "{MCP_PUBLIC_URL}",\n'
         '        "API_KEY": "<paste your key here>"\n'
@@ -305,13 +305,13 @@ async def mcp_key(interaction: discord.Interaction):
         "claude mcp add aztec-docs \\\n"
         f"  -e API_URL={MCP_PUBLIC_URL} \\\n"
         "  -e API_KEY=<paste your key here> \\\n"
-        "  -- npx -y @aztec/mcp-server\n"
+        "  -- npx -y @aztec/mcp-server@latest\n"
         "```\n"
         "__Codex__ — add to `~/.codex/config.toml`:\n"
         "```toml\n"
         "[mcp_servers.aztec-docs]\n"
         'command = "npx"\n'
-        'args = ["-y", "@aztec/mcp-server"]\n'
+        'args = ["-y", "@aztec/mcp-server@latest"]\n'
         f'env = {{ API_URL = "{MCP_PUBLIC_URL}", '
         'API_KEY = "<paste your key here>" }\n'
         "```"
