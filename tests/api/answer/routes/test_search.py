@@ -132,6 +132,24 @@ class TestIsEmptyApirefChunk:
         with flask_app.app_context():
             assert SearchResource()._is_empty_apiref_chunk(text, meta) is True
 
+    def test_drops_apiref_chunk_with_md_heading_when_metadata_has_md_extension(self, flask_app):
+        """Regression for codex review: the metadata source has the
+        parser-friendliness ``.md`` extension while the rendered
+        heading does not. The earlier implementation tried to strip
+        the heading by string-comparing against metadata.source and
+        failed silently, leaving the heading line intact — at which
+        point the path-shaped predicate also failed because ``# ...``
+        contains whitespace. The new shape-only predicate catches it.
+        """
+        from application.api.answer.routes.search import SearchResource
+        text = "# aztec-nr/aztec/src/foo.nr\n"
+        meta = self._meta(
+            source="aztec-nr/aztec/src/foo.nr.md",  # ← .md extension
+            filename="foo.nr.md",
+        )
+        with flask_app.app_context():
+            assert SearchResource()._is_empty_apiref_chunk(text, meta) is True
+
     def test_drops_completely_empty_apiref_chunk(self, flask_app):
         from application.api.answer.routes.search import SearchResource
         with flask_app.app_context():

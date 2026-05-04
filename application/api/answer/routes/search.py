@@ -88,6 +88,21 @@ class SearchResource(Resource):
 
         return ordered
 
+    @staticmethod
+    def _line_is_path_shaped(line: str) -> bool:
+        """A line is "path-shaped" if it looks like a filesystem path
+        rather than a code/docs line.
+
+        Strips a leading markdown heading marker (``#``, ``##`` …) so
+        ``# aztec-nr/.../foo.nr`` is recognized as path-shaped just
+        like the bare ``aztec-nr/.../foo.nr``. Path-shaped means:
+        contains ``/`` and has no whitespace. Real signature lines
+        (``pub fn foo(...)``, ``struct Bar { ... }``, ``pub use a::b;``)
+        always have whitespace, so they never trip this predicate.
+        """
+        cleaned = line.lstrip("#").strip()
+        return bool(cleaned) and "/" in cleaned and " " not in cleaned
+
     def _is_empty_apiref_chunk(
         self, page_content: str, metadata: Dict[str, Any]
     ) -> bool:
@@ -97,18 +112,20 @@ class SearchResource(Resource):
         Markdown file per ``.nr`` source containing the public surface
         — doc comments + signatures, no bodies. For files with no doc
         comments and only ``pub use foo;`` declarations, the apiref
-        output renders as a file-path heading and nothing else. The
-        chunker honors the ``chunk_type=apiref`` exemption from the
-        ``<50 token`` floor (legitimate signature-only chunks are very
-        short), so these path-only chunks slip through and end up in
-        the vector store as semantic noise.
+        output can render as a file-path heading and nothing else.
+        The chunker honors the ``chunk_type=apiref`` exemption from
+        the ``<50 token`` floor (legitimate signature-only chunks are
+        very short), so these path-only chunks slip through and end up
+        in the vector store as semantic noise.
 
         For error-lookup queries especially, surfacing a chunk that
         consists of just ``aztec-nr/aztec/src/.../foo.nr`` and nothing
         else looks like an empty result to the user. This filter drops
-        only chunks whose body — after stripping the rendered file
-        heading — is empty or path-only. Legitimate signature chunks
-        (``pub fn poseidon(input: [Field; N]) -> Field``) survive.
+        chunks whose every non-empty line is path-shaped — i.e. there
+        is no extracted API surface at all. Legitimate signature
+        chunks (``pub fn poseidon(input: [Field; N]) -> Field``)
+        survive: a real signature line has whitespace, which the
+        path-shaped predicate excludes.
 
         Defense-in-depth: the right long-term fix is on the ingest
         side (``noir_apiref`` should skip files with no extractable
@@ -126,31 +143,16 @@ class SearchResource(Resource):
         if not lines:
             return True
 
-        # Strip a leading rendered heading. The apiref transform writes
-        # ``# <source-path>`` as the first non-blank line; some legacy
-        # outputs may use the bare path with no ``#`` prefix. Drop the
-        # first line if it matches either shape.
-        first = lines[0].lstrip("# ").strip()
-        sourceish = {
-            (metadata.get("source") or "").strip(),
-            (metadata.get("filename") or "").strip(),
-            (metadata.get("title") or "").strip(),
-        }
-        sourceish.discard("")
-        if first in sourceish:
-            lines = lines[1:]
-
-        if not lines:
-            return True
-
-        # Body still looks like a file path: every remaining line is
-        # path-shaped (contains ``/`` and no whitespace). A real
-        # signature line has at least one space (``pub fn ...``,
-        # ``struct Foo``, etc.).
-        if all("/" in line and " " not in line for line in lines):
-            return True
-
-        return False
+        # All non-empty lines are path-shaped → no real API content.
+        # Earlier versions of this helper tried to strip a "heading"
+        # line by string-comparing against metadata.source / filename
+        # / title; that was brittle because the rendered heading
+        # often lacks the parser-friendliness extension (``.md``)
+        # the metadata path carries, and on the MCP side the source
+        # is a rewritten public URL that never matches the raw
+        # heading string. The shape predicate is more robust and
+        # doesn't need any metadata coupling.
+        return all(self._line_is_path_shaped(line) for line in lines)
 
     def _coerce_chunks(self, raw: Any) -> int:
         """Coerce/clamp the ``chunks`` parameter to ``[_MIN_CHUNKS, _MAX_CHUNKS]``.
