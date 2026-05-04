@@ -56,7 +56,6 @@ def _parse_guild_ids() -> list[int]:
 
 
 NOIR_GUILD_IDS: list[int] = _parse_guild_ids()
-BOT_ROLE_ID = os.getenv("BOT_ROLE_ID", "1492704234842493050")
 
 # Public URL users hit from their MCP clients. Prefer PUBLIC_HOSTNAME
 # (set on the hub compose) and construct the https URL; fall back to a
@@ -138,14 +137,20 @@ def chunk_string(text, max_length=2000):
     return chunks
 
 def split_string(input_str):
-    """Splits the input string to detect bot user or role mentions."""
-    # Match user mention (@BotName) or role mention (@RoleName)
-    pattern = r'^<@[!&]?(?:{0}|{1})>\s*'.format(bot.user.id, BOT_ROLE_ID)
-    match = re.match(pattern, input_str)
-    if match:
-        content = input_str[match.end():].strip()
-        return str(bot.user.id), content
-    return None, input_str
+    """Detects a bot user mention anywhere in the message.
+
+    Returns ``(bot_user_id_str, cleaned_content)`` if the bot's user is
+    mentioned, else ``(None, input_str)``. All occurrences of the
+    mention are stripped from the content and surrounding whitespace
+    collapsed so the LLM sees a clean question. Role mentions are
+    intentionally NOT a trigger — only direct user mentions count.
+    """
+    pattern = r'<@!?{0}>'.format(bot.user.id)
+    if not re.search(pattern, input_str):
+        return None, input_str
+    content = re.sub(pattern, '', input_str)
+    content = re.sub(r'\s+', ' ', content).strip()
+    return str(bot.user.id), content
 
 @bot.event
 async def setup_hook():
@@ -476,10 +481,7 @@ async def on_message(message):
         content = message.content.strip()
         prefix, content = split_string(content)
         if prefix is None:
-            return
-        part_prefix = str(bot.user.id)
-        if part_prefix != prefix:
-            return  # Bot not mentioned at the start, so do not process
+            return  # Bot/role not mentioned anywhere, so do not process
 
     # Now process the message
     user_id = message.author.id
