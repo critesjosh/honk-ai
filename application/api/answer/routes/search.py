@@ -88,6 +88,70 @@ class SearchResource(Resource):
 
         return ordered
 
+    def _is_empty_apiref_chunk(
+        self, page_content: str, metadata: Dict[str, Any]
+    ) -> bool:
+        """Detect apiref chunks whose extracted body is empty / path-only.
+
+        ``noir_apiref`` (``scripts/ingest/noir_apiref.py``) writes one
+        Markdown file per ``.nr`` source containing the public surface
+        — doc comments + signatures, no bodies. For files with no doc
+        comments and only ``pub use foo;`` declarations, the apiref
+        output renders as a file-path heading and nothing else. The
+        chunker honors the ``chunk_type=apiref`` exemption from the
+        ``<50 token`` floor (legitimate signature-only chunks are very
+        short), so these path-only chunks slip through and end up in
+        the vector store as semantic noise.
+
+        For error-lookup queries especially, surfacing a chunk that
+        consists of just ``aztec-nr/aztec/src/.../foo.nr`` and nothing
+        else looks like an empty result to the user. This filter drops
+        only chunks whose body — after stripping the rendered file
+        heading — is empty or path-only. Legitimate signature chunks
+        (``pub fn poseidon(input: [Field; N]) -> Field``) survive.
+
+        Defense-in-depth: the right long-term fix is on the ingest
+        side (``noir_apiref`` should skip files with no extractable
+        public surface). This guard protects the existing index +
+        any future ingest regressions for the same class of bug.
+        """
+        if metadata.get("chunk_type") != "apiref":
+            return False
+
+        lines = [
+            line.strip()
+            for line in (page_content or "").splitlines()
+            if line.strip()
+        ]
+        if not lines:
+            return True
+
+        # Strip a leading rendered heading. The apiref transform writes
+        # ``# <source-path>`` as the first non-blank line; some legacy
+        # outputs may use the bare path with no ``#`` prefix. Drop the
+        # first line if it matches either shape.
+        first = lines[0].lstrip("# ").strip()
+        sourceish = {
+            (metadata.get("source") or "").strip(),
+            (metadata.get("filename") or "").strip(),
+            (metadata.get("title") or "").strip(),
+        }
+        sourceish.discard("")
+        if first in sourceish:
+            lines = lines[1:]
+
+        if not lines:
+            return True
+
+        # Body still looks like a file path: every remaining line is
+        # path-shaped (contains ``/`` and no whitespace). A real
+        # signature line has at least one space (``pub fn ...``,
+        # ``struct Foo``, etc.).
+        if all("/" in line and " " not in line for line in lines):
+            return True
+
+        return False
+
     def _coerce_chunks(self, raw: Any) -> int:
         """Coerce/clamp the ``chunks`` parameter to ``[_MIN_CHUNKS, _MAX_CHUNKS]``.
 
@@ -147,10 +211,13 @@ class SearchResource(Resource):
             logger.error("Error embedding query", exc_info=True)
             return []
 
-        # Over-fetch so dedup has headroom. With chunks=20 and 12 sources
-        # we want enough candidates that a few duplicates don't starve
-        # the result set.
-        candidate_k = max(60, chunks * 6, len(source_ids) * 5)
+        # Over-fetch so dedup AND the empty-apiref filter have headroom.
+        # With chunks=20 and 12 sources we want enough candidates that a
+        # few duplicates plus a few path-only apiref hits don't starve
+        # the result set. The previous formula assumed only dedup would
+        # consume candidates; bump the floor so the apiref filter can
+        # also drop a non-trivial fraction without leaving us short.
+        candidate_k = max(80, chunks * 8, len(source_ids) * 6)
 
         pairs = docsearch.search_by_vector_with_score(
             query_vector,
@@ -170,6 +237,13 @@ class SearchResource(Resource):
 
             raw_source = metadata.get("source") or metadata.get("_source_id") or ""
             filename = metadata.get("filename") or ""
+
+            # Drop apiref chunks whose extracted body is empty or just
+            # the file path. See ``_is_empty_apiref_chunk`` for why.
+            # Done BEFORE dedup so an empty-apiref chunk doesn't pre-
+            # empt a non-empty chunk at the same dedup key.
+            if self._is_empty_apiref_chunk(page_content, metadata):
+                continue
 
             # Chunk-level dedup BEFORE URL rewrite, so two distinct
             # chunks from the same page (which would collapse to one
