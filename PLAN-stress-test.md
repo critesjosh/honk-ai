@@ -88,8 +88,11 @@ Numbers below were pulled from the codebase, not assumed.
   internal concurrency cap.
 
 ### MCP server
-- `extensions/mcp-server/`. Hits **`/api/search`** (JSON, not SSE).
-  60 s request timeout, no concurrency cap on the client side.
+- [`@aztec/mcp-server`](https://github.com/AztecProtocol/mcp-server)
+  (separate repo; the in-repo `extensions/mcp-server/` was removed in
+  PR #58 — that path now contains a README pointer). Hits
+  **`/api/search`** (JSON, not SSE). 60 s request timeout, no
+  concurrency cap on the client side.
 
 ### Edge / proxy
 - Caddy: `flush_interval -1` on `/api/*` and `/stream` (no buffering).
