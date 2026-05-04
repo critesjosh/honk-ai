@@ -293,9 +293,11 @@ DocsGPT/
       0001_initial.py                   # upstream
       0002_app_metadata.py              # upstream
       0003_mcp_provisioning.py          # Aztec: agents.mcp_* columns
+      0004_sources_is_public.py         # Aztec: source visibility model
+      0005_pseudonymize_user_ids.py     # Aztec: HMAC-pseudonymized Discord IDs
     storage/db/                         # SQLAlchemy Core models + repositories
     api/internal/routes.py              # create_mcp_key endpoint
   extensions/
-    discord/bot.py                      # /mcp-key command
-    mcp-server/                         # TS MCP server package
+    discord/bot.py                      # /mcp-key, /forget-me, @-mention
+    mcp-server/                         # README pointer to @aztec/mcp-server (in-repo TS server was removed)
 ```

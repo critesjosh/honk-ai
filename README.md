@@ -20,10 +20,15 @@
   corpora (Developer Docs, Aztec.nr Framework, Noir Language Docs, Example
   Contracts, aztec.js SDK, TypeScript API, Noir stdlib, CLI, Network Docs,
   E2E Tests, Protocol Circuits, L1 Contracts).
-- **Discord** — run `/mcp-key` in the Noir Discord to provision a personal
-  MCP API key. `@`-mention the Aztec DocsGPT bot in any channel (or DM it)
-  to chat directly. Responses are formatted for Discord (no Mermaid, no
-  Markdown tables) via a custom system prompt.
+- **Discord** — run `/mcp-key` in the Noir Discord (or any allowlisted
+  guild — `NOIR_GUILD_IDS` is comma-separated) to provision a personal
+  MCP API key. `@`-mention the bot — user-facing name **Honk AI** — in
+  any channel (or DM it) to chat directly. When mentioned in a top-level
+  guild channel the bot opens a public thread on your message and
+  replies inside; in existing threads or DMs it replies in place.
+  Responses are formatted for Discord (no Mermaid, no Markdown tables)
+  via a custom system prompt. `/forget-me` deletes all data stored
+  under your Discord pseudonym.
 - **MCP clients** (Claude Desktop, Claude Code, Codex) — paste the key from
   `/mcp-key` with `API_URL=https://aztec.adjacentpossible.dev`. The bot
   response includes ready-to-paste config snippets for each client and
@@ -110,10 +115,11 @@
   `agent.source_id` when `extra_source_ids` existed, so the "primary"
   source was never actually searched. Our `stream_processor` prepends
   it back onto `sources_list`.
-- **Eval harness** (`scripts/eval/`) — 15 golden queries with two run
-  modes (direct retriever probe and end-to-end `/stream`) that assert
-  source coverage, source diversity, banned identifiers, no Markdown
-  tables, and per-query response-time SLAs. See `scripts/eval/README.md`.
+- **Eval harness** (`scripts/eval/`) — 25 golden queries (tagged
+  `identifier` / `concept` / `example`) with two run modes (direct
+  retriever probe and end-to-end `/stream`) that assert source
+  coverage, source diversity, banned identifiers, no Markdown tables,
+  and per-query response-time SLAs. See `scripts/eval/README.md`.
 - **Reasoning-disable shim** — auto-injects
   `extra_body={"reasoning": {"exclude": true}}` for reasoning-mode
   OpenRouter models (e.g. `x-ai/grok-4.1-fast`) that would otherwise
@@ -132,9 +138,26 @@
   admins to manage agents via SQL or `/api/internal/create_mcp_key`.
   The UI was silently resetting `source_id` and swapping `prompt_id`
   on save; the lockdown prevents that drift.
-- **Custom settings** — `MCP_PROVISIONING_KEY`, `AZTEC_SOURCE_IDS`,
-  `CORS_ALLOWED_ORIGINS`, `EMBEDDINGS_DIMENSION`, `RAG_MAX_DOC_TOKENS`,
-  `VITE_DISABLE_AGENT_EDIT`.
+- **`/api/version` endpoint** — public, unauthenticated `GET`/`POST`
+  returning `{aztec_corpus_version, source_count}` from the
+  `AZTEC_CORPUS_VERSION` setting (default `v4.2.0`).
+  [`@aztec/mcp-server`](https://github.com/AztecProtocol/mcp-server)
+  reads this to gate against version drift between the MCP client and
+  the deployed corpus. POST exists because Cloudflare Access gates GET
+  on the apex hostname while letting POST `/api/*` through
+  unauthenticated.
+- **`/api/search` parity with `/stream`** — MCP search endpoint uses
+  the same global-rerank algorithm as `/stream`, the same
+  `_aztec_source_url` rewriting (so MCP consumers receive GitHub blob
+  / `docs.aztec.network` URLs instead of internal corpus paths), the
+  same primary-source-prepend fix, and an empty-apiref-chunk filter
+  that drops apiref chunks whose body is just a path-only file
+  heading.
+- **Custom settings** — `MCP_PROVISIONING_KEY`, `USER_ID_PEPPER`,
+  `AZTEC_SOURCE_IDS`, `AZTEC_CORPUS_VERSION`, `CORS_ALLOWED_ORIGINS`,
+  `EMBEDDINGS_DIMENSION`, `RAG_MAX_DOC_TOKENS`, `VITE_DISABLE_AGENT_EDIT`,
+  plus Discord-bot vars `DISCORD_TOKEN` and `NOIR_GUILD_IDS` (legacy
+  single-guild `NOIR_GUILD_ID` is still honored).
 
 ### Repository map (fork-specific)
 

@@ -9,8 +9,10 @@ the system prompt (`application/prompts/aztec_4_2_0_grounded.txt`), or the
 
 - `eval_retrieval.py` — runner. Two modes: `retriever` (direct probe of
   `ClassicRAG._get_data()`) and `stream` (full SSE roundtrip via `/stream`).
-- `golden_queries.json` — 15 hand-written queries that exercise each indexed
-  corpus plus a multi-turn follow-up that exercises the rephrase path.
+- `golden_queries.json` — 25 hand-written queries (each tagged `bucket` of
+  `identifier` / `concept` / `example`) that exercise each indexed corpus
+  plus a multi-turn follow-up that exercises the rephrase path. Filter
+  with `--bucket {identifier,concept,example,all}`.
 
 ## Running
 
