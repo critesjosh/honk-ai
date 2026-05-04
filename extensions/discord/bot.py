@@ -502,8 +502,34 @@ async def on_message(message):
     conversation = conversation_histories[user_id]
     conversation["history"].append({"prompt": content})
 
+    # Decide where to post. Outside DMs and existing threads, spin up a
+    # public thread on the original message so each Q&A is its own
+    # conversation surface and doesn't clutter the parent channel. The
+    # `discord.TextChannel` check intentionally excludes `Thread`,
+    # `DMChannel`, `ForumChannel`, etc. — only top-level guild text
+    # channels get a new thread.
+    target = message.channel
+    if isinstance(message.channel, discord.TextChannel):
+        raw_name = content.replace("\n", " ").replace("\r", " ").strip()
+        if not raw_name:
+            thread_name = "Aztec MCP question"
+        elif len(raw_name) > 80:
+            thread_name = raw_name[:77].rstrip() + "..."
+        else:
+            thread_name = raw_name
+        try:
+            target = await message.create_thread(
+                name=thread_name,
+                auto_archive_duration=1440,
+            )
+        except (discord.Forbidden, discord.HTTPException) as exc:
+            logger.warning(
+                "Could not create thread (falling back to parent channel): %s",
+                exc,
+            )
+
     # Show typing indicator while generating and sending the answer
-    async with message.channel.typing():
+    async with target.typing():
         try:
             response_doc = await generate_answer(
                 content,
@@ -512,7 +538,7 @@ async def on_message(message):
             )
         except (asyncio.TimeoutError, aiohttp.ClientError) as e:
             logger.error(f"Error generating answer: {e}")
-            await message.channel.send(
+            await target.send(
                 "Sorry, the request timed out. Please try again with a shorter message."
             )
             conversation["history"].pop()
@@ -524,7 +550,7 @@ async def on_message(message):
         formatted = format_for_discord(answer)
         answer_chunks = chunk_string(formatted)
         for chunk in answer_chunks:
-            await message.channel.send(chunk)
+            await target.send(chunk)
 
     conversation["history"][-1]["response"] = answer
     conversation["conversation_id"] = conversation_id
