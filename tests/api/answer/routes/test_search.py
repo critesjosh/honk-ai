@@ -91,6 +91,124 @@ class TestCoerceChunks:
 
 
 @pytest.mark.unit
+class TestIsEmptyApirefChunk:
+    """Defense-in-depth: docsgpt's ``noir_apiref`` ingest can produce
+    chunks for ``.nr`` files whose extracted public surface is empty —
+    the chunk body is then just the file path. These slip through the
+    chunker's <50-token filter (apiref is exempt). On the search side
+    we drop such chunks so the LLM consumer doesn't see file-path-only
+    semantic results that look indistinguishable from empty.
+    """
+
+    def _meta(self, **kwargs):
+        m = {"chunk_type": "apiref"}
+        m.update(kwargs)
+        return m
+
+    def test_non_apiref_chunks_pass_through(self, flask_app):
+        from application.api.answer.routes.search import SearchResource
+        with flask_app.app_context():
+            r = SearchResource()
+            assert r._is_empty_apiref_chunk("", {}) is False
+            assert r._is_empty_apiref_chunk(
+                "any short text", {"chunk_type": "regular"}
+            ) is False
+
+    def test_drops_apiref_chunk_with_only_path_heading(self, flask_app):
+        """The reproducer from the v1.21 dogfood test."""
+        from application.api.answer.routes.search import SearchResource
+        text = "\n\naztec-nr/aztec/src/context/note_existence_request.nr\n\n\n"
+        meta = self._meta(
+            source="aztec-nr/aztec/src/context/note_existence_request.nr",
+            filename="note_existence_request.nr.md",
+        )
+        with flask_app.app_context():
+            assert SearchResource()._is_empty_apiref_chunk(text, meta) is True
+
+    def test_drops_apiref_chunk_with_md_heading_only(self, flask_app):
+        from application.api.answer.routes.search import SearchResource
+        text = "# aztec-nr/aztec/src/foo.nr\n"
+        meta = self._meta(source="aztec-nr/aztec/src/foo.nr")
+        with flask_app.app_context():
+            assert SearchResource()._is_empty_apiref_chunk(text, meta) is True
+
+    def test_drops_apiref_chunk_with_md_heading_when_metadata_has_md_extension(self, flask_app):
+        """Regression for codex review: the metadata source has the
+        parser-friendliness ``.md`` extension while the rendered
+        heading does not. The earlier implementation tried to strip
+        the heading by string-comparing against metadata.source and
+        failed silently, leaving the heading line intact — at which
+        point the path-shaped predicate also failed because ``# ...``
+        contains whitespace. The new shape-only predicate catches it.
+        """
+        from application.api.answer.routes.search import SearchResource
+        text = "# aztec-nr/aztec/src/foo.nr\n"
+        meta = self._meta(
+            source="aztec-nr/aztec/src/foo.nr.md",  # ← .md extension
+            filename="foo.nr.md",
+        )
+        with flask_app.app_context():
+            assert SearchResource()._is_empty_apiref_chunk(text, meta) is True
+
+    def test_drops_completely_empty_apiref_chunk(self, flask_app):
+        from application.api.answer.routes.search import SearchResource
+        with flask_app.app_context():
+            r = SearchResource()
+            assert r._is_empty_apiref_chunk("", self._meta()) is True
+            assert r._is_empty_apiref_chunk("\n\n   \n", self._meta()) is True
+
+    def test_keeps_signature_only_apiref_chunk(self, flask_app):
+        """Critical: short-but-meaningful signature chunks must NOT
+        be dropped. ``pub fn poseidon(...)`` is a legitimate apiref
+        result — the filter must look at content shape, not length."""
+        from application.api.answer.routes.search import SearchResource
+        text = (
+            "# aztec-nr/aztec/src/hash.nr\n"
+            "pub fn poseidon(input: [Field; N]) -> Field\n"
+        )
+        meta = self._meta(source="aztec-nr/aztec/src/hash.nr")
+        with flask_app.app_context():
+            assert SearchResource()._is_empty_apiref_chunk(text, meta) is False
+
+    def test_keeps_apiref_chunk_with_doc_comment(self, flask_app):
+        from application.api.answer.routes.search import SearchResource
+        text = (
+            "aztec-nr/aztec/src/note.nr\n"
+            "\n"
+            "Note existence and non-nullification.\n"
+        )
+        meta = self._meta(
+            source="aztec-nr/aztec/src/note.nr",
+            filename="note.nr.md",
+        )
+        with flask_app.app_context():
+            assert SearchResource()._is_empty_apiref_chunk(text, meta) is False
+
+    def test_keeps_apiref_chunk_with_struct_signature(self, flask_app):
+        from application.api.answer.routes.search import SearchResource
+        text = (
+            "# aztec-nr/aztec/src/state_vars/private_set.nr\n"
+            "pub struct PrivateSet<T, Context>\n"
+        )
+        meta = self._meta(source="aztec-nr/aztec/src/state_vars/private_set.nr")
+        with flask_app.app_context():
+            assert SearchResource()._is_empty_apiref_chunk(text, meta) is False
+
+    def test_drops_apiref_chunk_where_every_line_is_path_shaped(self, flask_app):
+        """Some apiref outputs have multiple ``pub use`` re-exports that
+        render as path-shaped lines with no signatures. Treat as empty."""
+        from application.api.answer.routes.search import SearchResource
+        text = (
+            "# aztec-nr/aztec/src/lib.nr\n"
+            "aztec/src/foo/bar.nr\n"
+            "aztec/src/baz/qux.nr\n"
+        )
+        meta = self._meta(source="aztec-nr/aztec/src/lib.nr")
+        with flask_app.app_context():
+            assert SearchResource()._is_empty_apiref_chunk(text, meta) is True
+
+
+@pytest.mark.unit
 class TestSearchGlobal:
     """Properties of the new global-rerank ``_search_global`` method."""
 
@@ -222,6 +340,48 @@ class TestSearchGlobal:
         assert results[0]["source"].startswith("https://docs.aztec.network/")
         # the .md extension is stripped from the URL
         assert results[0]["source"].endswith("getting_started")
+
+    def test_search_global_drops_empty_apiref_chunks(self, flask_app):
+        """Integration: empty-apiref chunks must be dropped during
+        ``_search_global``, even when they're the highest-ranked
+        candidates. Otherwise the user sees file-path-only semantic
+        results that look indistinguishable from empty.
+        """
+        from application.api.answer.routes.search import SearchResource
+
+        # First (best) candidate is an empty apiref chunk; second is a
+        # signature-bearing apiref chunk. Without the filter the empty
+        # one would dominate the response.
+        pairs = [
+            (_make_doc(
+                "\n\naztec-nr/aztec/src/context/note_existence_request.nr\n\n",
+                {
+                    "source": "aztec-nr/aztec/src/context/note_existence_request.nr",
+                    "filename": "note_existence_request.nr.md",
+                    "chunk_type": "apiref",
+                },
+            ), 0.10),
+            (_make_doc(
+                "# aztec-nr/aztec/src/hash.nr\n"
+                "pub fn poseidon(input: [Field; N]) -> Field\n",
+                {
+                    "source": "aztec-nr/aztec/src/hash.nr",
+                    "filename": "hash.nr.md",
+                    "chunk_type": "apiref",
+                },
+            ), 0.30),
+        ]
+        vs = self._patched_vs(pairs)
+
+        with flask_app.app_context(), patch(
+            "application.api.answer.routes.search.VectorCreator.create_vectorstore",
+            return_value=vs,
+        ):
+            results = SearchResource()._search_global("q", ["src"], 5)
+
+        assert len(results) == 1
+        # Only the signature-bearing chunk survives
+        assert "poseidon" in results[0]["text"]
 
     def test_url_rewrite_aztec_nr_apiref(self, flask_app):
         """aztec-nr apiref paths get rewritten to GitHub at v4.2.0,
