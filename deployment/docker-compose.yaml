@@ -13,6 +13,27 @@ services:
     depends_on:
       - backend
 
+  # Dev smoke-test for the /ask public bundle. Built like prod (nginx
+  # static) since vite dev under a `base` prefix differs enough from
+  # the production serve that a "dev mode" build wouldn't catch the
+  # bugs we care about. Hits backend at http://localhost:7091.
+  frontend-ask:
+    build:
+      context: ../frontend-ask
+      dockerfile: Dockerfile.prod
+      args:
+        VITE_ASK_AZTEC_AGENT_KEY: ${VITE_ASK_AZTEC_AGENT_KEY:-}
+        VITE_ASK_AZTEC_API_BASE: http://localhost:7091
+        # Dev path is cross-origin: bundle on :5174, backend on :7091.
+        # Allow both in CSP connect-src so the browser doesn't block
+        # the /stream POST. Prod build leaves this at the default
+        # ('self' only) since /ask and /stream are same-origin via Caddy.
+        ASK_CONNECT_SRC: "'self' http://localhost:7091"
+    ports:
+      - "5174:80"
+    depends_on:
+      - backend
+
   backend:
     user: root
     build: ../application

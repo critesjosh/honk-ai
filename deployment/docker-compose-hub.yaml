@@ -35,6 +35,7 @@ services:
     depends_on:
       - backend
       - frontend
+      - frontend-ask
 
   frontend:
     build:
@@ -47,6 +48,22 @@ services:
     image: aztec/docsgpt-fe:${IMAGE_TAG:-0.17.0-aztec.1}
     restart: unless-stopped
     # No host port; Caddy reaches frontend:80 on the internal network.
+    depends_on:
+      - backend
+
+  # Public-facing /ask landing page. Separate Vite/React bundle from the
+  # admin frontend; same origin via Caddy `handle /ask/*`. Bearer key
+  # baked at build time — see scripts/db/create_ask_aztec_public_agent.py
+  # for how the agent is provisioned with hard request/token caps.
+  frontend-ask:
+    build:
+      context: ../frontend-ask
+      dockerfile: Dockerfile.prod
+      args:
+        VITE_ASK_AZTEC_AGENT_KEY: ${VITE_ASK_AZTEC_AGENT_KEY:?VITE_ASK_AZTEC_AGENT_KEY must be set in .env (run scripts/db/create_ask_aztec_public_agent.py first)}
+    image: aztec/docsgpt-ask:${IMAGE_TAG:-0.17.0-aztec.1}
+    restart: unless-stopped
+    # No host port; Caddy reaches frontend-ask:80 on the internal network.
     depends_on:
       - backend
 
