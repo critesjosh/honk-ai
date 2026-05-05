@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { StreamSource } from "../lib/stream";
 
 // Cap on visible citations. The backend already dedupes by rewritten
@@ -38,11 +38,32 @@ function shortLabel(s: StreamSource): string {
 
 export function SourcesList({ sources }: { sources: StreamSource[] }) {
   const [active, setActive] = useState<number | null>(null);
+
+  // Click-outside-to-dismiss. The chip button and the popover both
+  // stop click propagation, so any click that bubbles up to document
+  // is by definition outside both — that's the signal to close.
+  // Switching to another chip is handled by the button's own onClick
+  // (it stops propagation, so this handler doesn't fire) and overwrites
+  // `active` to the new index. Escape key dismissal is also wired up.
+  useEffect(() => {
+    if (active === null) return;
+    const close = () => setActive(null);
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setActive(null);
+    };
+    document.addEventListener("click", close);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("click", close);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [active]);
+
   if (!sources.length) return null;
   const visible = sources.slice(0, MAX_SOURCES_DISPLAYED);
 
   return (
-    <div className="msg__sources" onClick={(e) => e.stopPropagation()}>
+    <div className="msg__sources">
       <span className="msg__sources-label">Sources</span>
       {visible.map((s, idx) => {
         const num = idx + 1;
