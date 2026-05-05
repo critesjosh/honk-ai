@@ -133,6 +133,8 @@ docker compose -f deployment/docker-compose-hub.yaml --env-file .env exec postgr
 
 For programmatic clients (the Discord bot, CI), issue a **Service Token** in Cloudflare Access so they can pass the `CF-Access-Client-Id` and `CF-Access-Client-Secret` headers without SSO.
 
+**If you'll deploy the public `/ask` page** (step 7 below), add an Access **Bypass** policy on the same application matching path `/ask` and `/ask/*` (Action: Bypass, Include: Everyone). Without that bypass, anonymous visitors hitting `https://$PUBLIC_HOSTNAME/ask/` are redirected to SSO. The existing POST `/api/*` and `/stream` bypass that already lets the docs widget call the bot covers the API surface — no further bypass needed there.
+
 ### 5. Re-ingest the Aztec corpus
 
 This is a greenfield install — no Mongo data is carried forward. Re-ingest via the stock upload API:
@@ -168,7 +170,45 @@ docker compose -f deployment/docker-compose-hub.yaml exec postgres \
 
 Copy the relevant IDs into `.env` as `AZTEC_SOURCE_IDS=<uuid-1>,<uuid-2>,…` and restart backend + worker. The first UUID becomes `agents.source_id`; the rest go into `agents.extra_source_ids`.
 
-### 7. Staging → production cutover
+### 7. (Optional) Provision the public `/ask` page
+
+The `/ask` page is a separate Vite/React bundle (`frontend-ask/`) served at `/ask` on the apex host as an anonymous, RAG-only chat surface. It needs (a) a dedicated agent with hard guardrails and (b) the agent's bearer key baked into the build at compile time.
+
+```bash
+# 7a. Mint (or refresh) the public-web agent. The script is not in
+# the backend image; bind-mount the host scripts/ directory + put
+# /app on PYTHONPATH so it can import application.core.settings.
+docker compose --env-file .env -f deployment/docker-compose-hub.yaml run --rm \
+  -v "$(pwd)/scripts:/app/scripts:ro" \
+  -e PYTHONPATH=/app \
+  -e ASK_AZTEC_AGENT_KEY="$(openssl rand -hex 32)" \
+  -e ASK_AZTEC_PROMPT_ID="0780959b-3c18-4ad9-8284-691665233a6f" \
+  backend python scripts/db/create_ask_aztec_public_agent.py
+# Captures the printed key. The script is idempotent on
+# (user_id='public-web', name='Ask Aztec — public web') — re-running
+# refreshes source list / caps / prompt but PRESERVES the existing
+# key so deployed bundles keep working.
+
+# 7b. Add the printed key to .env. The hub compose's frontend-ask
+# build arg is required-var-checked, so a missing key fails the build.
+echo 'VITE_ASK_AZTEC_AGENT_KEY=<paste key here>' >> .env
+
+# 7c. Build + recreate the frontend-ask service. Caddy must also be
+# recreated so it picks up the @ask matcher block on first deploy.
+docker compose --env-file .env -f deployment/docker-compose-hub.yaml build frontend-ask
+docker compose --env-file .env -f deployment/docker-compose-hub.yaml up -d --force-recreate --no-deps frontend-ask caddy
+```
+
+Operator follow-ups (out-of-band, in the Cloudflare Zero Trust dashboard):
+
+1. **Access Bypass for `/ask`** — see step 4 above. Without it, `GET /ask/*` redirects to SSO.
+2. **WAF rate limits on `POST /stream`** — the bearer key is public, so daily DB caps (10k req / 5M tok) won't stop fast burn. Recommended:
+   - ~6 req/min per `ip.src` (Managed Challenge or 10-min block).
+   - ~30–50 req/hour per `ip.src` (1-hour block).
+   - 32–64 KB body cap to bound history payload abuse.
+3. **Rotate the key** by editing `agents.key` in Postgres directly (the provisioner deliberately preserves the existing key on re-run; rotation is a deliberate UPDATE so an accidental script invocation doesn't break every deployed bundle).
+
+### 8. Staging → production cutover
 
 Run the full deployment on a staging hostname first (e.g., `docs-staging.yourcompany.com`). Verify:
 
@@ -179,6 +219,8 @@ Run the full deployment on a staging hostname first (e.g., `docs-staging.yourcom
 - [ ] After login, UI loads, an agent can be created, a row lands in `agents`.
 - [ ] A doc uploaded via `/api/upload` creates a `sources` row and embeddings land in the `documents` table.
 - [ ] Discord `/mcp-key` command returns a key; a corresponding `agents` row has the expected `mcp_provider = 'discord'`.
+- [ ] Discord `@`-mention reply includes a `-#` "Sources" footer with up to 5 cited URLs.
+- [ ] (If `/ask` is deployed) `https://$PUBLIC_HOSTNAME/ask/` loads anonymously without SSO redirect; age gate appears on first visit; a starter prompt streams an answer with rendered markdown and source chips.
 - [ ] `nmap` from an external host: only 443 open (+ 80 if Caddy does HTTP→HTTPS redirect).
 - [ ] Retrieval quality check: ask a question you know the answer to from the Aztec corpus, confirm a sensible answer.
 
@@ -286,6 +328,11 @@ DocsGPT/
     Dockerfile                          # dev (Vite dev server)
     Dockerfile.prod                     # prod (Vite build + nginx static)
     nginx.conf                          # SPA fallback + cache headers
+  frontend-ask/
+    Dockerfile.prod                     # prod public /ask bundle (Vite + nginx)
+    nginx.conf                          # SPA fallback under /ask + CSP
+    src/                                # React/TS, parchment+chartreuse design
+    public/favicon.png                  # Aztec symbol favicon
   application/
     Dockerfile                          # backend + worker image (production-grade)
     inputs/                             # raw uploaded files (named volume in prod)
@@ -298,6 +345,10 @@ DocsGPT/
     storage/db/                         # SQLAlchemy Core models + repositories
     api/internal/routes.py              # create_mcp_key endpoint
   extensions/
-    discord/bot.py                      # /mcp-key, /forget-me, @-mention, thread-context
+    discord/bot.py                      # /mcp-key, /forget-me, @-mention, thread-context, citation footer
     mcp-server/                         # README pointer to @aztec/mcp-server (in-repo TS server was removed)
+  scripts/db/
+    init_postgres.py                    # alembic upgrade head wrapper
+    create_ask_aztec_public_agent.py    # provisioner for the /ask bearer-key agent
+    verify_pseudonymization.sql         # post-migration sentinels for Discord pseudonyms
 ```
