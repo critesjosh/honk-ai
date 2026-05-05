@@ -25,10 +25,12 @@
   MCP API key. `@`-mention the bot — user-facing name **Honk AI** — in
   any channel (or DM it) to chat directly. When mentioned in a top-level
   guild channel the bot opens a public thread on your message and
-  replies inside; in existing threads or DMs it replies in place.
-  Responses are formatted for Discord (no Mermaid, no Markdown tables)
-  via a custom system prompt. `/forget-me` deletes all data stored
-  under your Discord pseudonym.
+  replies inside; in existing threads (forum posts, threads-on-message)
+  it replies in place AND reads up to 30 prior thread messages so it
+  can answer questions tagged on someone else's discussion. In DMs it
+  replies in place with no thread context. Responses are formatted for
+  Discord (no Mermaid, no Markdown tables) via a custom system prompt.
+  `/forget-me` deletes all data stored under your Discord pseudonym.
 - **MCP clients** (Claude Desktop, Claude Code, Codex) — paste the key from
   `/mcp-key` with `API_URL=https://aztec.adjacentpossible.dev`. The bot
   response includes ready-to-paste config snippets for each client and
