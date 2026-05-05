@@ -19,13 +19,14 @@ logger = logging.getLogger(__name__)
 
 # Bot configuration
 TOKEN = os.getenv("DISCORD_TOKEN")
-PREFIX = '!'  # Command prefix
+PREFIX = "!"  # Command prefix
 BASE_API_URL = os.getenv("API_BASE", "https://gptcloud.arc53.com")
 API_URL = BASE_API_URL + "/stream"
 API_KEY = os.getenv("API_KEY")
 
 # MCP key provisioning
 MCP_PROVISIONING_KEY = os.getenv("MCP_PROVISIONING_KEY", "")
+
 
 # Thread-context awareness: when @-mentioned inside an existing thread,
 # pull prior thread messages so the bot can answer questions tagged on
@@ -46,9 +47,7 @@ def _env_int(name: str, default: int, min_value: int = 0) -> int:
 
 
 THREAD_CONTEXT_MSG_LIMIT = _env_int("DISCORD_THREAD_CONTEXT_LIMIT", 30)
-MAX_THREAD_CONTEXT_CHARS = _env_int(
-    "DISCORD_THREAD_CONTEXT_MAX_CHARS", 12000, min_value=512
-)
+MAX_THREAD_CONTEXT_CHARS = _env_int("DISCORD_THREAD_CONTEXT_MAX_CHARS", 12000, min_value=512)
 MAX_THREAD_MSG_CHARS = 1500
 MAX_STARTER_CHARS = 4000
 MAX_SPEAKER_LABEL_CHARS = 64
@@ -91,9 +90,7 @@ NOIR_GUILD_IDS: list[int] = _parse_guild_ids()
 # (set on the hub compose) and construct the https URL; fall back to a
 # placeholder so the instructions still read sensibly in dev.
 _public_host = os.getenv("PUBLIC_HOSTNAME", "").strip()
-MCP_PUBLIC_URL = (
-    f"https://{_public_host}" if _public_host else "https://your-docsgpt.example.com"
-)
+MCP_PUBLIC_URL = f"https://{_public_host}" if _public_host else "https://your-docsgpt.example.com"
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -253,9 +250,7 @@ def _speaker_label(msg: discord.Message, bot_user_id: int) -> str:
     """
     if getattr(msg.author, "id", None) == bot_user_id:
         return "Honk AI"
-    raw = getattr(msg.author, "display_name", None) or getattr(
-        msg.author, "name", "user"
-    )
+    raw = getattr(msg.author, "display_name", None) or getattr(msg.author, "name", "user")
     sanitized = _strip_discord_decorations(str(raw))
     sanitized = re.sub(r"[\s\r\n]+", " ", sanitized).strip()
     if not sanitized:
@@ -265,9 +260,7 @@ def _speaker_label(msg: discord.Message, bot_user_id: int) -> str:
     return sanitized
 
 
-def _format_speaker_line(
-    msg: discord.Message, bot_user_id: int
-) -> Optional[str]:
+def _format_speaker_line(msg: discord.Message, bot_user_id: int) -> Optional[str]:
     """Return ``"Speaker: body"`` for a thread message, or ``None`` if
     the message has nothing meaningful to quote."""
     raw = _strip_discord_decorations((msg.content or "").strip())
@@ -378,9 +371,7 @@ def _build_thread_context_block(
         if starter_body:
             starter_body = _truncate_for_context(starter_body, MAX_STARTER_CHARS)
             starter_author = _speaker_label(starter, bot_user_id)
-            formatted_starter = (
-                f"--- Original question (by {starter_author}) ---\n{starter_body}"
-            )
+            formatted_starter = f"--- Original question (by {starter_author}) ---\n{starter_body}"
 
     formatted_recent: list[str] = []
     for msg in recent:
@@ -396,9 +387,7 @@ def _build_thread_context_block(
         "use only to disambiguate references in the new question.)"
     )
 
-    def assemble(
-        starter_block: Optional[str], thread_lines: list[str]
-    ) -> str:
+    def assemble(starter_block: Optional[str], thread_lines: list[str]) -> str:
         sections: list[str] = [preamble, "", wrapper_intro, ""]
         if starter_block:
             sections.append(starter_block)
@@ -421,9 +410,7 @@ def _build_thread_context_block(
         # to the "question wins, context omitted" branch below.
         budget = MAX_THREAD_CONTEXT_CHARS - len(preamble) - 200
         if budget >= 200:
-            formatted_starter = _truncate_for_context(
-                formatted_starter, budget
-            )
+            formatted_starter = _truncate_for_context(formatted_starter, budget)
             output = assemble(formatted_starter, formatted_recent)
         else:
             formatted_starter = None
@@ -437,16 +424,16 @@ def _build_thread_context_block(
 
 def format_for_discord(text):
     """Converts standard Markdown to Discord-friendly formatting."""
-    lines = text.split('\n')
+    lines = text.split("\n")
     formatted = []
     for line in lines:
         # Convert headers to bold (Discord doesn't render # headers)
-        header_match = re.match(r'^(#{1,3})\s+(.*)', line)
+        header_match = re.match(r"^(#{1,3})\s+(.*)", line)
         if header_match:
-            formatted.append(f'**{header_match.group(2)}**')
+            formatted.append(f"**{header_match.group(2)}**")
         else:
             formatted.append(line)
-    return '\n'.join(formatted)
+    return "\n".join(formatted)
 
 
 def chunk_string(text, max_length=2000):
@@ -460,19 +447,19 @@ def chunk_string(text, max_length=2000):
         split_at = -1
 
         # Look for a double newline near the limit (paragraph break)
-        idx = text.rfind('\n\n', 0, max_length)
+        idx = text.rfind("\n\n", 0, max_length)
         if idx > max_length // 2:
             split_at = idx
 
         # If no good paragraph break, try a single newline
         if split_at == -1:
-            idx = text.rfind('\n', 0, max_length)
+            idx = text.rfind("\n", 0, max_length)
             if idx > max_length // 2:
                 split_at = idx
 
         # Last resort: split at a space
         if split_at == -1:
-            idx = text.rfind(' ', 0, max_length)
+            idx = text.rfind(" ", 0, max_length)
             if idx > 0:
                 split_at = idx
             else:
@@ -481,22 +468,23 @@ def chunk_string(text, max_length=2000):
         chunk = text[:split_at]
 
         # If we're splitting inside a code block, close and reopen it
-        open_blocks = chunk.count('```')
+        open_blocks = chunk.count("```")
         if open_blocks % 2 == 1:
             # Find the language hint from the last opening ```
-            last_open = chunk.rfind('```')
-            lang_match = re.match(r'```(\w*)', chunk[last_open:])
-            lang = lang_match.group(1) if lang_match else ''
-            chunk += '\n```'
-            text = f'```{lang}\n' + text[split_at:].lstrip('\n')
+            last_open = chunk.rfind("```")
+            lang_match = re.match(r"```(\w*)", chunk[last_open:])
+            lang = lang_match.group(1) if lang_match else ""
+            chunk += "\n```"
+            text = f"```{lang}\n" + text[split_at:].lstrip("\n")
         else:
-            text = text[split_at:].lstrip('\n')
+            text = text[split_at:].lstrip("\n")
 
         chunks.append(chunk)
 
     if text:
         chunks.append(text)
     return chunks
+
 
 def split_string(input_str):
     """Detects a bot user mention anywhere in the message.
@@ -509,11 +497,12 @@ def split_string(input_str):
     backend intact. Role mentions are intentionally NOT a trigger —
     only direct user mentions count.
     """
-    pattern = r'<@!?{0}>'.format(bot.user.id)
+    pattern = r"<@!?{0}>".format(bot.user.id)
     if not re.search(pattern, input_str):
         return None, input_str
-    content = re.sub(pattern, '', input_str).strip()
+    content = re.sub(pattern, "", input_str).strip()
     return str(bot.user.id), content
+
 
 @bot.event
 async def setup_hook():
@@ -548,9 +537,7 @@ async def setup_hook():
                 await bot.tree.sync(guild=guild_obj)
                 succeeded.append(gid)
             except discord.DiscordException as exc:
-                logger.warning(
-                    "Failed to sync slash commands to guild %s: %s", gid, exc
-                )
+                logger.warning("Failed to sync slash commands to guild %s: %s", gid, exc)
                 failed.append(gid)
 
         if succeeded:
@@ -563,8 +550,7 @@ async def setup_hook():
             )
         else:
             logger.error(
-                "Slash command sync failed for ALL configured guilds %s; "
-                "leaving any existing registrations untouched",
+                "Slash command sync failed for ALL configured guilds %s; leaving any existing registrations untouched",
                 NOIR_GUILD_IDS,
             )
     else:
@@ -574,7 +560,7 @@ async def setup_hook():
 
 @bot.event
 async def on_ready():
-    print(f'{bot.user.name} has connected to Discord!')
+    print(f"{bot.user.name} has connected to Discord!")
 
 
 @bot.tree.command(
@@ -622,8 +608,7 @@ async def mcp_key(interaction: discord.Interaction):
                     error_text = await resp.text()
                     logger.error(f"/get-api-key failed: {resp.status} {error_text}")
                     await interaction.followup.send(
-                        "Sorry, there was an error generating your key. "
-                        "Please try again later.",
+                        "Sorry, there was an error generating your key. Please try again later.",
                         ephemeral=True,
                     )
                     return
@@ -631,8 +616,7 @@ async def mcp_key(interaction: discord.Interaction):
     except (aiohttp.ClientError, asyncio.TimeoutError) as e:
         logger.error(f"/get-api-key connection error: {e}")
         await interaction.followup.send(
-            "Sorry, the service is temporarily unavailable. "
-            "Please try again later.",
+            "Sorry, the service is temporarily unavailable. Please try again later.",
             ephemeral=True,
         )
         return
@@ -641,8 +625,7 @@ async def mcp_key(interaction: discord.Interaction):
 
     # Message 1: The key (separate from config to reduce screenshot disclosure risk)
     await interaction.followup.send(
-        f"**Your Aztec MCP API Key:**\n```\n{api_key}\n```\n"
-        "This key is personal to you. Do not share it.",
+        f"**Your Aztec MCP API Key:**\n```\n{api_key}\n```\nThis key is personal to you. Do not share it.",
         ephemeral=True,
     )
 
@@ -734,8 +717,7 @@ async def forget_me(interaction: discord.Interaction):
                     error_text = await resp.text()
                     logger.error(f"/forget-me failed: {resp.status} {error_text}")
                     await interaction.followup.send(
-                        "Sorry, there was an error erasing your data. "
-                        "Please try again later.",
+                        "Sorry, there was an error erasing your data. Please try again later.",
                         ephemeral=True,
                     )
                     return
@@ -743,8 +725,7 @@ async def forget_me(interaction: discord.Interaction):
     except (aiohttp.ClientError, asyncio.TimeoutError) as e:
         logger.error(f"/forget-me connection error: {e}")
         await interaction.followup.send(
-            "Sorry, the service is temporarily unavailable. "
-            "Please try again later.",
+            "Sorry, the service is temporarily unavailable. Please try again later.",
             ephemeral=True,
         )
         return
@@ -755,39 +736,77 @@ async def forget_me(interaction: discord.Interaction):
     deleted = data.get("deleted", {})
     summary_lines = ["**Done.** Your Honk AI data has been erased:"]
     if deleted.get("agents"):
-        summary_lines.append(
-            f"• MCP API key revoked ({deleted['agents']} agent record)"
-        )
+        summary_lines.append(f"• MCP API key revoked ({deleted['agents']} agent record)")
     if deleted.get("conversations"):
-        summary_lines.append(
-            f"• {deleted['conversations']} conversation(s) deleted"
-        )
+        summary_lines.append(f"• {deleted['conversations']} conversation(s) deleted")
     if not deleted.get("agents") and not deleted.get("conversations"):
         summary_lines.append("• No data was found for your Discord ID.")
-    summary_lines.append(
-        "\nYou can run `/mcp-key` again any time to provision a fresh key."
-    )
+    summary_lines.append("\nYou can run `/mcp-key` again any time to provision a fresh key.")
     await interaction.followup.send("\n".join(summary_lines), ephemeral=True)
 
 
+# Number of cited source URLs to show in the footer below each Honk AI
+# reply. The backend already dedupes by rewritten public URL and caps
+# at 10; we surface fewer here so the footer stays readable on mobile
+# Discord and within the 2000-char message limit.
+_DISCORD_FOOTER_SOURCE_LIMIT = 5
+
+
+def _format_sources_footer(sources):
+    """Render up to N source URLs as a quiet 'Sources' footer block.
+
+    Wraps each URL in ``<...>`` so Discord does NOT render an embed
+    preview card for every link — without this the bot's reply would
+    grow several inline cards underneath, drowning the answer text.
+    Uses ``-#`` (Discord subtext) so the block visually reads as
+    metadata, not part of the answer.
+    """
+    if not sources:
+        return None
+    urls: list[str] = []
+    for src in sources:
+        if not isinstance(src, dict):
+            continue
+        url = src.get("source")
+        if isinstance(url, str) and url.startswith(("http://", "https://")):
+            urls.append(url)
+        if len(urls) >= _DISCORD_FOOTER_SOURCE_LIMIT:
+            break
+    if not urls:
+        return None
+    lines = ["-# **Sources**"]
+    for i, url in enumerate(urls, start=1):
+        lines.append(f"-# {i}. <{url}>")
+    return "\n".join(lines)
+
+
 async def generate_answer(question, messages, conversation_id):
-    """Generates an answer using the streaming API endpoint."""
+    """Generates an answer using the streaming API endpoint.
+
+    Returns a dict with ``answer``, ``conversation_id``, and
+    ``sources`` (the latest ``{type: "source"}`` SSE frame's payload,
+    a list of ``{source, title, text}`` dicts with public URLs
+    already rewritten by the backend's ``_aztec_source_url``).
+    """
     payload = {
         "question": question,
         "api_key": API_KEY,
         "history": json.dumps(messages),
-        "conversation_id": conversation_id
+        "conversation_id": conversation_id,
     }
-    headers = {
-        "Content-Type": "application/json; charset=utf-8"
-    }
+    headers = {"Content-Type": "application/json; charset=utf-8"}
     timeout = aiohttp.ClientTimeout(total=180)
     answer = ""
     new_conversation_id = conversation_id
+    sources: list = []
     async with aiohttp.ClientSession(timeout=timeout) as session:
         async with session.post(API_URL, json=payload, headers=headers) as resp:
             if resp.status != 200:
-                return {"answer": "Sorry, I couldn't find an answer.", "conversation_id": None}
+                return {
+                    "answer": "Sorry, I couldn't find an answer.",
+                    "conversation_id": None,
+                    "sources": [],
+                }
             async for line in resp.content:
                 line = line.decode("utf-8").strip()
                 if not line.startswith("data: "):
@@ -801,12 +820,25 @@ async def generate_answer(question, messages, conversation_id):
                     answer += event.get("answer", "")
                 elif event_type == "id":
                     new_conversation_id = event.get("id")
-    return {"answer": answer or "Sorry, I couldn't find an answer.", "conversation_id": new_conversation_id}
+                elif event_type == "source":
+                    incoming = event.get("source")
+                    # The backend emits a single source frame per turn
+                    # (or none if retrieval was empty). Replace rather
+                    # than append so a re-emission can't duplicate.
+                    if isinstance(incoming, list):
+                        sources = incoming
+    return {
+        "answer": answer or "Sorry, I couldn't find an answer.",
+        "conversation_id": new_conversation_id,
+        "sources": sources,
+    }
+
 
 @bot.command(name="start")
 async def start(ctx):
     """Handles the /start command."""
     await ctx.send(f"Hi {ctx.author.mention}! How can I assist you today?")
+
 
 @bot.command(name="reset")
 async def reset(ctx):
@@ -815,6 +847,7 @@ async def reset(ctx):
     if user_id in conversation_histories:
         del conversation_histories[user_id]
     await ctx.send(f"Conversation reset, {ctx.author.mention}. Ask me anything!")
+
 
 @bot.command(name="custom_help")
 async def custom_help_command(ctx):
@@ -827,6 +860,7 @@ async def custom_help_command(ctx):
         "You can also mention me or send a direct message to ask a question!"
     )
     await ctx.send(help_text)
+
 
 @bot.event
 async def on_message(message):
@@ -880,17 +914,13 @@ async def on_message(message):
         # parallelism — out of scope for this change.
         thread = None
         user_id = message.author.id
-        conversation = conversation_histories.setdefault(
-            user_id, {"history": [], "conversation_id": None}
-        )
+        conversation = conversation_histories.setdefault(user_id, {"history": [], "conversation_id": None})
         lock_cm = None
 
     async def _do_answer() -> None:
         if in_thread and THREAD_CONTEXT_MSG_LIMIT > 0:
             try:
-                starter, recent = await _fetch_thread_context(
-                    thread, message, THREAD_CONTEXT_MSG_LIMIT
-                )
+                starter, recent = await _fetch_thread_context(thread, message, THREAD_CONTEXT_MSG_LIMIT)
             except discord.HTTPException as exc:
                 logger.error(
                     "Unexpected HTTPException fetching thread %s context: %s",
@@ -945,19 +975,27 @@ async def on_message(message):
                     )
                 except (asyncio.TimeoutError, aiohttp.ClientError) as e:
                     logger.error(f"Error generating answer: {e}")
-                    await target.send(
-                        "Sorry, the request timed out. Please try again with a shorter message."
-                    )
+                    await target.send("Sorry, the request timed out. Please try again with a shorter message.")
                     conversation["history"].pop()
                     return
 
                 answer = response_doc["answer"]
                 conversation_id = response_doc["conversation_id"]
+                sources = response_doc.get("sources", [])
 
                 formatted = format_for_discord(answer)
                 answer_chunks = chunk_string(formatted)
                 for chunk in answer_chunks:
                     await target.send(chunk)
+
+                # Send the citation footer as a separate message AFTER
+                # all answer chunks. Sent separately (rather than
+                # appended pre-chunking) so a long answer that fills
+                # the 2000-char limit can't truncate / split the
+                # footer mid-list.
+                footer = _format_sources_footer(sources)
+                if footer:
+                    await target.send(footer)
         except (discord.Forbidden, discord.NotFound, discord.HTTPException) as exc:
             # Thread archived/locked/deleted between fetch and reply,
             # or the bot lost Send permission — log + drop the queued
@@ -967,10 +1005,7 @@ async def on_message(message):
                 getattr(target, "id", "?"),
                 exc,
             )
-            if (
-                conversation["history"]
-                and "response" not in conversation["history"][-1]
-            ):
+            if conversation["history"] and "response" not in conversation["history"][-1]:
                 conversation["history"].pop()
             return
 
@@ -984,5 +1019,6 @@ async def on_message(message):
             await _do_answer()
     else:
         await _do_answer()
+
 
 bot.run(TOKEN)
