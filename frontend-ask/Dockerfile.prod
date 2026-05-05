@@ -17,7 +17,14 @@ COPY . .
 RUN npm run build
 
 FROM nginx:alpine
+# CSP `connect-src` whitelist. Default is same-origin only, which is
+# correct for prod where the bundle is served at /ask on the apex
+# host and calls /stream on the same origin. Override at build time
+# for cross-origin dev smoke tests, e.g.:
+#   --build-arg ASK_CONNECT_SRC="'self' http://localhost:7091"
+ARG ASK_CONNECT_SRC="'self'"
 COPY --from=build /app/dist /usr/share/nginx/html/ask
 COPY nginx.conf /etc/nginx/conf.d/default.conf
+RUN sed -i "s|__ASK_CONNECT_SRC__|${ASK_CONNECT_SRC}|g" /etc/nginx/conf.d/default.conf
 EXPOSE 80
 CMD ["nginx", "-g", "daemon off;"]

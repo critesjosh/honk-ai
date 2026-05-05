@@ -1021,4 +1021,9 @@ async def on_message(message):
         await _do_answer()
 
 
-bot.run(TOKEN)
+# Only start the gateway when this module is invoked as the entry
+# point. Tests import `_format_sources_footer` and friends from this
+# file; without this guard, importing the module would log in to
+# Discord and hang the test session.
+if __name__ == "__main__":
+    bot.run(TOKEN)
