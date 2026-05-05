@@ -1,6 +1,14 @@
 import { useState } from "react";
 import type { StreamSource } from "../lib/stream";
 
+// Cap on visible citations. The backend already dedupes by rewritten
+// public URL and emits up to 10 sources (`_MAX_SOURCES_EMITTED` in
+// api/answer/routes/base.py); we clip to the top 5 here because the
+// citation block is meant to be a quick verification surface, not an
+// exhaustive bibliography. Order is preserved (descending relevance
+// per pgvector distance from the global rerank).
+const MAX_SOURCES_DISPLAYED = 5;
+
 // Renders a numbered chip per source, click → poster popover (matches
 // the design's `.cite-pop` styling). NOTE: this is intentionally a
 // post-message Sources block, not inline `[n]` markers in prose. The
@@ -31,11 +39,12 @@ function shortLabel(s: StreamSource): string {
 export function SourcesList({ sources }: { sources: StreamSource[] }) {
   const [active, setActive] = useState<number | null>(null);
   if (!sources.length) return null;
+  const visible = sources.slice(0, MAX_SOURCES_DISPLAYED);
 
   return (
     <div className="msg__sources" onClick={(e) => e.stopPropagation()}>
       <span className="msg__sources-label">Sources</span>
-      {sources.map((s, idx) => {
+      {visible.map((s, idx) => {
         const num = idx + 1;
         const isActive = active === idx;
         return (
