@@ -45,6 +45,12 @@ _MAX_SOURCES_EMITTED = 10
 # Widget renders `source.source` as the <a href>, so we rewrite that field
 # in-place before emitting.
 _AZTEC_DOCS_BASE = "https://docs.aztec.network/developers/docs"
+# Top-level developer docs (overview, ai_tooling, getting_started_*) live
+# directly under /developers/ on the rendered site, NOT /developers/docs/.
+_AZTEC_DEV_TOP_BASE = "https://docs.aztec.network/developers"
+# Network docs (sequencer/prover/operator content) are rendered under
+# /operate/ on the site even though the corpus prefix is `operators/`.
+_AZTEC_OPERATE_BASE = "https://docs.aztec.network/operate"
 _AZTEC_GITHUB_BASE = (
     "https://github.com/AztecProtocol/aztec-packages/blob/v4.2.0"
 )
@@ -56,6 +62,15 @@ _NOIR_GITHUB_BASE = (
 
 # Corpus prefix → GitHub repo prefix. First match wins, so put the more
 # specific prefixes before their catch-alls.
+#
+# Note on what is NOT here: `version-v4.2.0/` and `version-v4.2.0/operators/`
+# used to fall through to GitHub at `docs/developer_versioned_docs/version-v4.2.0/`
+# and `docs/network_versioned_docs/version-v4.2.0/operators/`, but those
+# folders don't exist at the literal v4.2.0 tag (the tag has them under
+# `version-v4.1.0-rc.2`, since the docs version snapshot is taken from a
+# moving branch). All such markdown content is rendered on docs.aztec.network
+# anyway, so we route it there directly via the dedicated rules in
+# `_aztec_source_url` — never via GitHub.
 _SOURCE_TO_REPO_PREFIX: List[Tuple[str, str]] = [
     ("end-to-end/",               "yarn-project/end-to-end/src/"),
     ("cli/",                      "yarn-project/cli/src/"),
@@ -69,13 +84,25 @@ _SOURCE_TO_REPO_PREFIX: List[Tuple[str, str]] = [
     # live under docs/static/typescript-api/testnet/ (the folder was renamed
     # to mainnet/ on a later release).
     ("typescript-api/",           "docs/static/typescript-api/testnet/"),
-    # Network Docs live under docs/network_versioned_docs in the repo; they
-    # all sit under the `operators/` subdirectory in the versioned tree.
-    ("version-v4.2.0/operators/", "docs/network_versioned_docs/version-v4.2.0/operators/"),
-    # All remaining version-v4.2.0/* content (developer docs top-level files
-    # that aren't rendered on docs.aztec.network) falls into developer_versioned_docs.
-    ("version-v4.2.0/",           "docs/developer_versioned_docs/version-v4.2.0/"),
 ]
+
+
+def _strip_doc_ext(path: str) -> str:
+    """Strip a markdown extension if present. Used for rendered-docs URLs."""
+    for ext in (".mdx", ".md"):
+        if path.endswith(ext):
+            return path[: -len(ext)]
+    return path
+
+
+def _strip_index_suffix(path: str) -> str:
+    """Docusaurus serves ``foo/index`` as ``foo`` on the rendered site —
+    drop the trailing ``/index`` segment so the URL doesn't 404."""
+    if path == "index":
+        return ""
+    if path.endswith("/index"):
+        return path[: -len("/index")]
+    return path
 
 
 def _aztec_source_url(source_path: str) -> str:
@@ -83,18 +110,39 @@ def _aztec_source_url(source_path: str) -> str:
 
     Unknown patterns fall back to the original string; the widget will
     still render the title — just without a working href.
+
+    Routing summary:
+      * Rendered Aztec developer docs under `docs/`  → docs.aztec.network/developers/docs/<rest>
+      * Top-level developer docs (overview, etc.)     → docs.aztec.network/developers/<rest>
+      * Network / operator docs                       → docs.aztec.network/operate/operators/<rest>
+      * Noir language docs + stdlib                   → github.com/noir-lang/noir at pinned commit
+      * Aztec source code (TS / Sol / Noir)           → github.com/AztecProtocol/aztec-packages at v4.2.0
     """
     if not source_path or not isinstance(source_path, str):
         return source_path
 
-    # Rendered Aztec developer docs
+    # Network / operator docs — rendered at /operate/operators/<rest> on
+    # the site. The corpus path is `version-v4.2.0/operators/<rest>` per
+    # the way the network docs are ingested.
+    if source_path.startswith("version-v4.2.0/operators/"):
+        rest = source_path[len("version-v4.2.0/"):]  # keep "operators/<rest>"
+        rest = _strip_index_suffix(_strip_doc_ext(rest))
+        return f"{_AZTEC_OPERATE_BASE}/{rest}".rstrip("/")
+
+    # Rendered Aztec developer docs — files under `docs/` subfolder.
     if source_path.startswith("version-v4.2.0/docs/"):
         rest = source_path[len("version-v4.2.0/docs/"):]
-        for ext in (".mdx", ".md"):
-            if rest.endswith(ext):
-                rest = rest[: -len(ext)]
-                break
-        return f"{_AZTEC_DOCS_BASE}/{rest}"
+        rest = _strip_index_suffix(_strip_doc_ext(rest))
+        return f"{_AZTEC_DOCS_BASE}/{rest}".rstrip("/")
+
+    # Top-level developer docs (overview, ai_tooling, getting_started_*)
+    # — these live directly under `version-v4.2.0/<file>.md` in the
+    # corpus and are rendered at /developers/<filename> on the site, NOT
+    # under /developers/docs/.
+    if source_path.startswith("version-v4.2.0/"):
+        rest = source_path[len("version-v4.2.0/"):]
+        rest = _strip_index_suffix(_strip_doc_ext(rest))
+        return f"{_AZTEC_DEV_TOP_BASE}/{rest}".rstrip("/")
 
     # Noir language docs + stdlib live in a different repo (noir-lang/noir),
     # pinned to a specific commit via aztec-packages' submodule.

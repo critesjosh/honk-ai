@@ -11,6 +11,12 @@ const STARTERS = [
   "Explain composable privacy in plain terms.",
 ];
 
+// Sticky-bottom autoscroll: stay pinned to the bottom while streaming,
+// but if the reader scrolls up to read older content, stop following the
+// stream until they scroll back down. Only force-scrolls on send (the
+// reader just acted, so showing their action is correct UX).
+const STICKY_THRESHOLD_PX = 80;
+
 export function ChatSurface() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
@@ -18,9 +24,22 @@ export function ChatSurface() {
   const scrollRef = useRef<HTMLDivElement>(null);
   const taRef = useRef<HTMLTextAreaElement>(null);
   const abortRef = useRef<AbortController | null>(null);
+  // Whether the message list is "stuck" to the bottom — true while the
+  // reader is at (or near) the bottom; flips false the moment they
+  // scroll up, and back to true when they scroll back down. Default is
+  // true so the very first answer streams into view.
+  const stickyRef = useRef<boolean>(true);
 
-  // Auto-scroll on content updates.
+  const onScroll = useCallback(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const dist = el.scrollHeight - el.scrollTop - el.clientHeight;
+    stickyRef.current = dist <= STICKY_THRESHOLD_PX;
+  }, []);
+
+  // Follow new content only while the reader is near the bottom.
   useEffect(() => {
+    if (!stickyRef.current) return;
     const el = scrollRef.current;
     if (el) el.scrollTop = el.scrollHeight;
   }, [messages]);
@@ -47,6 +66,10 @@ export function ChatSurface() {
       if (!q || busy) return;
       setInput("");
       setBusy(true);
+      // The reader just submitted — show their message + the streaming
+      // answer regardless of where they were scrolled, then follow the
+      // stream from there.
+      stickyRef.current = true;
 
       // Build history from prior turns. We pair user messages with the
       // immediately following bot message; partial / errored turns are
@@ -192,7 +215,7 @@ export function ChatSurface() {
       )}
 
       {hasMessages && (
-        <div className="ask-chat__messages" ref={scrollRef}>
+        <div className="ask-chat__messages" ref={scrollRef} onScroll={onScroll}>
           {messages.map((m) => (
             <MessageView key={m.id} msg={m} />
           ))}
