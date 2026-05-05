@@ -96,17 +96,32 @@ class TestNetworkOperatorDocs:
 
 
 class TestNoirRepoMappings:
-    """noir-docs/ and noir-stdlib/ → noir-lang/noir at the pinned commit."""
+    """noir-docs/ → rendered noir-lang.org/docs (NOT GitHub).
+    noir-stdlib/ stays on GitHub since those are real `.nr` source files."""
 
-    def test_noir_docs_passes_through(self):
-        url = _aztec_source_url("noir-docs/getting_started/quick_start.md")
-        assert url.startswith(
-            "https://github.com/noir-lang/noir/blob/842974fcf034b0a652631e69fc24f92f9ddd1d37/docs/docs/"
+    def test_noir_docs_routes_to_rendered_site(self):
+        # Rendered docs are on noir-lang.org/docs, not the GitHub source.
+        assert _aztec_source_url("noir-docs/getting_started/quick_start.md") == (
+            "https://noir-lang.org/docs/getting_started/quick_start"
         )
-        assert url.endswith("getting_started/quick_start.md")
 
-    def test_noir_stdlib_strips_md_suffix(self):
+    def test_noir_docs_strips_index_suffix(self):
+        assert _aztec_source_url("noir-docs/noir/concepts/index.md") == (
+            "https://noir-lang.org/docs/noir/concepts"
+        )
+
+    def test_noir_docs_handles_mdx(self):
+        assert _aztec_source_url("noir-docs/tutorials/noirjs_app.mdx") == (
+            "https://noir-lang.org/docs/tutorials/noirjs_app"
+        )
+
+    def test_noir_docs_does_not_route_to_github(self):
+        url = _aztec_source_url("noir-docs/getting_started/quick_start.md")
+        assert "github.com" not in url
+
+    def test_noir_stdlib_still_routes_to_github(self):
         # apiref ingest emits `hash/mod.nr.md` → strip to `hash/mod.nr`.
+        # Stdlib stays on GitHub because those are source files, not docs.
         url = _aztec_source_url("noir-stdlib/hash/mod.nr.md")
         assert url == (
             "https://github.com/noir-lang/noir/blob/842974fcf034b0a652631e69fc24f92f9ddd1d37/"

@@ -54,8 +54,14 @@ _AZTEC_OPERATE_BASE = "https://docs.aztec.network/operate"
 _AZTEC_GITHUB_BASE = (
     "https://github.com/AztecProtocol/aztec-packages/blob/v4.2.0"
 )
+# Rendered Noir language docs — point at the canonical site rather than
+# the GitHub source. Stripping the markdown extension matches the
+# Docusaurus URL scheme; trailing /index segments are also stripped.
+_NOIR_DOCS_BASE = "https://noir-lang.org/docs"
 # Noir is a separate repo; aztec-packages v4.2.0 pins it at this commit via
-# the noir/noir-repo submodule. Update this when bumping Aztec versions.
+# the noir/noir-repo submodule. Used for noir-stdlib apiref source files
+# (those are real .nr source code, not rendered docs). Update this commit
+# when bumping Aztec versions.
 _NOIR_GITHUB_BASE = (
     "https://github.com/noir-lang/noir/blob/842974fcf034b0a652631e69fc24f92f9ddd1d37"
 )
@@ -144,11 +150,16 @@ def _aztec_source_url(source_path: str) -> str:
         rest = _strip_index_suffix(_strip_doc_ext(rest))
         return f"{_AZTEC_DEV_TOP_BASE}/{rest}".rstrip("/")
 
-    # Noir language docs + stdlib live in a different repo (noir-lang/noir),
-    # pinned to a specific commit via aztec-packages' submodule.
+    # Noir language docs are rendered at noir-lang.org/docs. Strip the
+    # markdown extension and any `/index` suffix to match the
+    # Docusaurus URL scheme (same convention as docs.aztec.network).
     if source_path.startswith("noir-docs/"):
         rest = source_path[len("noir-docs/"):]
-        return f"{_NOIR_GITHUB_BASE}/docs/docs/{rest}"
+        rest = _strip_index_suffix(_strip_doc_ext(rest))
+        return f"{_NOIR_DOCS_BASE}/{rest}".rstrip("/")
+
+    # Noir-stdlib stays on GitHub: those are real `.nr` source files
+    # (apiref output of `noir_stdlib/src/`), not rendered docs pages.
     if source_path.startswith("noir-stdlib/"):
         rest = source_path[len("noir-stdlib/"):]
         for suffix in (".txt", ".md"):
