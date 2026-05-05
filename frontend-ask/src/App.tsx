@@ -15,21 +15,21 @@ export function App() {
             <span className="dot"></span>Ask Aztec
           </span>
           <nav className="ask-header__links">
-            <a href="https://docs.aztec.network/developers" target="_blank" rel="noreferrer noopener">
+            <a href="https://docs.aztec.network/developers/overview" target="_blank" rel="noreferrer noopener">
               Developers
             </a>
-            <a href="https://noir-lang.org" target="_blank" rel="noreferrer noopener">
+            <a href="https://noir-lang.org/docs" target="_blank" rel="noreferrer noopener">
               Noir
             </a>
-            <a href="https://docs.aztec.network/network" target="_blank" rel="noreferrer noopener">
-              Network
+            <a href="https://docs.aztec.network/operate/operators" target="_blank" rel="noreferrer noopener">
+              Operators
             </a>
             <a href="https://docs.aztec.network" target="_blank" rel="noreferrer noopener">
               Docs
             </a>
           </nav>
           <a
-            href="https://docs.aztec.network/developers/getting_started"
+            href="https://docs.aztec.network/developers/getting_started_on_testnet"
             className="ask-header__cta"
             target="_blank"
             rel="noreferrer noopener"
