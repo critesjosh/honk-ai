@@ -1,0 +1,315 @@
+/* ============================================================
+   Aztec Design System — Core Tokens
+   Colors + Typography foundation
+   ============================================================ */
+
+/* -- Google Font imports (open-source stand-ins for the licensed Aztec typefaces).
+   Licensed set: Arizona Serif/Text, Oracle, MD Thermochrome, Francesco.
+   Stand-ins:    Martel, Geist + Geist Mono, Workbench, EB Garamond.
+   Swap these to the real foundry files when available.            */
+@import url('https://fonts.googleapis.com/css2?family=Martel:wght@300;400;700&family=EB+Garamond:ital,wght@0,400;0,500;1,400;1,500&family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500;700&family=Workbench&display=swap');
+
+:root {
+  /* ---------- Neutral colors ---------- */
+  --parchment: #F2EEE1;        /* warm off-white, default page bg */
+  --parchment-tint-1: #FCFBFA; /* near-white, cards on dark bg */
+  --parchment-tint-2: #F6F3EC; /* subtle surface */
+  --parchment-shade-1: #564D3F;/* warm low-contrast ink */
+
+  --ink: #1A1400;              /* near-black, default foreground */
+  --ink-tint-1: #CCCABF;       /* hairlines on parchment */
+  --ink-tint-2: #918B7F;       /* secondary text on parchment */
+
+  /* ---------- Core (brand) colors ---------- */
+  --chartreuse: #D4FF28;       /* PRIMARY — reserved for headlines + key accents */
+  --chartreuse-shade-1: #7F9917;
+  --chartreuse-shade-2: #A9CC1F;
+  --chartreuse-tint-1:  #E1FF8C;
+  --chartreuse-tint-2:  #E8FFBF;
+
+  --orchid: #FF2DF4;           /* SECONDARY */
+  --orchid-shade-1: #991B92;
+  --orchid-shade-2: #CC24C3;
+  --orchid-tint-1:  #FF6AEA;
+  --orchid-tint-2:  #FFA7E0;
+
+  --aqua: #2BFAE9;             /* supporting */
+  --aqua-shade-1: #19958C;
+  --aqua-shade-2: #22C8BA;
+  --aqua-tint-1:  #9BFDF4;
+  --aqua-tint-2:  #D3FEFA;
+
+  --vermillion: #FF1A1A;       /* supporting */
+  --vermillion-shade-1: #990000;
+  --vermillion-shade-2: #CC0000;
+  --vermillion-tint-1:  #FF5555;
+  --vermillion-tint-2:  #FFAAAA;
+
+  /* ---------- Base (grounding) colors ---------- */
+  --malachite: #001F18;        /* deep green */
+  --malachite-shade-1: #00382C;
+  --malachite-tint-1: #19534A;
+  --malachite-tint-2: #29665F;
+
+  --aubergine: #2E0026;        /* deep purple */
+  --aubergine-shade-1: #47003B;
+  --aubergine-tint-1: #5C1C4C;
+  --aubergine-tint-2: #80336A;
+
+  --lapis: #00122E;            /* deep blue */
+  --lapis-shade-1: #001C47;
+  --lapis-tint-1: #1C3B5C;
+  --lapis-tint-2: #335380;
+
+  --oxblood: #2E0700;          /* deep red-brown */
+  --oxblood-shade-1: #470B00;
+  --oxblood-tint-1: #5C271C;
+  --oxblood-tint-2: #804033;
+
+  /* ---------- Semantic aliases (light mode) ---------- */
+  --bg:        var(--parchment);
+  --bg-2:      var(--parchment-tint-2);
+  --bg-3:      var(--parchment-tint-1);
+  --surface:   var(--parchment-tint-1);
+  --surface-inverse: var(--ink);
+
+  --fg1:       var(--ink);                 /* primary text */
+  --fg2:       var(--parchment-shade-1);   /* secondary text */
+  --fg3:       var(--ink-tint-2);          /* tertiary / meta */
+  --fg-muted:  var(--ink-tint-1);          /* disabled */
+  --fg-on-dark: var(--parchment);
+  --fg-on-accent: var(--ink);              /* ink on chartreuse for a11y */
+
+  --accent:         var(--chartreuse);
+  --accent-hover:   var(--chartreuse-shade-2);
+  --accent-press:   var(--chartreuse-shade-1);
+  --accent-soft:    var(--chartreuse-tint-2);
+  --accent-fg:      var(--ink);
+
+  --accent-2:       var(--orchid);
+  --accent-2-hover: var(--orchid-shade-2);
+
+  --divider:   var(--ink-tint-1);
+  --border:    var(--ink);                 /* Aztec uses hard 1-2px ink borders */
+  --border-subtle: rgba(26, 20, 0, 0.12);
+
+  --danger:    var(--vermillion);
+  --info:      var(--aqua);
+  --success:   var(--chartreuse-shade-1);
+  --warn:      var(--orchid);
+
+  /* ---------- Type scale ---------- */
+  /* Stand-ins (swap when licensed files are available) */
+  --font-display: 'Martel', 'Arizona Serif', 'EB Garamond', Georgia, serif;          /* H1 — licensed: Arizona Serif Light */
+  --font-sans:    'Geist', 'Oracle', 'Inter', system-ui, -apple-system, sans-serif;  /* Body & H2 — licensed: Oracle */
+  --font-mono:    'Geist Mono', 'MD Thermochrome', ui-monospace, monospace;          /* H3 — licensed: MD Thermochrome */
+  --font-serif-alt:'EB Garamond', 'Francesco', Georgia, serif;                       /* H4 — licensed: Francesco */
+  --font-display-body: 'Martel', 'Arizona Text', Georgia, serif;                     /* Long-form body serif */
+  --font-techno:  'Workbench', 'MD Thermochrome', monospace;                         /* Variable display accent */
+
+  /* Sizes — fluid-ish; override per context */
+  --fs-display: clamp(56px, 9vw, 128px);
+  --fs-h1:      clamp(40px, 6vw, 72px);
+  --fs-h2:      clamp(28px, 3.2vw, 40px);
+  --fs-h3:      clamp(20px, 2vw, 24px);
+  --fs-h4:      18px;
+  --fs-body:    16px;
+  --fs-body-lg: 18px;
+  --fs-small:   14px;
+  --fs-micro:   12px;
+
+  --lh-tight:   1.00;     /* headings */
+  --lh-snug:    0.95;
+  --lh-default: 1.35;     /* body */
+  --lh-relaxed: 1.5;
+
+  --track-tight: -0.05em; /* display */
+  --track-body:  -0.02em;
+  --track-wide:  0.06em;  /* eyebrow / label */
+
+  /* ---------- Spacing (4px grid) ---------- */
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 24px;
+  --sp-6: 32px;
+  --sp-7: 48px;
+  --sp-8: 64px;
+  --sp-9: 96px;
+  --sp-10: 128px;
+
+  /* ---------- Radii ---------- */
+  /* Aztec visual system is mostly sharp. Radii are used sparingly. */
+  --radius-none: 0;
+  --radius-xs:   2px;
+  --radius-sm:   4px;
+  --radius-md:   8px;
+  --radius-lg:   16px;
+  --radius-xl:   24px;
+  --radius-pill: 999px;   /* used for chips + pill buttons */
+
+  /* ---------- Borders ---------- */
+  --border-hair:  1px solid var(--border);
+  --border-card:  1.5px solid var(--border);
+  --border-bold:  2px solid var(--border);
+
+  /* ---------- Shadows ---------- */
+  /* Flat-first system. Shadows are rare; when used, they are warm and soft. */
+  --shadow-sm: 0 1px 0 rgba(26, 20, 0, 0.08);
+  --shadow-md: 0 2px 8px rgba(26, 20, 0, 0.08);
+  --shadow-lg: 0 12px 32px rgba(26, 20, 0, 0.12);
+  /* Offset "printed" shadow — matches the hard-edged, poster-y feel */
+  --shadow-print:  4px 4px 0 var(--ink);
+  --shadow-print-accent: 4px 4px 0 var(--chartreuse);
+
+  /* ---------- Motion ---------- */
+  --ease-standard: cubic-bezier(0.2, 0.0, 0.0, 1.0);
+  --ease-emph:     cubic-bezier(0.2, 0.0, 0.1, 1.1);
+  --ease-out:      cubic-bezier(0.2, 0.6, 0.1, 1.0);
+  --dur-1: 120ms;
+  --dur-2: 200ms;
+  --dur-3: 320ms;
+  --dur-4: 520ms;
+}
+
+/* ---------- Dark (inverse) surface ----------
+   Aztec uses Malachite, Aubergine, Lapis and Oxblood as grounding bases.
+   Apply .on-base, .on-malachite, etc. at a section level. */
+.on-malachite { --bg: var(--malachite);  --bg-2: var(--malachite-shade-1); --fg1: var(--parchment); --fg2: var(--malachite-tint-2); --border: var(--parchment); --border-subtle: rgba(242,238,225,0.15); --accent-fg: var(--ink); background: var(--bg); color: var(--fg1); }
+.on-aubergine { --bg: var(--aubergine); --bg-2: var(--aubergine-shade-1); --fg1: var(--parchment); --fg2: var(--aubergine-tint-2); --border: var(--parchment); --border-subtle: rgba(242,238,225,0.15); background: var(--bg); color: var(--fg1); }
+.on-lapis     { --bg: var(--lapis);     --bg-2: var(--lapis-shade-1);     --fg1: var(--parchment); --fg2: var(--lapis-tint-2);     --border: var(--parchment); --border-subtle: rgba(242,238,225,0.15); background: var(--bg); color: var(--fg1); }
+.on-oxblood   { --bg: var(--oxblood);   --bg-2: var(--oxblood-shade-1);   --fg1: var(--parchment); --fg2: var(--oxblood-tint-2);   --border: var(--parchment); --border-subtle: rgba(242,238,225,0.15); background: var(--bg); color: var(--fg1); }
+.on-ink       { --bg: var(--ink);       --bg-2: #2a2308;                   --fg1: var(--parchment); --fg2: var(--ink-tint-1);       --border: var(--parchment); --border-subtle: rgba(242,238,225,0.15); background: var(--bg); color: var(--fg1); }
+
+/* ============================================================
+   Base element styles — semantic usage
+   ============================================================ */
+
+html, body {
+  background: var(--bg);
+  color: var(--fg1);
+  font-family: var(--font-sans);
+  font-size: var(--fs-body);
+  line-height: var(--lh-default);
+  letter-spacing: var(--track-body);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* H1 — Arizona Serif Light (stand-in: Martel Light).
+   Italicized at designer's discretion. */
+h1, .h1 {
+  font-family: var(--font-display);
+  font-weight: 300;
+  font-size: var(--fs-h1);
+  line-height: var(--lh-tight);
+  letter-spacing: var(--track-tight);
+  margin: 0 0 var(--sp-5);
+  color: var(--fg1);
+  text-wrap: balance;
+}
+h1.display, .h1-display {
+  font-size: var(--fs-display);
+}
+
+/* H2 — Oracle Triple Book/Medium (stand-in: Geist 400/500) */
+h2, .h2 {
+  font-family: var(--font-sans);
+  font-weight: 500;
+  font-size: var(--fs-h2);
+  line-height: var(--lh-tight);
+  letter-spacing: var(--track-body);
+  margin: 0 0 var(--sp-4);
+  color: var(--fg1);
+  text-wrap: balance;
+}
+
+/* H3 — MD Thermochrome Regular (stand-in: Geist Mono / Workbench).
+   Used for eyebrows, section labels, technical headers. */
+h3, .h3 {
+  font-family: var(--font-mono);
+  font-weight: 400;
+  font-size: var(--fs-h3);
+  line-height: 0.95;
+  letter-spacing: 0;
+  margin: 0 0 var(--sp-3);
+  color: var(--fg1);
+  text-transform: none;
+}
+
+/* H4 — Francesco Regular (stand-in: EB Garamond).
+   Editorial/metadata — dates, captions. */
+h4, .h4 {
+  font-family: var(--font-serif-alt);
+  font-weight: 400;
+  font-style: italic;
+  font-size: var(--fs-h4);
+  line-height: 0.95;
+  letter-spacing: 0;
+  margin: 0 0 var(--sp-2);
+  color: var(--fg2);
+}
+
+/* Body — Oracle Standard Medium (stand-in: Geist Medium) */
+p, .body {
+  font-family: var(--font-sans);
+  font-weight: 500;
+  font-size: var(--fs-body);
+  line-height: var(--lh-default);
+  letter-spacing: var(--track-body);
+  margin: 0 0 var(--sp-4);
+  color: var(--fg1);
+  text-wrap: pretty;
+}
+p.long, .body-long {
+  font-family: var(--font-display-body);
+  font-weight: 300;
+  line-height: 1.4;
+  letter-spacing: 0;
+}
+
+small, .small { font-size: var(--fs-small); color: var(--fg2); }
+.micro { font-size: var(--fs-micro); color: var(--fg2); }
+
+/* Eyebrow / overline — a recurring Aztec device */
+.eyebrow {
+  font-family: var(--font-mono);
+  font-weight: 400;
+  font-size: var(--fs-small);
+  letter-spacing: var(--track-wide);
+  text-transform: uppercase;
+  color: var(--fg2);
+}
+
+/* Code */
+code, kbd, pre, .mono {
+  font-family: var(--font-mono);
+  font-size: 0.92em;
+}
+pre {
+  background: var(--ink);
+  color: var(--parchment);
+  padding: var(--sp-5);
+  border-radius: var(--radius-md);
+  overflow-x: auto;
+}
+
+/* Links */
+a {
+  color: var(--fg1);
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+  transition: opacity var(--dur-1) var(--ease-standard);
+}
+a:hover { opacity: 0.7; }
+
+/* Dividers */
+hr {
+  border: 0;
+  border-top: 1px solid var(--border);
+  margin: var(--sp-5) 0;
+}
+
+/* Selection — uses primary accent */
+::selection { background: var(--chartreuse); color: var(--ink); }
