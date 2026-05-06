@@ -15,11 +15,21 @@
 ## Aztec fork overview
 
 ### Access paths
-- **Web chat UI** — `https://aztec.adjacentpossible.dev`. Log in via Cloudflare
-  Access (email SSO). The default `Aztec 4.2.0` agent is scoped to all 12
-  corpora (Developer Docs, Aztec.nr Framework, Noir Language Docs, Example
-  Contracts, aztec.js SDK, TypeScript API, Noir stdlib, CLI, Network Docs,
-  E2E Tests, Protocol Circuits, L1 Contracts).
+- **Web chat UI (admin)** — `https://aztec.adjacentpossible.dev`. Log in via
+  Cloudflare Access (email SSO). The default `Aztec 4.2.0` agent is scoped to
+  all 12 corpora (Developer Docs, Aztec.nr Framework, Noir Language Docs,
+  Example Contracts, aztec.js SDK, TypeScript API, Noir stdlib, CLI, Network
+  Docs, E2E Tests, Protocol Circuits, L1 Contracts).
+- **Public /ask landing page** — `https://aztec.adjacentpossible.dev/ask`.
+  Anonymous, no login. Single-page chat surface in the Aztec design system
+  (parchment + chartreuse, hard-edged poster card) backed by the same RAG
+  agent stack. Markdown rendering with syntax-highlighted code (Noir → Rust
+  grammar). Top-5 cited sources appear under each answer with click-to-open
+  popovers (links route to docs.aztec.network / noir-lang.org / GitHub via
+  the same backend rewriter the widget uses). 18+ age gate on first visit.
+  No conversation persistence (in-memory only). Backed by a dedicated
+  hard-capped agent (10k requests/day, 5M tokens/day, no tools, no
+  system-prompt override) provisioned via `scripts/db/create_ask_aztec_public_agent.py`.
 - **Discord** — run `/mcp-key` in the Noir Discord (or any allowlisted
   guild — `NOIR_GUILD_IDS` is comma-separated) to provision a personal
   MCP API key. `@`-mention the bot — user-facing name **Honk AI** — in
@@ -29,7 +39,8 @@
   it replies in place AND reads up to 30 prior thread messages so it
   can answer questions tagged on someone else's discussion. In DMs it
   replies in place with no thread context. Responses are formatted for
-  Discord (no Mermaid, no Markdown tables) via a custom system prompt.
+  Discord (no Mermaid, no Markdown tables) via a custom system prompt
+  and include a `-#` subtext "Sources" footer with up to 5 cited URLs.
   `/forget-me` deletes all data stored under your Discord pseudonym.
 - **MCP clients** (Claude Desktop, Claude Code, Codex) — paste the key from
   `/mcp-key` with `API_URL=https://aztec.adjacentpossible.dev`. The bot
@@ -56,6 +67,15 @@
   the production compose. Implements the `/mcp-key` slash command and
   @-mention chat passthrough. Reaches the backend on the internal compose
   network (bypasses Cloudflare Access).
+- **Public /ask page** (`frontend-ask/`) — separate Vite/React/TS bundle
+  served at `/ask` on the apex host. Anonymous, no login. Calls
+  same-origin `POST /stream` with `save_conversation: false` so requests
+  aren't persisted as conversations. Bearer key for the underlying agent
+  is baked into the public JS at build time as `VITE_ASK_AZTEC_AGENT_KEY`
+  (a known-public capability — the agent has hard request/token caps,
+  no tools, and no system-prompt override). Caddy routes via the named
+  matcher `path /ask /ask/*`. See `AZTEC_SETUP.md` for the provisioning
+  + Cloudflare Access bypass steps required before the page goes live.
 - **MCP server** — end users install
   [`@aztec/mcp-server`](https://www.npmjs.com/package/@aztec/mcp-server)
   ([source](https://github.com/AztecProtocol/mcp-server)) locally and
