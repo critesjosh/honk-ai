@@ -41,7 +41,10 @@
   replies in place with no thread context. Responses are formatted for
   Discord (no Mermaid, no Markdown tables) via a custom system prompt
   and include a `-#` subtext "Sources" footer with up to 5 cited URLs.
-  `/forget-me` deletes all data stored under your Discord pseudonym.
+  React with 👍 / 👎 on any of the bot's reply messages to record
+  feedback — the bot forwards the reaction to the backend and stores
+  it on the conversation row. `/forget-me` deletes all data stored
+  under your Discord pseudonym.
 - **MCP clients** (Claude Desktop, Claude Code, Codex) — paste the key from
   `/mcp-key` with `API_URL=https://aztec.adjacentpossible.dev`. The bot
   response includes ready-to-paste config snippets for each client and
