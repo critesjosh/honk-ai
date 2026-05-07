@@ -204,8 +204,8 @@ Re-ingest: today the endpoint has **no idempotency**. Re-uploading the same zip 
 ### What is NOT indexed
 Intentionally excluded (per MCP resource scope): current-unversioned docs under `docs/docs-developers/`, Barretenberg (`barretenberg/` C++/Rust/TS, ~2.4k files), patterns/howto guides that don't yet exist as a distinct folder in v4.2.0.
 
-## CI/CD (upstream)
-`.github/workflows/`: `pytest.yml`, `lint.yml`, `bandit.yaml`, `docker-*-build.yml`, `ci.yml`, `zizmor.yml`. Our fork inherits these.
+## CI/CD
+Active on this fork: `.github/workflows/` `pytest.yml`, `lint.yml`, `vale.yml`, `zizmor.yml`. Upstream workflows that are gated to `github.repository == 'arc53/DocsGPT'` (so always skip here) and we keep without modification: `bandit.yaml`, `labeler.yml`. Upstream's image-publishing workflows (`ci.yml`, `cife.yml`, `docker-develop-build.yml`, `docker-develop-fe-build.yml`) were removed in `chore/remove-unused-docker-publish-workflows` — production builds happen via `docker compose build` on josh-box and never push to a registry; no GHCR / DockerHub images are produced from this fork.
 
 ## Code style
 - **Python:** Ruff, 120 char line length. PEP 8. Type hints expected. Google-style docstrings.
