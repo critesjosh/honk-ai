@@ -22,6 +22,7 @@ TOKEN = os.getenv("DISCORD_TOKEN")
 PREFIX = "!"  # Command prefix
 BASE_API_URL = os.getenv("API_BASE", "https://gptcloud.arc53.com")
 API_URL = BASE_API_URL + "/stream"
+FEEDBACK_URL = BASE_API_URL + "/api/feedback"
 API_KEY = os.getenv("API_KEY")
 
 # MCP key provisioning
@@ -52,6 +53,17 @@ MAX_THREAD_MSG_CHARS = 1500
 MAX_STARTER_CHARS = 4000
 MAX_SPEAKER_LABEL_CHARS = 64
 _THREAD_CACHE_MAX_ENTRIES = 500
+
+# Feedback (👍 / 👎 reaction → POST /api/feedback) configuration. The
+# cache maps Discord message_id → (conversation_id, question_index) so
+# that when a user reacts on one of the bot's reply messages we can
+# resolve which DB row to write feedback against. Bounded LRU; bot
+# restart loses the mapping (acceptable: reactions on pre-restart
+# messages just get silently ignored, which is the same behaviour as
+# message edits or other "stale" interactions).
+_FEEDBACK_CACHE_MAX_ENTRIES = 1000
+_LIKE_EMOJI = "\N{THUMBS UP SIGN}"
+_DISLIKE_EMOJI = "\N{THUMBS DOWN SIGN}"
 
 
 def _parse_guild_ids() -> list[int]:
@@ -94,6 +106,11 @@ MCP_PUBLIC_URL = f"https://{_public_host}" if _public_host else "https://your-do
 
 intents = discord.Intents.default()
 intents.message_content = True
+# `reactions` is on by default in `Intents.default()`; flip it on
+# explicitly so the dependency is obvious to readers and so a future
+# refactor that switches to `Intents.none()` doesn't silently break
+# `on_raw_reaction_add` (the feedback path below).
+intents.reactions = True
 
 bot = commands.Bot(command_prefix=PREFIX, intents=intents)
 
@@ -112,8 +129,20 @@ conversation_histories = {}
 # access happened after every other entry's.
 #
 # Schema: thread.id -> {"history": [...], "conversation_id": str|None,
-#                       "lock": asyncio.Lock}.
+#                       "answer_count": int, "lock": asyncio.Lock}.
+# `answer_count` mirrors the next DB position the backend will write;
+# the backend allocates positions per-conversation atomically as
+# MAX(position)+1, and writes exactly one row per /stream call (one
+# row per turn, with both `prompt` and `response`), so incrementing
+# this counter once per successful /stream return tracks the DB.
 thread_conversation_histories: "OrderedDict[int, dict]" = OrderedDict()
+
+# Discord message_id -> (conversation_id, question_index). Populated
+# every time the bot successfully sends an answer chunk or footer; we
+# register all chunks of the same answer to the same (conv, index) so
+# a user can react on whichever chunk caught their eye. Bounded LRU,
+# evicts oldest first.
+feedback_targets: "OrderedDict[int, tuple[str, int]]" = OrderedDict()
 
 
 def _evict_thread_cache_if_needed() -> None:
@@ -154,12 +183,31 @@ def _get_thread_state(thread_id: int) -> dict:
         state = {
             "history": [],
             "conversation_id": None,
+            "answer_count": 0,
             "lock": asyncio.Lock(),
         }
         thread_conversation_histories[thread_id] = state
     thread_conversation_histories.move_to_end(thread_id)
     _evict_thread_cache_if_needed()
     return state
+
+
+def _register_feedback_target(
+    message_id: int,
+    conversation_id: str,
+    question_index: int,
+) -> None:
+    """Map a Discord reply ``message_id`` to its DB ``(conv, index)``.
+
+    Subsequent 👍 / 👎 reactions on that message will hit
+    ``/api/feedback`` for the recorded ``conversation_id`` /
+    ``question_index``. Bounded LRU; oldest entries evict silently
+    when the cache exceeds ``_FEEDBACK_CACHE_MAX_ENTRIES``.
+    """
+    feedback_targets[message_id] = (conversation_id, question_index)
+    feedback_targets.move_to_end(message_id)
+    while len(feedback_targets) > _FEEDBACK_CACHE_MAX_ENTRIES:
+        feedback_targets.popitem(last=False)
 
 
 # Discord decorations to remove from quoted thread message bodies.
@@ -834,6 +882,98 @@ async def generate_answer(question, messages, conversation_id):
     }
 
 
+async def submit_feedback(
+    conversation_id: str,
+    question_index: int,
+    feedback: str,
+) -> bool:
+    """POST a 👍 / 👎 reaction to the backend's ``/api/feedback``.
+
+    The backend resolves the conversation by ``user_id`` derived from
+    the request's auth token. Production runs with ``AUTH_TYPE`` unset
+    so anonymous calls resolve to ``user_id="local"``, which matches
+    the bot's chosen agent (the ``Aztec 4.2.0`` / ``docs.aztec.network``
+    agent). If ``AUTH_TYPE`` is ever switched to JWT mode this call
+    will start 401-ing — at that point the bot would need to mint a
+    short-lived JWT against ``JWT_SECRET_KEY`` (same shared secret the
+    backend already uses).
+
+    Returns ``True`` if the backend accepted the feedback.
+    """
+    payload = {
+        "api_key": API_KEY,
+        "conversation_id": conversation_id,
+        "question_index": question_index,
+        "feedback": feedback,
+    }
+    headers = {"Content-Type": "application/json; charset=utf-8"}
+    timeout = aiohttp.ClientTimeout(total=10)
+    try:
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.post(
+                FEEDBACK_URL,
+                json=payload,
+                headers=headers,
+            ) as resp:
+                if resp.status != 200:
+                    body = await resp.text()
+                    logger.warning(
+                        "Feedback POST returned %s for conv=%s idx=%s: %s",
+                        resp.status,
+                        conversation_id,
+                        question_index,
+                        body[:200],
+                    )
+                    return False
+                return True
+    except (asyncio.TimeoutError, aiohttp.ClientError) as exc:
+        logger.error("Feedback POST failed: %s", exc)
+        return False
+
+
+@bot.event
+async def on_raw_reaction_add(payload: discord.RawReactionActionEvent) -> None:
+    """Forward 👍 / 👎 reactions on the bot's reply messages to the
+    backend feedback endpoint.
+
+    Uses the *raw* event so reactions on messages older than the bot's
+    in-memory message cache are still delivered. Other emojis are
+    ignored. Bot reactions (own or other bots') are ignored — we don't
+    record machine-generated reactions as user feedback. The
+    ``payload.member`` field is only populated for guild events; in
+    DMs we fall back to the strict self-id check (DMs don't host
+    third-party bots, so that's sufficient).
+    """
+    if bot.user is not None and payload.user_id == bot.user.id:
+        return
+    if payload.member is not None and payload.member.bot:
+        return
+    emoji_name = getattr(payload.emoji, "name", None)
+    if emoji_name == _LIKE_EMOJI:
+        feedback_value = "LIKE"
+    elif emoji_name == _DISLIKE_EMOJI:
+        feedback_value = "DISLIKE"
+    else:
+        return
+    target = feedback_targets.get(payload.message_id)
+    if target is None:
+        # Reaction on a message we don't track (e.g. older than our
+        # cache, or not one of ours). Silently ignore — there's no DB
+        # row to write feedback against.
+        return
+    conversation_id, question_index = target
+    ok = await submit_feedback(conversation_id, question_index, feedback_value)
+    if ok:
+        logger.info(
+            "Recorded %s feedback for conv=%s idx=%s (msg=%s, user=%s)",
+            feedback_value,
+            conversation_id,
+            question_index,
+            payload.message_id,
+            payload.user_id,
+        )
+
+
 @bot.command(name="start")
 async def start(ctx):
     """Handles the /start command."""
@@ -908,14 +1048,32 @@ async def on_message(message):
         # with a "I'm still answering the previous question" reply.
         lock_cm = conversation["lock"]
     else:
-        # Per-user / DM path: matches pre-existing behaviour. Discord
-        # delivers each message via a separate `on_message` invocation,
-        # so concurrent same-user races require multi-channel
-        # parallelism — out of scope for this change.
+        # Per-user / DM path. Two messages from the same user that
+        # arrive close together can interleave at await points (each
+        # /stream call is up to 180s), so the per-user state is
+        # serialized by its own lock — same pattern as the per-thread
+        # path. Without this, two cold-start mentions could both call
+        # /stream with conversation_id=None, create two separate DB
+        # conversations, and double-increment the shared answer_count
+        # such that one answer's feedback target points at a position
+        # that doesn't exist in either conversation.
         thread = None
         user_id = message.author.id
-        conversation = conversation_histories.setdefault(user_id, {"history": [], "conversation_id": None})
-        lock_cm = None
+        conversation = conversation_histories.setdefault(
+            user_id,
+            {
+                "history": [],
+                "conversation_id": None,
+                "answer_count": 0,
+                "lock": asyncio.Lock(),
+            },
+        )
+        # Older cached entries (created before the feedback / lock
+        # additions shipped) may be missing these fields; backfill so
+        # subsequent turns don't KeyError.
+        conversation.setdefault("answer_count", 0)
+        conversation.setdefault("lock", asyncio.Lock())
+        lock_cm = conversation["lock"]
 
     async def _do_answer() -> None:
         if in_thread and THREAD_CONTEXT_MSG_LIMIT > 0:
@@ -980,13 +1138,43 @@ async def on_message(message):
                     return
 
                 answer = response_doc["answer"]
-                conversation_id = response_doc["conversation_id"]
+                new_conversation_id = response_doc["conversation_id"]
                 sources = response_doc.get("sources", [])
+
+                # /stream returns conversation_id=None on a non-200
+                # backend response (see ``generate_answer``). In that
+                # case the backend wrote NO conversation_messages row,
+                # so we must NOT advance ``answer_count`` — doing so
+                # would skew every subsequent feedback target by one.
+                # Surface the canned error and roll back the queued
+                # prompt, mirroring the timeout path above.
+                if new_conversation_id is None:
+                    await target.send(answer)
+                    conversation["history"].pop()
+                    return
+
+                # /stream succeeded and the backend wrote one row at
+                # ``answer_count``. Persist conversation_id and reserve
+                # the position EAGERLY, before any Discord send. The
+                # DB is now authoritative for this turn — even if the
+                # Discord-side send fails partway, the next /stream
+                # call will continue this conversation (not start a
+                # new one) and write the next row at the next
+                # position, keeping ``answer_count`` aligned.
+                question_index = conversation["answer_count"]
+                conversation["answer_count"] += 1
+                conversation["conversation_id"] = new_conversation_id
+                conversation["history"][-1]["response"] = answer
 
                 formatted = format_for_discord(answer)
                 answer_chunks = chunk_string(formatted)
                 for chunk in answer_chunks:
-                    await target.send(chunk)
+                    sent_msg = await target.send(chunk)
+                    _register_feedback_target(
+                        sent_msg.id,
+                        new_conversation_id,
+                        question_index,
+                    )
 
                 # Send the citation footer as a separate message AFTER
                 # all answer chunks. Sent separately (rather than
@@ -995,11 +1183,30 @@ async def on_message(message):
                 # footer mid-list.
                 footer = _format_sources_footer(sources)
                 if footer:
-                    await target.send(footer)
+                    sent_footer = await target.send(footer)
+                    _register_feedback_target(
+                        sent_footer.id,
+                        new_conversation_id,
+                        question_index,
+                    )
         except (discord.Forbidden, discord.NotFound, discord.HTTPException) as exc:
-            # Thread archived/locked/deleted between fetch and reply,
-            # or the bot lost Send permission — log + drop the queued
-            # prompt so we don't carry a half-turn forward.
+            # The catch fires for two distinct families of failure:
+            #
+            # (a) PRE-DB: ``target.typing()`` failed, or the canned
+            #     "Sorry, the request timed out / I couldn't find an
+            #     answer" send raised before we ever wrote
+            #     ``history[-1]["response"]``. In this case the queued
+            #     prompt has no response and would otherwise carry
+            #     forward into the next turn's ``history`` payload.
+            # (b) POST-DB: a chunk / footer send raised AFTER /stream
+            #     wrote the row and we persisted conversation_id +
+            #     response. The DB is authoritative; the in-memory
+            #     state already matches it; do NOT pop.
+            #
+            # Disambiguate by checking whether the latest history
+            # entry has a ``response`` key — set only on the post-DB
+            # success path. This mirrors the conditional rollback the
+            # original (pre-feedback) code used at this site.
             logger.warning(
                 "Failed to send reply to %s: %s",
                 getattr(target, "id", "?"),
@@ -1009,8 +1216,6 @@ async def on_message(message):
                 conversation["history"].pop()
             return
 
-        conversation["history"][-1]["response"] = answer
-        conversation["conversation_id"] = conversation_id
         # Keep conversation history to last 10 exchanges.
         conversation["history"] = conversation["history"][-10:]
 

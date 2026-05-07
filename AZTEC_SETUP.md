@@ -265,6 +265,43 @@ that MCP server hits; the MCP server itself lives in
 
 Under the hood, the bot calls `POST /api/internal/create_mcp_key` with `X-Provisioning-Key: $MCP_PROVISIONING_KEY`. The endpoint upserts an agent keyed by `(mcp_provider='discord', mcp_provider_user_id=<discord id>, mcp_purpose='aztec_mcp')` — one agent per Discord user per purpose. Returns `{api_key, created}`.
 
+### Reading user feedback
+
+When users react with 👍 / 👎 to one of Honk AI's reply messages, the bot
+POSTs `/api/feedback` and the value lands in `conversation_messages.feedback`
+(JSONB, e.g. `{"text": "like", "timestamp": "..."}`). Inspect with:
+
+```sql
+SELECT cm.timestamp, cm.feedback, LEFT(cm.prompt, 80) AS prompt
+FROM conversation_messages cm
+WHERE cm.feedback IS NOT NULL
+ORDER BY cm.timestamp DESC
+LIMIT 50;
+```
+
+Or call `GET /api/get_feedback_analytics` for aggregated counts.
+
+The bot's in-memory `feedback_targets` map only tracks reply messages
+sent **after** the bot last started, capped at the most recent 1000
+answers. Reactions on older messages are silently ignored — that's by
+design (cap is per-bot-process, no DB-backed persistence). Set
+`AUTH_TYPE` to `simple_jwt` / `session_jwt` will break this path because
+`/api/feedback` becomes a JWT-required endpoint at that point;
+production currently runs anonymous (`AUTH_TYPE` unset) and the bot
+relies on it.
+
+> **⚠ Recommended:** set `ENABLE_CONVERSATION_COMPRESSION=false` in
+> `.env` while this feature is live. The backend's compression path
+> (`application/api/answer/routes/base.py:635`) appends an extra
+> `conversation_messages` summary row when a long conversation
+> crosses the compression threshold, which shifts subsequent rows'
+> positions by +1 and silently desyncs the bot's `answer_count`
+> counter. The bot's `set_feedback` UPDATE then matches no row,
+> `/api/feedback` still 200s, and feedback for post-compression
+> turns is silently dropped. The real fix (read the position the
+> backend actually assigned via an SSE event or follow-up GET) is
+> tracked but not yet shipped.
+
 ### Configuring an MCP client
 
 No local install required — `npx -y @aztec/mcp-server` pulls the
