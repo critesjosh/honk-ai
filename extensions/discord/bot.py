@@ -133,6 +133,17 @@ bot = commands.Bot(command_prefix=PREFIX, intents=intents)
 # we'd rather surface a visible failure than sit in a multi-second
 # retry loop.
 bot.http.max_ratelimit_timeout = 2.0
+# Fail loud at import time if a discord.py upgrade renames / moves
+# the attribute. Without this, a rename would result in our
+# assignment creating an unused ghost attribute and the original
+# field keeping its default — a silent regression that would
+# re-trigger Discord's anti-abuse on the first incident.
+if getattr(bot.http, "max_ratelimit_timeout", None) != 2.0:
+    raise ImportError(
+        "discord.py bot.http.max_ratelimit_timeout assignment did not take. "
+        "The attribute may have been renamed/moved in this discord.py version. "
+        "Re-check extensions/discord/bot.py against the upstream HTTPClient API."
+    )
 
 # Store conversation history per user
 conversation_histories = {}
@@ -463,14 +474,14 @@ async def _fetch_thread_starter(
     """
     try:
         return await thread.fetch_message(thread.id)
-    except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+    except (discord.NotFound, discord.Forbidden, discord.HTTPException, discord.RateLimited):
         pass
     parent = getattr(thread, "parent", None)
     if parent is None or not hasattr(parent, "fetch_message"):
         return None
     try:
         return await parent.fetch_message(thread.id)
-    except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+    except (discord.NotFound, discord.Forbidden, discord.HTTPException, discord.RateLimited):
         return None
 
 
@@ -510,7 +521,12 @@ async def _fetch_thread_context(
             thread.id,
         )
         return starter, []
-    except discord.HTTPException as exc:
+    except (discord.HTTPException, discord.RateLimited) as exc:
+        # ``RateLimited`` shows up here because we set
+        # ``bot.http.max_ratelimit_timeout = 2.0`` — any 429 with
+        # ``retry_after > 2`` (including reads against a flagged bot
+        # account) raises rather than blocking. Not fatal: best-effort
+        # context fetching, fall through to no-context answer.
         logger.error("Failed to read thread %s history: %s", thread.id, exc)
         return starter, []
     recent.reverse()  # oldest -> newest for human-readable rendering
@@ -1154,12 +1170,18 @@ async def on_message(message):
 
     # Per-guild circuit breaker: if we've recently observed a
     # shared-bucket 429 here, skip every outbound write for the
-    # cooldown. We still react with ⚠️ so the user has visual
-    # confirmation we saw the mention. Checked BEFORE any thread state
-    # allocation / lock acquisition so a tripped guild has minimal
-    # overhead per mention. DMs key under ``None``; if a DM ever trips
-    # the breaker (rare — DMs aren't typically in shared buckets) it
-    # also short-circuits.
+    # cooldown. Checked BEFORE any thread state allocation / lock
+    # acquisition so a tripped guild has minimal overhead per
+    # mention. DMs key under ``None``; if a DM ever trips the breaker
+    # (rare — DMs aren't typically in shared buckets) it also
+    # short-circuits.
+    #
+    # No ⚠️ reaction on the bail-out path — that would be a Discord
+    # write per silenced mention against an account that's already
+    # being throttled, which defeats the breaker's purpose. The user
+    # whose mention TRIPPED the breaker already got the reaction at
+    # the trip site; subsequent mentions during the cooldown silently
+    # no-op (same UX as if 40062 had hit reactions too).
     guild_id = message.guild.id if message.guild is not None else None
     if _breaker_open(guild_id):
         logger.info(
@@ -1167,7 +1189,6 @@ async def on_message(message):
             guild_id,
             message.id,
         )
-        await _signal_breaker_open(message)
         return
 
     # Decide which conversation cache backs this turn. When we're
@@ -1222,9 +1243,15 @@ async def on_message(message):
         if in_thread and THREAD_CONTEXT_MSG_LIMIT > 0:
             try:
                 starter, recent = await _fetch_thread_context(thread, message, THREAD_CONTEXT_MSG_LIMIT)
-            except discord.HTTPException as exc:
+            except (discord.HTTPException, discord.RateLimited) as exc:
+                # _fetch_thread_context catches its own exceptions
+                # internally; this outer catch is for anything that
+                # bubbles past (e.g. _fetch_thread_starter's exception
+                # path, or future code paths). Treat both HTTP and
+                # RateLimited the same — context is best-effort,
+                # answer without it.
                 logger.error(
-                    "Unexpected HTTPException fetching thread %s context: %s",
+                    "Unexpected exception fetching thread %s context: %s",
                     thread.id,
                     exc,
                 )
@@ -1316,13 +1343,17 @@ async def on_message(message):
             # thread context. /stream is the expensive operation
             # (5-180s of LLM cost), so bailing here saves backend work
             # we can't deliver — sends will fail with the same 40062.
+            #
+            # No reaction on this path — the user who concurrently
+            # tripped the breaker got a reaction on THEIR mention. We
+            # also already issued a typing event above, which is
+            # enough indication the bot saw this mention.
             if _breaker_open(guild_id):
                 logger.info(
                     "Shared-429 breaker tripped concurrently; aborting /stream for guild=%s message=%s",
                     guild_id,
                     message.id,
                 )
-                await _signal_breaker_open(message)
                 if conversation["history"] and "response" not in conversation["history"][-1]:
                     conversation["history"].pop()
                 return
