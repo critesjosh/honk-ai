@@ -9,6 +9,15 @@ updates:
     directory: "/application"
     schedule:
       interval: "weekly"
+    ignore:
+      # marshmallow 4.x is blocked on `dataclasses-json` relaxing its
+      # `marshmallow<4.0.0` cap. `dataclasses-json` is at 0.6.7 (PyPI
+      # tip, no newer release) and we directly import
+      # `DataClassJsonMixin` in `application/parser/schema/schema.py`,
+      # so we can't drop it. Re-enable this rule once
+      # `dataclasses-json` ships a release that allows marshmallow 4.
+      - dependency-name: "marshmallow"
+        update-types: ["version-update:semver-major"]
   - package-ecosystem: "npm"
     directory: "/frontend-ask"
     schedule:
