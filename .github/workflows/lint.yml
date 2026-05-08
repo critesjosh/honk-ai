@@ -2,10 +2,14 @@ name: Python linting
 
 on:
   push:
-    branches:
-      - '*'
+    branches: [main]
   pull_request:
-    types: [ opened, synchronize ]
+    types: [opened, synchronize]
+
+# Cancel an in-flight run when a fixup push lands seconds later.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read

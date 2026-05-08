@@ -5,7 +5,7 @@ import platform
 import uuid
 
 import dotenv
-from flask import Flask, jsonify, redirect, request
+from flask import Flask, jsonify, request
 from jose import jwt
 
 from application.auth import handle_auth
@@ -16,17 +16,12 @@ setup_logging()
 
 from application.api import api  # noqa: E402
 from application.api.answer import answer  # noqa: E402
+from application.api.ingest import ingest_bp  # noqa: E402
 from application.api.internal.routes import internal  # noqa: E402
-from application.api.user.routes import user  # noqa: E402
-from application.api.connector.routes import connector  # noqa: E402
 from application.api.v1 import v1_bp  # noqa: E402
 from application.celery_init import celery  # noqa: E402
 from application.core.settings import settings  # noqa: E402
 from application.storage.db.bootstrap import ensure_database_ready  # noqa: E402
-from application.stt.upload_limits import (  # noqa: E402
-    build_stt_file_size_limit_message,
-    should_reject_stt_request,
-)
 
 
 if platform.system() == "Windows":
@@ -47,10 +42,9 @@ ensure_database_ready(
 )
 
 app = Flask(__name__)
-app.register_blueprint(user)
 app.register_blueprint(answer)
 app.register_blueprint(internal)
-app.register_blueprint(connector)
+app.register_blueprint(ingest_bp)
 app.register_blueprint(v1_bp)
 app.config.update(
     UPLOAD_FOLDER="inputs",
@@ -82,10 +76,7 @@ if settings.AUTH_TYPE == "simple_jwt":
 
 @app.route("/")
 def home():
-    if request.remote_addr in ("0.0.0.0", "127.0.0.1", "localhost", "172.18.0.1"):
-        return redirect("http://localhost:5173")
-    else:
-        return "Welcome to DocsGPT Backend!"
+    return "DocsGPT-Aztec backend. See /ask for the public chat surface."
 
 
 @app.route("/api/health")
@@ -111,23 +102,6 @@ def generate_token():
         )
         return jsonify({"token": token})
     return jsonify({"error": "Token generation not allowed in current auth mode"}), 400
-
-
-@app.before_request
-def enforce_stt_request_size_limits():
-    if request.method == "OPTIONS":
-        return None
-    if should_reject_stt_request(request.path, request.content_length):
-        return (
-            jsonify(
-                {
-                    "success": False,
-                    "message": build_stt_file_size_limit_message(),
-                }
-            ),
-            413,
-        )
-    return None
 
 
 @app.before_request

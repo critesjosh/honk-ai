@@ -1,16 +1,22 @@
-"""Storage factory for creating different storage implementations."""
+"""Storage factory for creating different storage implementations.
+
+Aztec fork uses ``LocalStorage`` exclusively — uploaded corpus zips
+land in the ``uploads`` named volume mounted at
+``settings.UPLOAD_FOLDER`` (see ``deployment/docker-compose-hub.yaml``).
+The upstream S3 backend was removed alongside the admin SPA; if you
+need it back, restore ``application/storage/s3.py`` and the
+``boto3`` dependency in ``application/requirements.txt``.
+"""
 from typing import Dict, Type
 
 from application.storage.base import BaseStorage
 from application.storage.local import LocalStorage
-from application.storage.s3 import S3Storage
 from application.core.settings import settings
 
 
 class StorageCreator:
     storages: Dict[str, Type[BaseStorage]] = {
         "local": LocalStorage,
-        "s3": S3Storage,
     }
     
     _instance = None

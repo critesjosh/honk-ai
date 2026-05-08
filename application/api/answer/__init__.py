@@ -3,6 +3,7 @@ from flask import Blueprint
 from application.api import api
 from application.api.answer.routes.answer import AnswerResource
 from application.api.answer.routes.base import answer_ns
+from application.api.answer.routes.feedback import SubmitFeedback  # noqa: F401  (registers /api/feedback on answer_ns)
 from application.api.answer.routes.search import SearchResource
 from application.api.answer.routes.stream import StreamResource
 from application.api.answer.routes.version import VersionResource

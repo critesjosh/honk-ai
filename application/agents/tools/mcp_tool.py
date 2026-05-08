@@ -20,7 +20,7 @@ from pydantic import AnyHttpUrl, ValidationError
 from redis import Redis
 
 from application.agents.tools.base import Tool
-from application.api.user.tasks import mcp_oauth_status_task, mcp_oauth_task
+from application.workers.mcp_oauth import mcp_oauth_status_task, mcp_oauth_task
 from application.cache import get_redis_instance
 from application.core.settings import settings
 from application.core.url_validation import SSRFError, validate_url

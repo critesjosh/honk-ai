@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working in this
 
 ## What is DocsGPT (Aztec fork)
 
-Open-source AI platform for document-grounded Q&A. Upstream is `arc53/DocsGPT`; this is an Aztec fork at `0.17.0+aztec`. Stack: Flask backend (Python 3.12), React 19 + TypeScript frontend (Vite), **PostgreSQL** (user data + vectors via pgvector), Redis (Celery broker), Celery workers.
+Open-source AI platform for document-grounded Q&A. Upstream is `arc53/DocsGPT`; this is an Aztec fork at `0.17.0+aztec`. Stack: Flask backend (Python 3.12), public `/ask` React/TS bundle (Vite, in `frontend-ask/`), **PostgreSQL** (user data + vectors via pgvector), Redis (Celery broker), Celery workers, Discord bot. The upstream admin SPA, OAuth connectors, STT/TTS, and the FAISS/Mongo/Qdrant/Elasticsearch vector backends were removed in `chore/remove-unused-components`.
 
 Aztec-specific additions on top of upstream:
 - **MCP key provisioning endpoint** at `POST /api/internal/create_mcp_key` (self-authenticated via `MCP_PROVISIONING_KEY`, not `INTERNAL_KEY`) that upserts one agent per Discord identity.
@@ -12,7 +12,7 @@ Aztec-specific additions on top of upstream:
 - **MCP server consumers**: end users query DocsGPT via [`@aztec/mcp-server`](https://github.com/AztecProtocol/mcp-server) (separate repo, npm package). The standalone TS MCP server that previously lived at `extensions/mcp-server/` was removed; that path now contains a README pointer.
 - **Chunking filter** (`application/parser/chunking.py`) that discards chunks with `token_count < 50`.
 - **Path ignore list** (`application/parser/file/bulk.py` → `_IGNORED_PATH_SEGMENTS`) skips any file under `fixtures/`, `dumps/`, `node_modules/`, `target/`, `dist/`, `build/`, `_out/`, `__pycache__/` or `.git/` during ingest. Add new deny-list directory names here.
-- **Custom settings**: `MCP_PROVISIONING_KEY`, `USER_ID_PEPPER`, `AZTEC_SOURCE_IDS`, `AZTEC_CORPUS_VERSION`, `CORS_ALLOWED_ORIGINS`, `EMBEDDINGS_DIMENSION`, `RAG_MAX_DOC_TOKENS`, `VITE_DISABLE_AGENT_EDIT`, `VITE_ASK_AZTEC_AGENT_KEY` (build arg for the public /ask bundle), plus Discord-bot vars `DISCORD_TOKEN` and `NOIR_GUILD_IDS` (comma-separated, supersedes legacy `NOIR_GUILD_ID`).
+- **Custom settings**: `MCP_PROVISIONING_KEY`, `USER_ID_PEPPER`, `AZTEC_SOURCE_IDS`, `AZTEC_CORPUS_VERSION`, `CORS_ALLOWED_ORIGINS`, `EMBEDDINGS_DIMENSION`, `RAG_MAX_DOC_TOKENS`, `VITE_ASK_AZTEC_AGENT_KEY` (build arg for the public /ask bundle), plus Discord-bot vars `DISCORD_TOKEN` and `NOIR_GUILD_IDS` (comma-separated, supersedes legacy `NOIR_GUILD_ID`).
 - **Pseudonymized user identifiers** (`application/pseudonyms.py`, migration `0005_pseudonymize_user_ids`) — every Discord user_id is HMAC-SHA256(`USER_ID_PEPPER`, raw_id), prefixed `discord_p_v1:` in `user_id` columns, bare 32-hex in `agents.mcp_provider_user_id`. `agents.name` for Discord agents is the constant `"Aztec MCP"`. **`USER_ID_PEPPER` is required at boot AND unrotatable** (rotation orphans every pseudonym). Settings validator + migration both fail-closed if missing/non-hex/`<16`-byte. The pepper lives only in backend env; the Discord bot sends raw IDs over the internal compose network and the backend pseudonymizes at the request boundary (`/forget-me`, `/mcp-key`). Post-deploy check: `scripts/db/verify_pseudonymization.sql`.
 - **RAG context cap** (`settings.RAG_MAX_DOC_TOKENS`, default 6000, **10000** in prod `.env`) — caps `calculate_doc_token_budget()` in `utils.py` (upstream defaulted to the full model window).
 - **CORS glob patterns** (`application/app.py:after_request`) — `CORS_ALLOWED_ORIGINS` supports `fnmatch`-style globs. Used for Netlify preview URLs (`https://deploy-preview-*--aztec-docs-dev.netlify.app`) and localhost dev (`http://localhost:*`).
@@ -27,12 +27,12 @@ Aztec-specific additions on top of upstream:
   Rendered-docs targets `_strip_doc_ext` (`.md`/`.mdx`) and `_strip_index_suffix` (Docusaurus serves `foo/index.md` at `/foo`). Code targets strip both `.txt` (`Token.nr.txt` → `Token.nr`) AND `.md` (`hash.nr.md` → `hash.nr`). No GitHub fallback for `version-v4.2.0/...` — that folder doesn't exist at the literal v4.2.0 git tag. Sources deduped by rewritten URL, capped at 10 (`_MAX_SOURCES_EMITTED`). Property-tested in `tests/api/answer/routes/test_source_url_rewrite.py`.
 - **Global rerank retrieval** (`application/retriever/classic_rag.py:_get_data`, `application/vectorstore/pgvector.py:search_by_vector_with_score`) — embeds the question once, single SQL with `WHERE source_id = ANY(%s)`, greedy-packs globally-sorted candidates into the token budget. Dedup key: `(source_path, leading 200 chars)`. Backends without `search_by_vector_with_score` fail loudly. Tests: `tests/test_retriever.py`, `tests/vectorstore/test_pgvector.py`.
 - **Rephrase auth fix** (`application/retriever/classic_rag.py:__init__`) — `ClassicRAG` defaults `api_key=None` so the LLM backend's provider-key fallback (`OPEN_ROUTER_API_KEY` / `OPENAI_API_KEY`) resolves. Do NOT default to `settings.API_KEY` — that's an agent UUID in prod and breaks `_rephrase_query()` with a 401.
-- **Agent sources_list ordering fix** (`stream_processor._get_data_from_api_key`) — prepends `agent.source_id` to `sources_list` (upstream dropped the primary when `extra_source_ids` existed). **Gotcha**: UI edits via the DocsGPT agent form can re-clear `source_id` and reshuffle `extra_source_ids`. If retrieval degrades after a UI edit, re-apply via SQL. Prefer `VITE_DISABLE_AGENT_EDIT=true` in prod. Canonical 12-source order is in the `AZTEC_SOURCE_IDS` comment block in `.env`. **`AZTEC_SOURCE_IDS` is only consumed at agent creation** (`/api/internal/create_mcp_key`); reordering `.env` does not affect existing agents — `UPDATE agents SET source_id=…, extra_source_ids=ARRAY[…]::uuid[]`.
+- **Agent sources_list ordering fix** (`stream_processor._get_data_from_api_key`) — prepends `agent.source_id` to `sources_list` (upstream dropped the primary when `extra_source_ids` existed). With the admin SPA removed there is no UI surface that could re-clear `source_id` or swap `prompt_id` — drift can only come from direct SQL edits. Canonical 12-source order is in the `AZTEC_SOURCE_IDS` comment block in `.env`. **`AZTEC_SOURCE_IDS` is only consumed at agent creation** (`/api/internal/create_mcp_key`); reordering `.env` does not affect existing agents — `UPDATE agents SET source_id=…, extra_source_ids=ARRAY[…]::uuid[]`.
 - **SSE heartbeat** (`api/answer/routes/base.py:_iter_with_heartbeat`) — emits `: ping\n\n` every 15s on silent generator gaps so Cloudflare/Caddy don't idle-close long answers.
 - **SSE `history` shape tolerance** (`stream_processor._load_conversation_history`) — accepts both a JSON-encoded string (Discord bot) and a native list (widget).
 - **Gunicorn gthread workers** (`application/Dockerfile`) — 4×8 (32 concurrent slots), `--timeout 120 --graceful-timeout 30 --keep-alive 75`. Paired with `stop_grace_period: 40s` on the backend compose service so SIGTERM drains SSE streams cleanly.
 - **Reasoning-disable shim for OpenRouter** (`llm/openai.py:_should_disable_reasoning`) — for models that emit chain-of-thought by default (e.g. `x-ai/grok-4.1-fast`), injects `extra_body={"reasoning": {"exclude": true}}`. Extend via `_REASONING_DISABLED_MODEL_PREFIXES`.
-- **Agent edit feature flag** (`VITE_DISABLE_AGENT_EDIT=true` build ARG, `frontend/Dockerfile.prod`) — hides the agent create/edit form (`NewAgent.tsx`, `AgentsList.tsx`, `AgentCard.tsx`); replaces with a notice to manage via SQL or `/api/internal/create_mcp_key`.
+- **No admin SPA** — the upstream React admin SPA at `frontend/` was removed in `chore/remove-unused-components`. All operator workflows are SQL or `scripts/`. The previous `VITE_DISABLE_AGENT_EDIT` build flag is therefore moot and the env var has been retired. Caddy at `/` returns a one-line 200 sentinel via `respond` so health checks don't 404.
 - **Canonical Aztec system prompt** (`application/prompts/aztec_4_2_0_grounded.txt`) — production system prompt shared by the `Aztec 4.2.0` / `docs.aztec.network` agents AND the Honk AI Discord bot's `@`-mention path (the bot's `API_KEY` resolves to one of those agents; no separate Discord agent on `@`-mention). **Source of truth lives in the `prompts` table in Postgres**; the file is the audit-tracked copy. To update: edit the file, `docker cp` into postgres, then `UPDATE prompts SET content = pg_read_file('/tmp/<file>') WHERE id='0780959b-3c18-4ad9-8284-691665233a6f';`. (`application/prompts/aztec_4_2_0_grounded_discord.txt` is a working draft of a Discord-specific variant, not yet wired to any agent's `prompt_id`.)
 - **Eval harness** (`scripts/eval/eval_retrieval.py`, `scripts/eval/golden_queries.json`) — 25 golden queries tagged `identifier` / `concept` / `example`. Two run modes: `--mode retriever` probes `ClassicRAG._get_data()` directly (identifier queries assert top-3 contains the expected `.nr` apiref file; concept queries assert first hit comes from the configured concept prefix); `--mode stream` hits `/stream` end-to-end and asserts banned-identifier absence, no Markdown tables, source diversity, response-time ceiling, and apiref-first citation for identifier queries. `--bucket {identifier,concept,example,all}` filters. See `scripts/eval/README.md`. Run before merging any retrieval-path or prompt change.
 - **`/api/search` parity with `/stream`** (`application/api/answer/routes/search.py:_search_global`) — MCP search endpoint uses the same global-rerank algorithm as `ClassicRAG._get_data`, the same `_aztec_source_url` rewriting, and the same primary-source-prepend fix. Drops empty-body apiref chunks via `_is_empty_apiref_chunk` (filter checks shape, not length, so signature-only chunks like `pub fn poseidon(...)` survive).
@@ -49,7 +49,7 @@ Aztec-specific additions on top of upstream:
 **Always run services via Docker.** Do not install Postgres, Redis, or app dependencies natively.
 
 Two composes at `deployment/`:
-- `docker-compose.yaml` — **dev compose**. Builds from source, exposes ports on localhost (frontend 5173, backend 7091, Redis 6379, Postgres 5432). Use this in dev / smoke-test.
+- `docker-compose.yaml` — **dev compose**. Builds from source, exposes ports on localhost (backend 7091, frontend-ask 5174, Redis 6379, Postgres 5432). Use this in dev / smoke-test.
 - `docker-compose-hub.yaml` — **production compose**. Builds from source, Caddy in HTTP-only mode (TLS at the CF edge), Discord bot container. CF Tunnel anchor lives on `ci-bastion.aztecprotocol.com` (us-east-2); Caddy publishes only `127.0.0.1:5080:80` for an outbound SSH reverse tunnel to bastion's cloudflared. Nothing on this host faces the public internet directly. See `PLAN-bastion-relay.md` for full topology + the systemd-user unit on josh-box.
 
 Configuration lives in `.env` at repo root. It is gitignored. `.env-template` holds placeholders and secret-generation instructions.
@@ -82,7 +82,7 @@ python -m pytest -m integration           # integration tests (may need Postgres
 ruff check .                              # lint
 ruff format .                             # format
 ```
-Frontend (from `frontend/`): `npm run lint`, `npm run build`.
+Public `/ask` bundle (from `frontend-ask/`): `npm run lint`, `npm run build`.
 
 ## Architecture
 
@@ -94,10 +94,8 @@ Frontend (from `frontend/`): `npm run lint`, `npm run build`.
 - **Auth**: `AUTH_TYPE` env var (`session_jwt`, `simple_jwt`). The built-in JWT is **not** a real access boundary — anyone can call `/api/generate_token`. Real auth lives at the reverse proxy (Cloudflare Access in our production deploy).
 - **Vector store**: `VECTOR_STORE=pgvector` uses `application/vectorstore/pgvector.py`, which creates its own `documents` table with an IVFFlat cosine index in the same Postgres instance. `CREATE EXTENSION vector` runs both via the initdb script and inside `pgvector.py`'s init.
 
-### Frontend (`frontend/`)
-React 19 + TypeScript + Vite 8. Redux Toolkit (`store.ts`). Radix UI + Tailwind v4.
-
-Vite bakes env vars at build time. Production uses `frontend/Dockerfile.prod` (multi-stage: Vite build → nginx static) with `VITE_API_HOST` passed as a build ARG matching `PUBLIC_HOSTNAME`. The upstream `frontend/Dockerfile` (running `npm run dev --host`) is dev-only.
+### Frontends
+The fork ships exactly one frontend: **`frontend-ask/`**, the public anonymous chat surface served at `/ask`. Vite + React 19 + TypeScript, prod-built into the `aztec/docsgpt-ask` nginx image. The upstream admin SPA at `frontend/` was removed.
 
 ### Deployment specifics
 - Postgres image: `pgvector/pgvector:pg16` (not plain postgres). Holds agents, sources, conversations, etc., AND the vector embeddings.
@@ -111,7 +109,7 @@ Vite bakes env vars at build time. Production uses `frontend/Dockerfile.prod` (m
 
 | Compose | Project / container prefix | Images | Purpose |
 |---|---|---|---|
-| `deployment/docker-compose-hub.yaml` | `docsgpt-aztec-*` | `aztec/docsgpt:0.17.0-aztec.1`, `aztec/docsgpt-fe:0.17.0-aztec.1`, `aztec/docsgpt-ask:0.17.0-aztec.1` | **production** — CF Tunnel (anchored on bastion) → SSH reverse tunnel → Caddy → frontend (admin SPA) / frontend-ask (public /ask page) / backend; discord-bot container; only Caddy on `127.0.0.1:5080` (loopback) |
+| `deployment/docker-compose-hub.yaml` | `docsgpt-aztec-*` | `aztec/docsgpt:0.17.0-aztec.1`, `aztec/docsgpt-ask:0.17.0-aztec.1` | **production** — CF Tunnel (anchored on bastion) → SSH reverse tunnel → Caddy → frontend-ask (public `/ask`) / backend; discord-bot container; only Caddy on `127.0.0.1:5080` (loopback) |
 | `deployment/docker-compose.yaml` | `docsgpt-oss-*` | `docsgpt-oss-backend:latest`, `docsgpt-oss-worker:latest`, `docsgpt-oss-frontend:latest`, `docsgpt-oss-frontend-ask:latest` | dev smoke-test — publishes 5173/7091/5432/6379 on localhost; `frontend-ask` on 5174 (built prod-style nginx with `ASK_CONNECT_SRC` relaxed to allow `http://localhost:7091` cross-origin) |
 
 Ingress path: `CF edge → CF Tunnel → cloudflared on ci-bastion → bastion localhost:5080 → SSH reverse tunnel (systemd-user `aztec-docs-tunnel.service`) → josh-box 127.0.0.1:5080 → Caddy → backend`. Full topology in `PLAN-bastion-relay.md`.
@@ -204,7 +202,7 @@ Active: `.github/workflows/` `pytest.yml`, `lint.yml`, `vale.yml`, `zizmor.yml`.
 - **Frontend:** ESLint + Prettier, 80 char print width, single quotes, semicolons.
 
 ## PR readiness
-Before opening a PR: `ruff check .`, `python -m pytest`, `npm run lint && npm run build` in `frontend/`. Smoke-test the dev compose.
+Before opening a PR: `ruff check .`, `python -m pytest`, `npm run lint && npm run build` in `frontend-ask/`. Smoke-test the dev compose.
 
 **Update docs in the same change** when behaviour, operator steps, env vars, or user-facing surfaces shift. Targets: this file, `README.md`, `AZTEC_SETUP.md`, `.env-template`, plus per-feature READMEs (`scripts/ingest/`, `scripts/eval/`). Stale docs here have caused real operator mistakes — treat the doc sweep as part of the task.
 
@@ -212,7 +210,6 @@ Before opening a PR: `ruff check .`, `python -m pytest`, `npm run lint && npm ru
 - `deployment/docker-compose-hub.yaml`, `deployment/docker-compose.yaml` — prod / dev composes
 - `deployment/Caddyfile` — `@ask path /ask /ask/*` proxies to `frontend-ask:80`
 - `deployment/postgres-init/01-pgvector.sql` — enables the `vector` extension
-- `frontend/Dockerfile.prod` + `frontend/nginx.conf` — admin SPA
 - `frontend-ask/Dockerfile.prod` + `frontend-ask/nginx.conf` — public /ask bundle (CSP `connect-src` build-arg-substituted via `__ASK_CONNECT_SRC__`)
 - `application/alembic/versions/` — `0003_mcp_provisioning`, `0004_sources_is_public`, `0005_pseudonymize_user_ids`
 - `.env-template` — all production secrets + generation commands

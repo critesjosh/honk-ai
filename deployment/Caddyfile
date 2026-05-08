@@ -78,9 +78,11 @@ http://{$PUBLIC_HOSTNAME} {
 		reverse_proxy frontend-ask:80
 	}
 
-	# Everything else is the SPA served by the nginx frontend container.
+	# No admin SPA in this fork. Anything that doesn't match /api/*,
+	# /stream, or /ask above lands here. We respond with a small 200 so
+	# health checks don't 404 and humans landing at the apex get a hint.
 	handle {
-		reverse_proxy frontend:80
+		respond "DocsGPT-Aztec backend. See /ask for the public chat surface." 200
 	}
 
 	# Access + error logs to stdout so `docker compose logs caddy`

@@ -6,7 +6,7 @@ import zipfile
 
 import pytest
 
-from application.worker import (
+from application.workers.zip_safety import (
     ZipExtractionError,
     _is_path_safe,
     _validate_zip_safety,

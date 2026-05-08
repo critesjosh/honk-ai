@@ -14,9 +14,7 @@ from application.parser.file.tabular_parser import PandasCSVParser, ExcelParser
 from application.parser.file.json_parser import JSONParser
 from application.parser.file.pptx_parser import PPTXParser
 from application.parser.file.image_parser import ImageParser
-from application.parser.file.audio_parser import AudioParser
 from application.parser.schema.base import Document
-from application.stt.constants import SUPPORTED_AUDIO_EXTENSIONS
 from application.utils import num_tokens_from_string
 from application.core.settings import settings
 
@@ -43,10 +41,6 @@ _IGNORED_PATH_SEGMENTS = frozenset(
         ".git",
     }
 )
-
-
-def _build_audio_parser_mapping() -> Dict[str, BaseParser]:
-    return {extension: AudioParser() for extension in SUPPORTED_AUDIO_EXTENSIONS}
 
 
 def get_default_file_extractor(
@@ -100,7 +94,6 @@ def get_default_file_extractor(
             ".webp": DoclingImageParser(ocr_enabled=ocr_enabled) if ocr_enabled else ImageParser(),
             # Media/subtitles
             ".vtt": DoclingVTTParser(),
-            **_build_audio_parser_mapping(),
             # Specialized XML formats
             ".xml": DoclingXMLParser(),
             # Formats docling doesn't support - use standard parsers
@@ -127,7 +120,6 @@ def get_default_file_extractor(
             ".png": ImageParser(),
             ".jpg": ImageParser(),
             ".jpeg": ImageParser(),
-            **_build_audio_parser_mapping(),
         }
 
 

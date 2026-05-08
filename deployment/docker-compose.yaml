@@ -1,18 +1,5 @@
 name: docsgpt-oss
 services:
-  frontend:
-    build: ../frontend
-    volumes:
-      - ../frontend/src:/app/src
-    environment:
-      - VITE_API_HOST=http://localhost:7091
-      - VITE_API_STREAMING=$VITE_API_STREAMING
-      - VITE_GOOGLE_CLIENT_ID=$VITE_GOOGLE_CLIENT_ID
-    ports:
-      - "5173:5173"
-    depends_on:
-      - backend
-
   # Dev smoke-test for the /ask public bundle. Built like prod (nginx
   # static) since vite dev under a `base` prefix differs enough from
   # the production serve that a "dev mode" build wouldn't catch the
@@ -48,9 +35,14 @@ services:
     ports:
       - "7091:7091"
     volumes:
-      - ../application/indexes:/app/indexes
-      - ../application/inputs:/app/inputs
-      - ../application/vectors:/app/vectors
+      # Match prod (docker-compose-hub.yaml) — UPLOAD_FOLDER in .env is
+      # /app/application/inputs; backend + worker must mount the same
+      # path so the worker can read what the backend just wrote. The
+      # upstream `/app/inputs` mount silently dropped uploads into the
+      # backend container's writable layer where the worker couldn't
+      # see them; ingest tasks reliably failed on dev with "File not
+      # found: /app/application/inputs/...".
+      - ../application/inputs:/app/application/inputs
     depends_on:
       redis:
         condition: service_started
@@ -71,9 +63,14 @@ services:
       - CACHE_REDIS_URL=redis://redis:6379/2
       - POSTGRES_URI=postgresql://docsgpt:docsgpt@postgres:5432/docsgpt
     volumes:
-      - ../application/indexes:/app/indexes
-      - ../application/inputs:/app/inputs
-      - ../application/vectors:/app/vectors
+      # Match prod (docker-compose-hub.yaml) — UPLOAD_FOLDER in .env is
+      # /app/application/inputs; backend + worker must mount the same
+      # path so the worker can read what the backend just wrote. The
+      # upstream `/app/inputs` mount silently dropped uploads into the
+      # backend container's writable layer where the worker couldn't
+      # see them; ingest tasks reliably failed on dev with "File not
+      # found: /app/application/inputs/...".
+      - ../application/inputs:/app/application/inputs
     depends_on:
       redis:
         condition: service_started

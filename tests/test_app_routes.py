@@ -70,21 +70,6 @@ class TestGenerateTokenRoute:
             assert response.status_code == 400
 
 
-class TestSttRequestSizeLimits:
-
-    @pytest.mark.unit
-    def test_non_stt_request_passes(self, client):
-        response = client.get("/api/health")
-        assert response.status_code == 200
-
-    @pytest.mark.unit
-    def test_oversized_stt_request_rejected(self, client):
-        with patch("application.app.should_reject_stt_request", return_value=True), \
-             patch("application.app.build_stt_file_size_limit_message", return_value="Too large"):
-            response = client.post("/api/stt/upload", data=b"x" * 100)
-            assert response.status_code == 413
-
-
 class TestAuthenticateRequest:
 
     @pytest.mark.unit

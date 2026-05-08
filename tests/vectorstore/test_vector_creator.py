@@ -8,12 +8,9 @@ from application.vectorstore.vector_creator import VectorCreator
 @pytest.mark.unit
 class TestVectorCreator:
     def test_registered_vectorstores(self):
-        assert "faiss" in VectorCreator.vectorstores
-        assert "elasticsearch" in VectorCreator.vectorstores
-        assert "mongodb" in VectorCreator.vectorstores
-        assert "qdrant" in VectorCreator.vectorstores
-        assert "milvus" in VectorCreator.vectorstores
-        assert "pgvector" in VectorCreator.vectorstores
+        # Aztec fork is pgvector-only — the upstream FAISS / Mongo /
+        # Qdrant / Milvus / Elasticsearch backends were removed.
+        assert set(VectorCreator.vectorstores) == {"pgvector"}
 
     def test_create_vectorstore_invalid_type(self):
         with pytest.raises(ValueError, match="No vectorstore class found for type"):
@@ -21,19 +18,18 @@ class TestVectorCreator:
 
     def test_create_vectorstore_case_insensitive(self):
         with patch.object(
-            VectorCreator.vectorstores["faiss"], "__init__", return_value=None
+            VectorCreator.vectorstores["pgvector"], "__init__", return_value=None
         ) as mock_init:
-            mock_init.return_value = None
-            VectorCreator.create_vectorstore("FAISS", source_id="test", embeddings_key="key")
+            VectorCreator.create_vectorstore(
+                "PGVECTOR", source_id="test", embeddings_key="key"
+            )
             mock_init.assert_called_once_with(source_id="test", embeddings_key="key")
 
     def test_create_vectorstore_passes_args(self):
         with patch.object(
-            VectorCreator.vectorstores["mongodb"], "__init__", return_value=None
+            VectorCreator.vectorstores["pgvector"], "__init__", return_value=None
         ) as mock_init:
             VectorCreator.create_vectorstore(
-                "mongodb", source_id="src1", embeddings_key="ek", database="mydb"
+                "pgvector", source_id="src1", embeddings_key="ek"
             )
-            mock_init.assert_called_once_with(
-                source_id="src1", embeddings_key="ek", database="mydb"
-            )
+            mock_init.assert_called_once_with(source_id="src1", embeddings_key="ek")

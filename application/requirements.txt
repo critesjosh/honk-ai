@@ -1,6 +1,4 @@
 alembic>=1.13,<2
-anthropic==0.88.0
-boto3==1.42.83
 beautifulsoup4==4.14.3
 cel-python==0.5.0
 celery==5.6.3
@@ -15,19 +13,21 @@ defusedxml==0.7.1
 # markdown + source code, so docling's layout/OCR features weren't
 # meaningfully exercised. Reinstate if you start ingesting scanned
 # PDFs or image-heavy docs.
+# Removed during the unused-component sweep:
+#   - anthropic / google-genai / groq / llama_cpp / novita / premai /
+#     sagemaker / docsgpt LLM SDKs (registry pruned to openai +
+#     openrouter only, see application/llm/llm_creator.py)
+#   - faiss-cpu (registry pruned to pgvector only)
+#   - boto3 (S3 storage backend removed; LocalStorage only)
+#   - elevenlabs / gTTS (TTS removed)
+#   - google-api-python-client / google-auth-* / msal (Drive /
+#     SharePoint / Confluence connectors removed)
 docx2txt==0.9
 ddgs>=8.0.0
 fast-ebook
-elevenlabs==2.43.0
 Flask==3.1.3
-faiss-cpu==1.13.2
 fastmcp==3.2.4
 flask-restx==1.3.2
-google-genai==1.73.1
-google-api-python-client==2.193.0
-google-auth-httplib2==0.3.1
-google-auth-oauthlib==1.3.1
-gTTS==2.5.4
 gunicorn==25.3.0
 jinja2==3.1.6
 jiter==0.13.0
@@ -48,7 +48,6 @@ markupsafe==3.0.3
 marshmallow>=3.18.0,<5.0.0
 mpmath==1.3.0
 multidict==6.7.1
-msal==1.35.1
 mypy-extensions==1.1.0
 networkx==3.6.1
 numpy==2.4.4

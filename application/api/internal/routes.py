@@ -16,7 +16,6 @@ from application.storage.db.base_repository import looks_like_uuid
 from application.storage.db.repositories.agents import AgentsRepository
 from application.storage.db.repositories.sources import SourcesRepository
 from application.storage.db.session import db_session
-from application.storage.storage_creator import StorageCreator
 
 
 logger = logging.getLogger(__name__)
@@ -104,29 +103,10 @@ def upload_index_files():
     else:
         file_name_map = None
 
-    storage = StorageCreator.get_storage()
-    index_base_path = f"indexes/{source_id}"
-
-    if settings.VECTOR_STORE == "faiss":
-        if "file_faiss" not in request.files:
-            logger.error("No file_faiss part")
-            return {"status": "no file"}
-        file_faiss = request.files["file_faiss"]
-        if file_faiss.filename == "":
-            return {"status": "no file name"}
-        if "file_pkl" not in request.files:
-            logger.error("No file_pkl part")
-            return {"status": "no file"}
-        file_pkl = request.files["file_pkl"]
-        if file_pkl.filename == "":
-            return {"status": "no file name"}
-
-        # Save index files to storage
-        faiss_storage_path = f"{index_base_path}/index.faiss"
-        pkl_storage_path = f"{index_base_path}/index.pkl"
-        storage.save_file(file_faiss, faiss_storage_path)
-        storage.save_file(file_pkl, pkl_storage_path)
-
+    # Aztec fork uses pgvector exclusively; embeddings are written
+    # directly to the ``documents`` table by the worker. The upstream
+    # FAISS-file branch (which stored ``index.faiss`` / ``index.pkl``
+    # under ``indexes/<source_id>/``) was removed.
     now = datetime.datetime.now(datetime.timezone.utc)
     update_fields = {
         "name": job_name,

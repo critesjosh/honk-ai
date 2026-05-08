@@ -13,6 +13,7 @@ import os
 import tempfile
 import uuid
 
+from application.celery_init import celery
 from application.parser.chunking import Chunker
 from application.parser.embedding_pipeline import embed_and_store_documents
 from application.parser.file.bulk import SimpleDirectoryReader
@@ -30,6 +31,28 @@ from application.workers._helpers import (
     upload_index,
 )
 from application.workers.zip_safety import extract_zip_recursive
+
+
+@celery.task(bind=True)
+def ingest(
+    self, directory, formats, job_name, user, file_path, filename, file_name_map=None
+):
+    """Celery task wrapper for ``ingest_worker``.
+
+    Lives here (not in a separate ``api/user/tasks.py`` like upstream)
+    so the corpus-ingest pipeline (``scripts/ingest/upload.py`` →
+    ``/api/upload`` → this task) survives the upstream-admin-API removal.
+    """
+    return ingest_worker(
+        self,
+        directory,
+        formats,
+        job_name,
+        file_path,
+        filename,
+        user,
+        file_name_map=file_name_map,
+    )
 
 
 def ingest_worker(

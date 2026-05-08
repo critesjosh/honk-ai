@@ -1,5 +1,13 @@
 name: Run python tests with pytest
-on: [push, pull_request]
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Cancel an in-flight run when a fixup push lands seconds later.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read

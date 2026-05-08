@@ -15,11 +15,6 @@
 ## Aztec fork overview
 
 ### Access paths
-- **Web chat UI (admin)** — `https://aztec.adjacentpossible.dev`. Log in via
-  Cloudflare Access (email SSO). The default `Aztec 4.2.0` agent is scoped to
-  all 12 corpora (Developer Docs, Aztec.nr Framework, Noir Language Docs,
-  Example Contracts, aztec.js SDK, TypeScript API, Noir stdlib, CLI, Network
-  Docs, E2E Tests, Protocol Circuits, L1 Contracts).
 - **Public /ask landing page** — `https://aztec.adjacentpossible.dev/ask`.
   Anonymous, no login. Single-page chat surface in the Aztec design system
   (parchment + chartreuse, hard-edged poster card) backed by the same RAG
@@ -152,17 +147,17 @@
 - **CORS glob patterns** — `CORS_ALLOWED_ORIGINS` supports shell-style
   globs so Netlify preview URLs (`https://deploy-preview-*--aztec-docs-dev.netlify.app`)
   and local dev (`http://localhost:*`) don't have to be re-added per PR.
-- **Widget embedding** — the React widget (`extensions/react-widget`)
-  works from any origin in the CORS allowlist. Cloudflare Access must
-  have **path-scoped Bypass applications** for the three widget
-  endpoints (`/stream`, `/api/search`, `/api/feedback`), otherwise
-  browsers hit the SSO challenge inside an XHR and fail. The rest of
-  the hostname stays SSO-gated.
-- **Agent-edit lockdown** (`VITE_DISABLE_AGENT_EDIT=true` build-arg) —
-  replaces the in-UI agent create/edit form with a notice directing
-  admins to manage agents via SQL or `/api/internal/create_mcp_key`.
-  The UI was silently resetting `source_id` and swapping `prompt_id`
-  on save; the lockdown prevents that drift.
+- **Widget embedding** — the live docs widget (in
+  [`AztecProtocol/aztec-packages`](https://github.com/AztecProtocol/aztec-packages)
+  under `docs/src/components/AztecDocsWidget/`) works from any origin in
+  the CORS allowlist. Cloudflare Access must have **path-scoped Bypass
+  applications** for the widget endpoints (`/stream`, `/api/search`,
+  `/api/feedback`), otherwise browsers hit the SSO challenge inside an
+  XHR and fail. The rest of the hostname stays SSO-gated.
+- **No admin SPA** — the upstream React admin SPA at `frontend/` was
+  removed in `chore/remove-unused-components`. All operator workflows
+  are SQL or scripts under `scripts/`. Caddy at `/` returns a 200
+  sentinel via `respond` so health checks don't 404.
 - **`/api/version` endpoint** — public, unauthenticated `GET`/`POST`
   returning `{aztec_corpus_version, source_count}` from the
   `AZTEC_CORPUS_VERSION` setting (default `v4.2.0`).
@@ -180,9 +175,10 @@
   heading.
 - **Custom settings** — `MCP_PROVISIONING_KEY`, `USER_ID_PEPPER`,
   `AZTEC_SOURCE_IDS`, `AZTEC_CORPUS_VERSION`, `CORS_ALLOWED_ORIGINS`,
-  `EMBEDDINGS_DIMENSION`, `RAG_MAX_DOC_TOKENS`, `VITE_DISABLE_AGENT_EDIT`,
-  plus Discord-bot vars `DISCORD_TOKEN` and `NOIR_GUILD_IDS` (legacy
-  single-guild `NOIR_GUILD_ID` is still honored).
+  `EMBEDDINGS_DIMENSION`, `RAG_MAX_DOC_TOKENS`, `VITE_ASK_AZTEC_AGENT_KEY`
+  (build arg for the public `/ask` bundle), plus Discord-bot vars
+  `DISCORD_TOKEN` and `NOIR_GUILD_IDS` (legacy single-guild
+  `NOIR_GUILD_ID` is still honored).
 
 ### Repository map (fork-specific)
 
@@ -200,8 +196,14 @@
 - [`extensions/discord/`](./extensions/discord/) — Discord bot source +
   Dockerfile.
 - [`@aztec/mcp-server`](https://github.com/AztecProtocol/mcp-server) —
-  the MCP server end users install locally (lives in a separate repo;
-  `extensions/mcp-server/README.md` here is just a pointer).
+  the MCP server end users install locally; lives in a separate repo
+  ([npm](https://www.npmjs.com/package/@aztec/mcp-server)). This repo
+  only provides the HTTP endpoints (`/api/search`, `/api/version`,
+  `/api/internal/create_mcp_key`) the MCP server consumes.
+- The previous `extensions/mcp-server/` (standalone TS MCP server) and
+  `extensions/react-widget/` (npm widget) directories were upstream
+  artefacts not used by Aztec; both were removed. The live docs widget
+  is in `aztec-packages` at `docs/src/components/AztecDocsWidget/`.
 
 ---
 
@@ -282,33 +284,15 @@ A more detailed [Quickstart](https://docs.docsgpt.cloud/quickstart) is available
    cd DocsGPT
    ```
 
-**For macOS and Linux:**
-
-2. **Run the setup script:**
+2. **Bring up the dev compose:**
 
    ```bash
-   ./setup.sh
+   docker compose -f deployment/docker-compose.yaml up -d
+   docker compose -f deployment/docker-compose.yaml down
    ```
 
-**For Windows:**
-
-2. **Run the PowerShell setup script:**
-
-   ```powershell
-   PowerShell -ExecutionPolicy Bypass -File .\setup.ps1
-   ```
-
-Either script will guide you through setting up DocsGPT. Five options available: using the public API, running locally, connecting to a local inference engine, using a cloud API provider, or build the docker image locally. Scripts will automatically configure your `.env` file and handle necessary downloads and installations based on your chosen option.
-
-**Navigate to http://localhost:5173/**
-
-To stop DocsGPT, open a terminal in the `DocsGPT` directory and run:
-
-```bash
-docker compose -f deployment/docker-compose.yaml down
-```
-
-(or use the specific `docker compose down` command shown after running the setup script).
+   See `AZTEC_SETUP.md` for the full bootstrap (Postgres init,
+   migrations, agent provisioning) and `CLAUDE.md` for architecture.
 
 > [!Note]
 > For development environment setup instructions, please refer to the [Development Environment Guide](https://docs.docsgpt.cloud/Deploying/Development-Environment).
@@ -323,13 +307,10 @@ Please refer to the [CONTRIBUTING.md](CONTRIBUTING.md) file for information abou
 
 ## Project Structure
 
-- Application - Flask app (main application).
-
-- Extensions - Extensions, like react widget or discord bot.
-
-- Frontend - Frontend uses <a href="https://vitejs.dev/">Vite</a> and <a href="https://react.dev/">React</a>.
-
-- Scripts - Miscellaneous scripts.
+- `application/` - Flask + Celery backend (Python 3.12).
+- `extensions/discord/` - Discord bot (Honk AI).
+- `frontend-ask/` - Public `/ask` chat surface (Vite + React).
+- `scripts/` - Ingest, eval, and DB provisioning utilities.
 
 ## Code Of Conduct
 

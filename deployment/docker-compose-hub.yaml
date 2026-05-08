@@ -34,22 +34,7 @@ services:
       - PUBLIC_HOSTNAME=${PUBLIC_HOSTNAME:?PUBLIC_HOSTNAME must be set in .env}
     depends_on:
       - backend
-      - frontend
       - frontend-ask
-
-  frontend:
-    build:
-      context: ../frontend
-      dockerfile: Dockerfile.prod
-      args:
-        VITE_API_HOST: https://${PUBLIC_HOSTNAME}
-        VITE_API_STREAMING: "${VITE_API_STREAMING:-true}"
-        VITE_DISABLE_AGENT_EDIT: "${VITE_DISABLE_AGENT_EDIT:-false}"
-    image: aztec/docsgpt-fe:${IMAGE_TAG:-0.17.0-aztec.1}
-    restart: unless-stopped
-    # No host port; Caddy reaches frontend:80 on the internal network.
-    depends_on:
-      - backend
 
   # Public-facing /ask landing page. Separate Vite/React bundle from the
   # admin frontend; same origin via Caddy `handle /ask/*`. Bearer key

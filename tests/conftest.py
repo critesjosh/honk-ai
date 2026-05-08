@@ -45,6 +45,16 @@ os.environ.setdefault("AUTO_CREATE_DB", "false")
 # to a real DB, never used outside the ephemeral test process.
 os.environ.setdefault("USER_ID_PEPPER", "0" * 64)
 
+# Several upstream tests import ``application.api.answer.routes.base`` and
+# call ``complete_stream`` with a mocked agent. The route still constructs
+# an LLM via ``LLMCreator.create_llm`` for compression/summarization, and
+# with the Aztec fork's ``LLM_PROVIDER=openrouter`` default, the OpenAI
+# SDK refuses to instantiate without an API key. The mocked agent never
+# actually exercises this LLM, so a dummy key is enough to get the client
+# constructor to succeed. ``setdefault`` keeps any real shell-set key.
+os.environ.setdefault("OPENAI_API_KEY", "test-openai-key-not-used")
+os.environ.setdefault("OPEN_ROUTER_API_KEY", "test-openrouter-key-not-used")
+
 import subprocess
 import sys
 from pathlib import Path

@@ -18,7 +18,11 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(extra="ignore")
 
     AUTH_TYPE: Optional[str] = None  # simple_jwt, session_jwt, or None
-    LLM_PROVIDER: str = "docsgpt"
+    # Default flipped from upstream's "docsgpt" to "openrouter" — the
+    # docsgpt provider class was removed alongside the unused-component
+    # sweep. Aztec prod sets ``LLM_PROVIDER=openrouter`` in ``.env``;
+    # this default keeps boot working when env is unset (e.g. unit tests).
+    LLM_PROVIDER: str = "openrouter"
     LLM_NAME: Optional[str] = None  # if LLM_PROVIDER is openai, LLM_NAME can be gpt-4 or gpt-3.5-turbo
     EMBEDDINGS_NAME: str = "huggingface_sentence-transformers/all-mpnet-base-v2"
     EMBEDDINGS_BASE_URL: Optional[str] = None  # Remote embeddings API URL (OpenAI-compatible)

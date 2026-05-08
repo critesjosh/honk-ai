@@ -21,10 +21,10 @@ def _patch_mcp_globals(monkeypatch):
     if "application.agents.tools.mcp_tool" in sys.modules:
         mcp_mod = sys.modules["application.agents.tools.mcp_tool"]
     else:
-        # Break the circular import by pre-populating the tasks import
-        # with a mock before mcp_tool tries to import it
+        # Break the circular import by pre-populating the workers
+        # import with a mock before mcp_tool tries to import it.
         mock_tasks = MagicMock()
-        monkeypatch.setitem(sys.modules, "application.api.user.tasks", mock_tasks)
+        monkeypatch.setitem(sys.modules, "application.workers.mcp_oauth", mock_tasks)
         import application.agents.tools.mcp_tool as mcp_mod
 
     monkeypatch.setattr(mcp_mod, "_mcp_clients_cache", {})

@@ -1,6 +1,7 @@
-"""Shared file-extension constants for parsing and ingestion flows."""
+"""Shared file-extension constants for parsing and ingestion flows.
 
-from application.stt.constants import SUPPORTED_AUDIO_EXTENSIONS
+Audio extensions were dropped from this fork alongside the STT pipeline.
+"""
 
 
 SUPPORTED_SOURCE_DOCUMENT_EXTENSIONS = (
@@ -23,5 +24,4 @@ SUPPORTED_SOURCE_IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg")
 SUPPORTED_SOURCE_EXTENSIONS = (
     *SUPPORTED_SOURCE_DOCUMENT_EXTENSIONS,
     *SUPPORTED_SOURCE_IMAGE_EXTENSIONS,
-    *SUPPORTED_AUDIO_EXTENSIONS,
 )

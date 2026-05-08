@@ -7,7 +7,7 @@ Aztec fork of DocsGPT, pinned to upstream tag `0.17.0` with Aztec customizations
 - **PostgreSQL** holds all user data — agents, sources, conversations, prompts, attachments, workflows, logs, token usage.
 - **pgvector** (same Postgres instance, different table) stores document embeddings. Upstream's FAISS index directory is no longer used.
 - **Redis** is the Celery broker and cache.
-- **Caddy** (production only) terminates TLS via Let's Encrypt and reverse-proxies to the backend / frontend.
+- **Caddy** (production only) reverse-proxies to the backend (`/api/*`, `/stream`) and the public `/ask` page (`frontend-ask`). TLS lives at the Cloudflare edge; Caddy itself runs HTTP-only behind the tunnel.
 - **Cloudflare Access** is the authentication boundary on the public deployment — DocsGPT's built-in JWT is **not** a real auth gate.
 
 No MongoDB. No FAISS files. Source metadata is a row in the Postgres `sources` table; embeddings live in the pgvector `documents` table.
@@ -85,8 +85,6 @@ AUTO_MIGRATE=false
 AUTO_CREATE_DB=false
 VERSION_CHECK=false
 CORS_ALLOWED_ORIGINS=https://${PUBLIC_HOSTNAME}
-CONNECTOR_REDIRECT_BASE_URI=https://${PUBLIC_HOSTNAME}/api/connectors/callback
-VITE_API_HOST=https://${PUBLIC_HOSTNAME}
 IMAGE_TAG=0.17.0-aztec.1
 API_KEY=<your LLM provider key>
 LLM_NAME=<model>
@@ -238,8 +236,8 @@ python -m pytest
 # Integration tests (require Postgres)
 python -m pytest -m integration
 
-# Frontend
-cd frontend && npm run lint && npm run build
+# Public /ask bundle
+cd frontend-ask && npm run lint && npm run build
 ```
 
 Dev containers volume-mount `application/core/model_configs.py` so changes to model metadata take effect on container restart without rebuilding.
@@ -361,10 +359,6 @@ DocsGPT/
     docker-compose-hub.yaml             # prod (Caddy, pgvector, internal-only)
     Caddyfile                           # TLS + Cloudflare Access integration
     postgres-init/01-pgvector.sql       # enables vector extension on initdb
-  frontend/
-    Dockerfile                          # dev (Vite dev server)
-    Dockerfile.prod                     # prod (Vite build + nginx static)
-    nginx.conf                          # SPA fallback + cache headers
   frontend-ask/
     Dockerfile.prod                     # prod public /ask bundle (Vite + nginx)
     nginx.conf                          # SPA fallback under /ask + CSP
