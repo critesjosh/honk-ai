@@ -87,7 +87,12 @@ services:
       context: ../application
     image: aztec/docsgpt:${IMAGE_TAG:-0.17.0-aztec.1}
     restart: unless-stopped
-    command: celery -A application.app.celery worker -l INFO -B -c 2
+    # Beat is co-located via -B. ``--schedule`` points the schedule
+    # state file at /tmp because the worker image runs as ``appuser``
+    # without write access to the default CWD (/app); without this,
+    # beat fails on boot with ``Permission denied: 'celerybeat-schedule'``
+    # and the periodic retention/cleanup tasks never fire.
+    command: celery -A application.app.celery worker -l INFO -B --schedule=/tmp/celerybeat-schedule -c 2
     env_file:
       - ../.env
     environment:

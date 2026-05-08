@@ -52,7 +52,13 @@ services:
   worker:
     user: root
     build: ../application
-    command: celery -A application.app.celery worker -l INFO -B -c 2
+    # Beat is co-located via -B; ``--schedule`` points state at /tmp
+    # to mirror docker-compose-hub.yaml (where the image runs as
+    # appuser without write access to the default CWD). Dev compose
+    # uses ``user: root`` so it would technically work without this
+    # flag — but mirroring prod ensures dev exercises the same beat
+    # path that prod runs.
+    command: celery -A application.app.celery worker -l INFO -B --schedule=/tmp/celerybeat-schedule -c 2
     env_file:
       - ../.env
     environment:
