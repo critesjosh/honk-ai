@@ -1,18 +1,16 @@
-<h1 align="center">
-  DocsGPT  🦖
-</h1>
+# Aztec DocsGPT
 
-<p align="center">
-  <strong>Private AI for agents, assistants and enterprise search</strong>
-</p>
+RAG-backed knowledge-base assistant for the Aztec Network.
+Live at **[aztec.adjacentpossible.dev](https://aztec.adjacentpossible.dev)**.
+Corpus pinned to [`aztec-packages@v4.2.0`](https://github.com/AztecProtocol/aztec-packages/tree/v4.2.0).
 
-> **Aztec Labs fork.** Internal knowledge-base assistant for the Aztec Network,
-> built on upstream [`arc53/DocsGPT`](https://github.com/arc53/DocsGPT) starting
-> at tag `0.17.0`. Corpus pinned to [`aztec-packages@v4.2.0`](https://github.com/AztecProtocol/aztec-packages/tree/v4.2.0).
-> Live at **[aztec.adjacentpossible.dev](https://aztec.adjacentpossible.dev)**
-> (Cloudflare Access SSO). The rest of this README is upstream documentation.
+This repo is a heavily-modified fork of [`arc53/DocsGPT`](https://github.com/arc53/DocsGPT)
+starting from tag `0.17.0`; the upstream admin SPA, OAuth connectors,
+STT/TTS, and the FAISS/Mongo/Qdrant/Elasticsearch vector backends were
+removed. See [`CLAUDE.md`](./CLAUDE.md) for the architectural diff and
+[`AZTEC_SETUP.md`](./AZTEC_SETUP.md) for the production deploy walkthrough.
 
-## Aztec fork overview
+## Overview
 
 ### Access paths
 - **Public /ask landing page** — `https://aztec.adjacentpossible.dev/ask`.
@@ -160,7 +158,8 @@
   sentinel via `respond` so health checks don't 404.
 - **`/api/version` endpoint** — public, unauthenticated `GET`/`POST`
   returning `{aztec_corpus_version, source_count}` from the
-  `AZTEC_CORPUS_VERSION` setting (default `v4.2.0`).
+  `AZTEC_CORPUS_VERSION` setting (`unknown` when unset; production
+  pins it to `v4.2.0`).
   [`@aztec/mcp-server`](https://github.com/AztecProtocol/mcp-server)
   reads this to gate against version drift between the MCP client and
   the deployed corpus. POST exists because Cloudflare Access gates GET
@@ -207,135 +206,43 @@
 
 ---
 
-<p align="left">
-  <strong><a href="https://www.docsgpt.cloud/">DocsGPT</a></strong> is an open-source AI platform for building intelligent agents and assistants. Features Agent Builder, deep research tools, document analysis (PDF, Office, web content, and audio), Multi-model support (choose your provider or run locally), and rich API connectivity for agents with actionable tools and integrations. Deploy anywhere with complete privacy control.
-</p>
-
-<div align="center">
-  
-  <a href="https://github.com/arc53/DocsGPT">![link to main GitHub showing Stars number](https://img.shields.io/github/stars/arc53/docsgpt?style=social)</a>
-  <a href="https://github.com/arc53/DocsGPT">![link to main GitHub showing Forks number](https://img.shields.io/github/forks/arc53/docsgpt?style=social)</a>
-  <a href="https://github.com/arc53/DocsGPT/blob/main/LICENSE">![link to license file](https://img.shields.io/github/license/arc53/docsgpt)</a>
-  <a href="https://www.bestpractices.dev/projects/9907"><img src="https://www.bestpractices.dev/projects/9907/badge"></a>
-  <a href="https://discord.gg/vN7YFfdMpj">![link to discord](https://img.shields.io/discord/1070046503302877216)</a>
-  <a href="https://x.com/docsgptai">![X (formerly Twitter) URL](https://img.shields.io/twitter/follow/docsgptai)</a>
-
-<a href="https://docs.docsgpt.cloud/quickstart">⚡️ Quickstart</a> • <a href="https://app.docsgpt.cloud/">☁️ Cloud Version</a> • <a href="https://discord.gg/vN7YFfdMpj">💬 Discord</a>
-<br>
-<a href="https://docs.docsgpt.cloud/">📖 Documentation</a> • <a href="https://github.com/arc53/DocsGPT/blob/main/CONTRIBUTING.md">👫 Contribute</a> • <a href="https://blog.docsgpt.cloud/">🗞 Blog</a>
-<br>
-
-</div>
-
-
-<div align="center">
-  <br>
-<img src="https://d3dg1063dc54p9.cloudfront.net/videos/demo-26.gif" alt="video-example-of-docs-gpt" width="800" height="480">
-</div>
-<h3 align="left">
-  <strong>Key Features:</strong>
-</h3>
-<ul align="left">
-    <li><strong>🗂️ Wide Format Support:</strong> Reads PDF, DOCX, CSV, XLSX, EPUB, MD, RST, HTML, MDX, JSON, PPTX, images, and audio files such as MP3, WAV, M4A, OGG, and WebM.</li>
-    <li><strong>🎙️ Speech Workflows:</strong> Record voice input into chat, transcribe audio on the backend, and ingest meeting recordings or voice notes as searchable knowledge.</li>
-    <li><strong>🌐 Web & Data Integration:</strong> Ingests from URLs, sitemaps, Reddit, GitHub and web crawlers.</li>
-    <li><strong>✅ Reliable Answers:</strong> Get accurate, hallucination-free responses with source citations viewable in a clean UI.</li>
-    <li><strong>🔑 Streamlined API Keys:</strong>  Generate keys linked to your settings, documents, and models, simplifying chatbot and integration setup.</li>
-    <li><strong>🔗 Actionable Tooling:</strong> Connect to APIs, tools, and other services to enable LLM actions.</li>
-    <li><strong>🧩 Pre-built Integrations:</strong> Use readily available HTML/React chat widgets, search tools, Discord/Telegram bots, and more.</li>
-    <li><strong>🔌 Flexible Deployment:</strong> Works with major LLMs (OpenAI, Google, Anthropic) and local models (Ollama, llama_cpp).</li>
-    <li><strong>🏢 Secure & Scalable:</strong> Run privately and securely with Kubernetes support, designed for enterprise-grade reliability.</li>
-</ul>
-
-## Roadmap
-- [x] Add OAuth 2.0 authentication for MCP ( September 2025 )
-- [x] Deep Agents ( October 2025 )
-- [x] Prompt Templating ( October 2025 )
-- [x] Full api tooling ( Dec 2025 )
-- [ ] Agent scheduling ( Jan 2026 )
-
-You can find our full roadmap [here](https://github.com/orgs/arc53/projects/2). Please don't hesitate to contribute or create issues, it helps us improve DocsGPT!
-
-### Production Support / Help for Companies:
-
-We're eager to provide personalized assistance when deploying your DocsGPT to a live environment.
-
-[Get a Demo :wave:](https://www.docsgpt.cloud/contact)⁠
-
-[Send Email :email:](mailto:support@docsgpt.cloud?subject=DocsGPT%20support%2Fsolutions)
-
-## Join the Lighthouse Program 🌟
-
-Calling all developers and GenAI innovators! The **DocsGPT Lighthouse Program** connects technical leaders actively deploying or extending DocsGPT in real-world scenarios. Collaborate directly with our team to shape the roadmap, access priority support, and build enterprise-ready solutions with exclusive community insights.
-
-[Learn More & Apply →](https://docs.google.com/forms/d/1KAADiJinUJ8EMQyfTXUIGyFbqINNClNR3jBNWq7DgTE)
-
-## QuickStart
+## Quickstart (dev compose)
 
 > [!Note]
-> Make sure you have [Docker](https://docs.docker.com/engine/install/) installed
+> Requires [Docker](https://docs.docker.com/engine/install/) with the
+> compose plugin. The full production walkthrough — Postgres bootstrap,
+> migrations, corpus ingest, agent provisioning, Cloudflare Access /
+> bastion-relay setup — lives in [`AZTEC_SETUP.md`](./AZTEC_SETUP.md).
 
-A more detailed [Quickstart](https://docs.docsgpt.cloud/quickstart) is available in our documentation
+```bash
+# 1. Provision .env from the template (then generate secrets per the comments)
+cp .env-template .env
 
-1. **Clone the repository:**
+# 2. Start Postgres on its own so the pgvector init scripts run
+docker compose -f deployment/docker-compose.yaml up -d postgres
 
-   ```bash
-   git clone https://github.com/arc53/DocsGPT.git
-   cd DocsGPT
-   ```
+# 3. Run migrations (creates agents/sources/conversations tables + Aztec MCP columns).
+#    `scripts/` lives at the repo root, NOT inside the backend image, so bind-mount it.
+docker compose -f deployment/docker-compose.yaml run --rm \
+  -v $(pwd)/scripts:/app/scripts:ro \
+  backend python scripts/db/init_postgres.py
 
-2. **Bring up the dev compose:**
+# 4. Bring up the rest (backend on :7091, frontend-ask on :5174, redis, worker)
+docker compose -f deployment/docker-compose.yaml up -d
+docker compose -f deployment/docker-compose.yaml logs -f backend worker
+```
 
-   ```bash
-   docker compose -f deployment/docker-compose.yaml up -d
-   docker compose -f deployment/docker-compose.yaml down
-   ```
+Production uses `deployment/docker-compose-hub.yaml` instead — see
+[`AZTEC_SETUP.md`](./AZTEC_SETUP.md).
 
-   See `AZTEC_SETUP.md` for the full bootstrap (Postgres init,
-   migrations, agent provisioning) and `CLAUDE.md` for architecture.
+## Project structure
 
-> [!Note]
-> For development environment setup instructions, please refer to the [Development Environment Guide](https://docs.docsgpt.cloud/Deploying/Development-Environment).
-
-## Contributing
-
-Please refer to the [CONTRIBUTING.md](CONTRIBUTING.md) file for information about how to get involved. We welcome issues, questions, and pull requests.
-
-## Architecture
-
-![Architecture chart](https://github.com/user-attachments/assets/fc6a7841-ddfc-45e6-b5a0-d05fe648cbe2)
-
-## Project Structure
-
-- `application/` - Flask + Celery backend (Python 3.12).
-- `extensions/discord/` - Discord bot (Honk AI).
-- `frontend-ask/` - Public `/ask` chat surface (Vite + React).
-- `scripts/` - Ingest, eval, and DB provisioning utilities.
-
-## Code Of Conduct
-
-We as members, contributors, and leaders, pledge to make participation in our community a harassment-free experience for everyone, regardless of age, body size, visible or invisible disability, ethnicity, sex characteristics, gender identity and expression, level of experience, education, socio-economic status, nationality, personal appearance, race, religion, or sexual identity and orientation. Please refer to the [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) file for more information about contributing.
-
-## Many Thanks To Our Contributors⚡
-
-<a href="https://github.com/arc53/DocsGPT/graphs/contributors" alt="View Contributors">
-  <img src="https://contrib.rocks/image?repo=arc53/DocsGPT" alt="Contributors" />
-</a>
+- `application/` — Flask + Celery backend (Python 3.12). Migrations under `application/alembic/`.
+- `extensions/discord/` — Discord bot (Honk AI).
+- `frontend-ask/` — Public `/ask` chat surface (Vite + React 19).
+- `scripts/` — Ingest, eval, and DB provisioning utilities.
+- `deployment/` — Compose files (`docker-compose.yaml` dev, `docker-compose-hub.yaml` prod) and Caddy config.
 
 ## License
 
-The source code license is [MIT](https://opensource.org/license/mit/), as described in the [LICENSE](LICENSE) file.
-
-## This project is supported by:
-
-<p>
-  <a href="https://www.digitalocean.com/?utm_medium=opensource&utm_source=DocsGPT">
-    <img src="https://opensource.nyc3.cdn.digitaloceanspaces.com/attribution/assets/SVG/DO_Logo_horizontal_blue.svg" width="201px">
-  </a>
-</p>
-<p>
-  <a href="https://get.neon.com/docsgpt">
-    <img width="201" alt="color" src="https://github.com/user-attachments/assets/7d9813b7-0e6d-403f-b5af-68af066b326f" />
-  </a>
-  
-</p>
+MIT. Original copyright © 2023 arc53; modifications © Aztec Labs. See [LICENSE](LICENSE).

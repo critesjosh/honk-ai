@@ -33,7 +33,11 @@ Bootstrap sequence (first run only — Postgres must come up before the app impo
 cd /workspaces/sandbox/DocsGPT
 docker compose -f deployment/docker-compose.yaml up -d postgres
 # initdb.d runs postgres-init/01-pgvector.sql, enabling the vector extension.
-docker compose -f deployment/docker-compose.yaml run --rm backend python scripts/db/init_postgres.py
+# scripts/ lives at the repo root, NOT inside the backend image (the Dockerfile
+# only copies application/), so bind-mount it for this one-shot bootstrap.
+docker compose -f deployment/docker-compose.yaml run --rm \
+  -v $(pwd)/scripts:/app/scripts:ro \
+  backend python scripts/db/init_postgres.py
 # init_postgres.py is `alembic upgrade head`. Creates all tables including the Aztec agents.mcp_* columns.
 docker compose -f deployment/docker-compose.yaml up -d
 ```
@@ -104,7 +108,10 @@ Tag via `IMAGE_TAG` in `.env`. Push to a private registry if the production serv
 
 ```bash
 docker compose -f deployment/docker-compose-hub.yaml up -d postgres
-docker compose -f deployment/docker-compose-hub.yaml run --rm backend python scripts/db/init_postgres.py
+# scripts/ isn't in the backend image — bind-mount it for the one-shot bootstrap.
+docker compose -f deployment/docker-compose-hub.yaml run --rm \
+  -v $(pwd)/scripts:/app/scripts:ro \
+  backend python scripts/db/init_postgres.py
 docker compose -f deployment/docker-compose-hub.yaml up -d
 ```
 

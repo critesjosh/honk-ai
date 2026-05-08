@@ -61,7 +61,11 @@ Before starting services, check if containers are already running (`docker compo
 ### Dev / smoke test (builds from source)
 ```bash
 docker compose -f deployment/docker-compose.yaml up -d postgres
-docker compose -f deployment/docker-compose.yaml run --rm backend python scripts/db/init_postgres.py
+# scripts/ is at the repo root and NOT copied into the backend image
+# (Dockerfile only copies application/), so bind-mount it for the bootstrap.
+docker compose -f deployment/docker-compose.yaml run --rm \
+  -v $(pwd)/scripts:/app/scripts:ro \
+  backend python scripts/db/init_postgres.py
 docker compose -f deployment/docker-compose.yaml up -d
 docker compose -f deployment/docker-compose.yaml logs -f backend worker
 docker compose -f deployment/docker-compose.yaml down
@@ -69,7 +73,7 @@ docker compose -f deployment/docker-compose.yaml down
 
 First-time Postgres bootstrap:
 1. Start only `postgres` first so the initdb scripts (including `postgres-init/01-pgvector.sql` which enables the `vector` extension) can run.
-2. Run `python scripts/db/init_postgres.py` — thin wrapper around `alembic upgrade head` that creates all tables including the Aztec `agents.mcp_*` columns.
+2. Run `init_postgres.py` (with the `-v $(pwd)/scripts:/app/scripts:ro` mount above) — thin wrapper around `alembic upgrade head` that creates all tables including the Aztec `agents.mcp_*` columns.
 3. Then bring up the rest.
 
 ### Production (company server)
