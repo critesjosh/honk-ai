@@ -3,6 +3,7 @@ import json
 import os
 import re
 import logging
+import time
 from collections import OrderedDict
 from typing import Optional
 
@@ -114,6 +115,25 @@ intents.reactions = True
 
 bot = commands.Bot(command_prefix=PREFIX, intents=intents)
 
+# Cap how long discord.py is willing to wait inside its 429 retry
+# loop. Discord error 40062 ("Service resource is being rate limited")
+# always returns ``retry_after: 3``, but the budget is sustained-full
+# across multiple rounds, so each retry just adds another tick to
+# the bucket without progressing — a 5-retry burst per failed write.
+# Capping at 2.0s causes ``retry_after > 2.0`` 429s to raise
+# ``discord.RateLimited`` IMMEDIATELY (no retries). We bypass the
+# constructor's ``max(30, x)`` floor by setting the attribute
+# directly after init — discord.py's reasoning for the floor is
+# "users shouldn't set this too aggressively" but for our specific
+# 40062-loop case 2.0 is precisely right.
+#
+# Trade-off: any 429 with ``retry_after > 2.0`` (rare on our bot's
+# routes — typing/send/thread-create per-route limits are typically
+# sub-second) also fails fast as RateLimited. Acceptable because
+# we'd rather surface a visible failure than sit in a multi-second
+# retry loop.
+bot.http.max_ratelimit_timeout = 2.0
+
 # Store conversation history per user
 conversation_histories = {}
 
@@ -208,6 +228,111 @@ def _register_feedback_target(
     feedback_targets.move_to_end(message_id)
     while len(feedback_targets) > _FEEDBACK_CACHE_MAX_ENTRIES:
         feedback_targets.popitem(last=False)
+
+
+# Per-guild circuit breaker for Discord shared-bucket 429s (error 40062).
+#
+# When a bot in a guild hits 429 with header ``X-RateLimit-Scope: shared``
+# and JSON ``{"code": 40062}``, the limited resource is shared across
+# multiple actors (e.g. all bots writing to the same channel/guild).
+# discord.py's default behaviour is to honour the response's short
+# ``retry-after`` (typically 3s) and re-fire — but if some OTHER actor
+# is keeping the bucket pinned, every retry just adds another tick to
+# the shared budget without advancing. The bot becomes a contributor
+# to the herd, no replies go out, and the user sees silence.
+#
+# This breaker observes 40062 at the application boundary (the catch
+# blocks around ``message.create_thread`` and the ``target.typing /
+# target.send`` block in ``on_message``). On detection we record an
+# expiry timestamp keyed by guild_id and bail out of subsequent
+# ``on_message`` handling for that guild — we add a single ⚠️ reaction
+# on the trigger message so the user gets visual feedback that we
+# noticed, and skip every outbound write until the breaker expires.
+# DM contexts (``message.guild is None``) key under ``None``.
+#
+# The cooldown is configurable for ops; the default of 5 minutes is
+# longer than the response's ``retry-after`` because that retry window
+# only describes when *Discord* will accept the next write, not when
+# the *external* contention will let up. Picking too short means we
+# keep walking back into the bucket; too long means a brief blip
+# silences the bot for longer than necessary. 5 minutes is a starting
+# point — tune via ``DISCORD_SHARED_429_COOLDOWN_SECONDS`` based on
+# observed incident lengths.
+_SHARED_429_TRIPPED_GUILDS: dict[Optional[int], float] = {}
+_SHARED_429_COOLDOWN_SECONDS = _env_int(
+    "DISCORD_SHARED_429_COOLDOWN_SECONDS",
+    300,
+    min_value=10,
+)
+_SHARED_429_ERROR_CODE = 40062
+_BREAKER_REACTION = "\N{WARNING SIGN}"
+
+
+def _is_shared_429(exc) -> bool:
+    """Return True if ``exc`` looks like a Discord shared-bucket 429.
+
+    Recognises two shapes:
+
+    1. ``discord.HTTPException`` with ``status == 429`` and
+       ``code == 40062`` — what we get when discord.py's retry loop
+       actually exhausts (5 retries, ``max_ratelimit_timeout`` not
+       hit). Duck-typed on ``status`` / ``code`` so tests can pass
+       a stub without constructing a full ``HTTPException`` (which
+       needs an aiohttp ``ClientResponse``).
+    2. ``discord.RateLimited`` — what we get when discord.py
+       short-circuits BEFORE retrying because the response's
+       ``retry_after > self.max_ratelimit_timeout`` (we set the cap
+       to 2.0s above; 40062 always returns ``retry_after: 3``, so
+       this is the typical path now).
+
+    Both paths represent "Discord told us to back off and we believe
+    further immediate writes are wasted." Treating them uniformly
+    keeps the breaker logic simple.
+    """
+    if isinstance(exc, discord.RateLimited):
+        return True
+    return getattr(exc, "status", None) == 429 and getattr(exc, "code", None) == _SHARED_429_ERROR_CODE
+
+
+def _trip_breaker(guild_id: Optional[int], reason: str) -> None:
+    """Open the breaker for ``guild_id`` for the configured cooldown."""
+    expiry = time.monotonic() + _SHARED_429_COOLDOWN_SECONDS
+    _SHARED_429_TRIPPED_GUILDS[guild_id] = expiry
+    logger.warning(
+        "Shared-bucket 429 breaker opened for guild=%s for %ss (%s)",
+        guild_id,
+        _SHARED_429_COOLDOWN_SECONDS,
+        reason,
+    )
+
+
+def _breaker_open(guild_id: Optional[int]) -> bool:
+    """Return True if the breaker is currently open for ``guild_id``.
+
+    Auto-clears expired entries as a side effect, so the dict can't
+    grow unbounded across long-running deploys with sporadic incidents.
+    """
+    expiry = _SHARED_429_TRIPPED_GUILDS.get(guild_id)
+    if expiry is None:
+        return False
+    if time.monotonic() >= expiry:
+        _SHARED_429_TRIPPED_GUILDS.pop(guild_id, None)
+        return False
+    return True
+
+
+async def _signal_breaker_open(message: "discord.Message") -> None:
+    """Best-effort ⚠️ reaction so the user knows the bot saw the mention.
+
+    Reactions go through a different endpoint family than typing/send
+    and may not be in the same shared bucket — but if they are, we
+    swallow the failure: we already know writes are degraded, no need
+    to log every silenced reply.
+    """
+    try:
+        await message.add_reaction(_BREAKER_REACTION)
+    except (discord.HTTPException, discord.Forbidden, discord.NotFound, discord.RateLimited):
+        pass
 
 
 # Discord decorations to remove from quoted thread message bodies.
@@ -1027,6 +1152,24 @@ async def on_message(message):
         if prefix is None:
             return  # Bot not mentioned, so do not process
 
+    # Per-guild circuit breaker: if we've recently observed a
+    # shared-bucket 429 here, skip every outbound write for the
+    # cooldown. We still react with ⚠️ so the user has visual
+    # confirmation we saw the mention. Checked BEFORE any thread state
+    # allocation / lock acquisition so a tripped guild has minimal
+    # overhead per mention. DMs key under ``None``; if a DM ever trips
+    # the breaker (rare — DMs aren't typically in shared buckets) it
+    # also short-circuits.
+    guild_id = message.guild.id if message.guild is not None else None
+    if _breaker_open(guild_id):
+        logger.info(
+            "Shared-429 breaker open for guild=%s; skipping reply on message %s",
+            guild_id,
+            message.id,
+        )
+        await _signal_breaker_open(message)
+        return
+
     # Decide which conversation cache backs this turn. When we're
     # already inside a thread, use a per-thread cache so the bot has
     # the thread's own discussion as context (and so its prior answers
@@ -1117,96 +1260,157 @@ async def on_message(message):
                     name=thread_name,
                     auto_archive_duration=1440,
                 )
-            except (discord.Forbidden, discord.HTTPException) as exc:
+            except (discord.Forbidden, discord.HTTPException, discord.RateLimited) as exc:
+                # If the failure was a shared-bucket 429, falling back
+                # to the parent channel (typing + send) would just hit
+                # the same exhausted budget. Trip the breaker and bail
+                # immediately so we don't add more ticks to the herd.
+                # Roll back the queued prompt since no answer will
+                # follow — without this, the next mention's ``history``
+                # payload would carry a phantom prompt with no response.
+                if _is_shared_429(exc):
+                    _trip_breaker(guild_id, f"create_thread for message {message.id}: {exc}")
+                    await _signal_breaker_open(message)
+                    if conversation["history"] and "response" not in conversation["history"][-1]:
+                        conversation["history"].pop()
+                    return
                 logger.warning(
                     "Could not create thread (falling back to parent channel): %s",
                     exc,
                 )
 
         try:
-            async with target.typing():
-                try:
-                    response_doc = await generate_answer(
-                        question_to_send,
-                        conversation["history"],
-                        conversation["conversation_id"],
-                    )
-                except (asyncio.TimeoutError, aiohttp.ClientError) as e:
-                    logger.error(f"Error generating answer: {e}")
-                    await target.send("Sorry, the request timed out. Please try again with a shorter message.")
-                    conversation["history"].pop()
-                    return
-
-                answer = response_doc["answer"]
-                new_conversation_id = response_doc["conversation_id"]
-                sources = response_doc.get("sources", [])
-
-                # /stream returns conversation_id=None on a non-200
-                # backend response (see ``generate_answer``). In that
-                # case the backend wrote NO conversation_messages row,
-                # so we must NOT advance ``answer_count`` — doing so
-                # would skew every subsequent feedback target by one.
-                # Surface the canned error and roll back the queued
-                # prompt, mirroring the timeout path above.
-                if new_conversation_id is None:
-                    await target.send(answer)
-                    conversation["history"].pop()
-                    return
-
-                # /stream succeeded and the backend wrote one row at
-                # ``answer_count``. Persist conversation_id and reserve
-                # the position EAGERLY, before any Discord send. The
-                # DB is now authoritative for this turn — even if the
-                # Discord-side send fails partway, the next /stream
-                # call will continue this conversation (not start a
-                # new one) and write the next row at the next
-                # position, keeping ``answer_count`` aligned.
-                question_index = conversation["answer_count"]
-                conversation["answer_count"] += 1
-                conversation["conversation_id"] = new_conversation_id
-                conversation["history"][-1]["response"] = answer
-
-                formatted = format_for_discord(answer)
-                answer_chunks = chunk_string(formatted)
-                for chunk in answer_chunks:
-                    sent_msg = await target.send(chunk)
-                    _register_feedback_target(
-                        sent_msg.id,
-                        new_conversation_id,
-                        question_index,
-                    )
-
-                # Send the citation footer as a separate message AFTER
-                # all answer chunks. Sent separately (rather than
-                # appended pre-chunking) so a long answer that fills
-                # the 2000-char limit can't truncate / split the
-                # footer mid-list.
-                footer = _format_sources_footer(sources)
-                if footer:
-                    sent_footer = await target.send(footer)
-                    _register_feedback_target(
-                        sent_footer.id,
-                        new_conversation_id,
-                        question_index,
-                    )
-        except (discord.Forbidden, discord.NotFound, discord.HTTPException) as exc:
-            # The catch fires for two distinct families of failure:
+            # Single-shot typing instead of `async with target.typing():`.
+            # The context manager re-fires a typing event every 5s for
+            # the entire /stream duration (5-180s), pinning a per-channel
+            # shared rate-limit bucket; the single-await form sends one
+            # event (~10s indicator on the client) and lets the user see
+            # we acknowledged the mention without our typing pings being
+            # the dominant contributor to the bucket.
             #
-            # (a) PRE-DB: ``target.typing()`` failed, or the canned
-            #     "Sorry, the request timed out / I couldn't find an
-            #     answer" send raised before we ever wrote
-            #     ``history[-1]["response"]``. In this case the queued
-            #     prompt has no response and would otherwise carry
-            #     forward into the next turn's ``history`` payload.
-            # (b) POST-DB: a chunk / footer send raised AFTER /stream
-            #     wrote the row and we persisted conversation_id +
-            #     response. The DB is authoritative; the in-memory
-            #     state already matches it; do NOT pop.
+            # Failure handling is split: a typing-only failure is
+            # non-fatal UX (we proceed to /stream and just don't show
+            # an indicator), EXCEPT when it's a shared-bucket 429 — in
+            # that case sends will fail too, so we trip the breaker
+            # and bail before burning a /stream call whose answer we
+            # can't deliver. All other discord write failures fall
+            # through to the outer except below.
+            try:
+                await target.typing()
+            except (discord.HTTPException, discord.RateLimited) as typing_exc:
+                if _is_shared_429(typing_exc):
+                    _trip_breaker(
+                        guild_id,
+                        f"typing on {getattr(target, 'id', '?')}: {typing_exc}",
+                    )
+                    await _signal_breaker_open(message)
+                    if conversation["history"] and "response" not in conversation["history"][-1]:
+                        conversation["history"].pop()
+                    return
+                logger.warning("Typing indicator failed (continuing): %s", typing_exc)
+
+            # Re-check the breaker right before the /stream call. The
+            # breaker is per-guild; another concurrent mention (in a
+            # different thread / DM) may have tripped it while this
+            # coroutine was acquiring the per-thread lock or fetching
+            # thread context. /stream is the expensive operation
+            # (5-180s of LLM cost), so bailing here saves backend work
+            # we can't deliver — sends will fail with the same 40062.
+            if _breaker_open(guild_id):
+                logger.info(
+                    "Shared-429 breaker tripped concurrently; aborting /stream for guild=%s message=%s",
+                    guild_id,
+                    message.id,
+                )
+                await _signal_breaker_open(message)
+                if conversation["history"] and "response" not in conversation["history"][-1]:
+                    conversation["history"].pop()
+                return
+
+            try:
+                response_doc = await generate_answer(
+                    question_to_send,
+                    conversation["history"],
+                    conversation["conversation_id"],
+                )
+            except (asyncio.TimeoutError, aiohttp.ClientError) as e:
+                logger.error(f"Error generating answer: {e}")
+                await target.send("Sorry, the request timed out. Please try again with a shorter message.")
+                conversation["history"].pop()
+                return
+
+            answer = response_doc["answer"]
+            new_conversation_id = response_doc["conversation_id"]
+            sources = response_doc.get("sources", [])
+
+            # /stream returns conversation_id=None on a non-200
+            # backend response (see ``generate_answer``). In that
+            # case the backend wrote NO conversation_messages row,
+            # so we must NOT advance ``answer_count`` — doing so
+            # would skew every subsequent feedback target by one.
+            # Surface the canned error and roll back the queued
+            # prompt, mirroring the timeout path above.
+            if new_conversation_id is None:
+                await target.send(answer)
+                conversation["history"].pop()
+                return
+
+            # /stream succeeded and the backend wrote one row at
+            # ``answer_count``. Persist conversation_id and reserve
+            # the position EAGERLY, before any Discord send. The
+            # DB is now authoritative for this turn — even if the
+            # Discord-side send fails partway, the next /stream
+            # call will continue this conversation (not start a
+            # new one) and write the next row at the next
+            # position, keeping ``answer_count`` aligned.
+            question_index = conversation["answer_count"]
+            conversation["answer_count"] += 1
+            conversation["conversation_id"] = new_conversation_id
+            conversation["history"][-1]["response"] = answer
+
+            formatted = format_for_discord(answer)
+            answer_chunks = chunk_string(formatted)
+            for chunk in answer_chunks:
+                sent_msg = await target.send(chunk)
+                _register_feedback_target(
+                    sent_msg.id,
+                    new_conversation_id,
+                    question_index,
+                )
+
+            # Send the citation footer as a separate message AFTER
+            # all answer chunks. Sent separately (rather than
+            # appended pre-chunking) so a long answer that fills
+            # the 2000-char limit can't truncate / split the
+            # footer mid-list.
+            footer = _format_sources_footer(sources)
+            if footer:
+                sent_footer = await target.send(footer)
+                _register_feedback_target(
+                    sent_footer.id,
+                    new_conversation_id,
+                    question_index,
+                )
+        except (discord.Forbidden, discord.NotFound, discord.HTTPException, discord.RateLimited) as exc:
+            # Reaches here from a failed canned-error send (timeout /
+            # 'no answer' branches) or from a failed chunk / footer
+            # send AFTER /stream succeeded. Typing failures handle
+            # themselves above this block.
             #
+            # Two history-rollback cases:
+            # (a) PRE-DB: canned send raised before we wrote
+            #     ``history[-1]["response"]``. Pop the queued prompt
+            #     so the next turn doesn't carry a phantom prompt
+            #     into the ``history`` payload.
+            # (b) POST-DB: chunk/footer send raised after /stream
+            #     persisted the row and we wrote the response. The
+            #     DB is authoritative; do NOT pop.
             # Disambiguate by checking whether the latest history
             # entry has a ``response`` key — set only on the post-DB
-            # success path. This mirrors the conditional rollback the
-            # original (pre-feedback) code used at this site.
+            # success path.
+            if _is_shared_429(exc):
+                _trip_breaker(guild_id, f"write to {getattr(target, 'id', '?')}: {exc}")
+                await _signal_breaker_open(message)
             logger.warning(
                 "Failed to send reply to %s: %s",
                 getattr(target, "id", "?"),
