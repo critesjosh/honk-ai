@@ -122,10 +122,11 @@ class SQLExecutor:
         with psycopg.connect(self._connection_string) as conn:
             conn.read_only = True
             with conn.cursor() as cur:
-                cur.execute(
-                    "SET LOCAL statement_timeout = %s",
-                    (f"{timeout_seconds}s",),
-                )
+                # ``SET`` / ``SET LOCAL`` are GUC commands and Postgres rejects
+                # bound parameters here ("syntax error at or near \"$1\""), so
+                # the value has to be inlined. Safe because timeout_seconds is
+                # already clamped to an int in [1, MAX_TIMEOUT_SECONDS].
+                cur.execute(f"SET LOCAL statement_timeout = '{int(timeout_seconds)}s'")
                 cur.execute("SET LOCAL idle_in_transaction_session_timeout = '60s'")
                 cur.execute(statement)
                 rows = cur.fetchmany(row_cap + 1)

@@ -182,7 +182,10 @@ services:
     image: tecnativa/docker-socket-proxy:0.3.0
     restart: unless-stopped
     environment:
-      - LOG_LEVEL=warn
+      # HAProxy expects full syslog level names: emerg/alert/crit/err/
+      # warning/notice/info/debug. ``warn`` triggers a fatal config
+      # parse error on startup.
+      - LOG_LEVEL=warning
       - CONTAINERS=1
       - LOGS=1
       - POST=0
