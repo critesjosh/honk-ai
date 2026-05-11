@@ -56,8 +56,18 @@ class RAGSearcher:
         # Imported lazily so the MCP server can boot in environments
         # where the pgvector extras aren't yet installed (test envs)
         # — only the SQL/logs tools then.
+        from application.core.settings import settings
         from application.vectorstore.pgvector import PGVectorStore
 
+        # ``embeddings_key`` must be the actual API key for the embeddings
+        # provider, NOT PGVectorStore's nonsense default literal
+        # ``"embeddings"``. ``classic_rag.py`` passes
+        # ``settings.EMBEDDINGS_KEY`` for the same reason — without it
+        # honk_rag.search 401s against OpenAI on the first call (the
+        # singleton cache in vectorstore/base.py would mask this in the
+        # backend/worker processes that ingested with a real key, but
+        # the MCP server's process starts with an empty cache).
+        #
         # ``ensure_schema=False`` is mandatory: the MCP server connects as
         # ``docsgpt_mcp_ro`` which lacks DDL privileges. The documents
         # table is already in place — worker/backend creates it on first
@@ -65,6 +75,7 @@ class RAGSearcher:
         # CREATE TABLE every call.
         return PGVectorStore(
             connection_string=self._connection_string,
+            embeddings_key=settings.EMBEDDINGS_KEY,
             ensure_schema=False,
         )
 
