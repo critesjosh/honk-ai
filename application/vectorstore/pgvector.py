@@ -17,7 +17,15 @@ class PGVectorStore(BaseVectorStore):
         text_column: str = "text",
         metadata_column: str = "metadata",
         connection_string: str = None,
+        ensure_schema: bool = True,
     ):
+        """
+        ``ensure_schema=False`` skips ``CREATE EXTENSION``/``CREATE TABLE``/
+        ``CREATE INDEX`` at init. Callers that connect with a read-only
+        Postgres role (e.g. the MCP server's ``docsgpt_mcp_ro``) must pass
+        ``False``; the DDL bootstrap is the worker / backend's job and
+        will already have run by the time a read-only client connects.
+        """
         super().__init__()
         # Store the source_id for use in add_chunk
         self._source_id = str(source_id).replace("application/indexes/", "").rstrip("/")
@@ -58,7 +66,8 @@ class PGVectorStore(BaseVectorStore):
         self._Jsonb = Jsonb
         self._register_vector = register_vector
         self._connection = None
-        self._ensure_table_exists()
+        if ensure_schema:
+            self._ensure_table_exists()
 
     def _get_connection(self):
         """Get or create database connection"""

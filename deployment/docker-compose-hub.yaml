@@ -133,6 +133,64 @@ services:
     depends_on:
       - backend
 
+  # MCP server (honk-ai-host MCP). Read-only SQL / RAG / logs surface
+  # exposed to remote claudebox clients via Cloudflare Access. The
+  # in-process bearer-token check (mcp_tokens table) is the second
+  # layer; CF Access at the edge is the first. See AZTEC_SETUP.md for
+  # the operator runbook (token issuance, scope wiring, Caddy/CF Access
+  # route).
+  mcp:
+    build:
+      context: ../application
+    image: aztec/docsgpt-mcp:${IMAGE_TAG:-0.17.0-aztec.1}
+    restart: unless-stopped
+    command: ["python", "-m", "application.mcp_server"]
+    env_file:
+      - ../.env
+    environment:
+      # MCP_DB_URL is the read-only role bound to docsgpt_mcp_ro by
+      # alembic 0006. .env should set MCP_DB_PASSWORD; we compose the
+      # full URI here so operators rotate the password in one place.
+      - MCP_DB_URL=postgresql://docsgpt_mcp_ro:${MCP_DB_PASSWORD:?MCP_DB_PASSWORD must be set in .env}@postgres:5432/docsgpt
+      - MCP_DOCKER_PROXY_URL=http://docker-proxy:2375
+      - MCP_COMPOSE_PROJECT=docsgpt-aztec
+      - MCP_HOST=0.0.0.0
+      - MCP_PORT=7092
+    # Networks: ``default`` so Caddy + Postgres can reach us, and
+    # ``docker_proxy_net`` so we can talk to the proxy. Backend/worker
+    # are NOT on docker_proxy_net — a compromise of either of those
+    # services should not give them an unauthenticated Docker API.
+    networks:
+      - default
+      - docker_proxy_net
+    # No host port — Caddy reaches mcp:7092 internally. External
+    # clients reach the server through Caddy + Cloudflare Tunnel +
+    # Cloudflare Access; see deployment/Caddyfile for the route.
+    depends_on:
+      postgres:
+        condition: service_healthy
+      docker-proxy:
+        condition: service_started
+
+  # Read-only Docker Engine API proxy for the logs tool. LOGS=1 only.
+  # See application/mcp_server/tools/logs.py for the access pattern.
+  # Lives on its own network (docker_proxy_net) — only the mcp service
+  # is attached. Tecnativa's documentation specifically warns against
+  # sharing the proxy's network with other services because the proxy
+  # itself is unauthenticated.
+  docker-proxy:
+    image: tecnativa/docker-socket-proxy:0.3.0
+    restart: unless-stopped
+    environment:
+      - LOG_LEVEL=warn
+      - CONTAINERS=1
+      - LOGS=1
+      - POST=0
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - docker_proxy_net
+
   redis:
     image: redis:6-alpine
     restart: unless-stopped
@@ -159,3 +217,13 @@ volumes:
   uploads:
   caddy_data:
   caddy_config:
+
+networks:
+  # Default compose network — backend, worker, frontend-ask, redis,
+  # postgres, caddy, discord-bot, mcp.
+  default:
+  # Private network for the docker-socket-proxy. ONLY mcp + docker-proxy
+  # are attached. Keeps backend/worker code-execution bugs from being
+  # able to reach the unauthenticated proxy's Docker Engine surface.
+  docker_proxy_net:
+    internal: true

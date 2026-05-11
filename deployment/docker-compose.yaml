@@ -83,6 +83,64 @@ services:
       postgres:
         condition: service_healthy
 
+  # MCP server (honk-ai-host MCP). Read-only SQL / RAG / logs surface
+  # for remote claudebox clients. Lives inside the same compose network
+  # so it can reach postgres + the docker-socket-proxy without going
+  # through Caddy. The image is built from the same backend source tree
+  # so application.* imports resolve identically.
+  mcp:
+    build: ../application
+    image: aztec/docsgpt-mcp:${IMAGE_TAG:-latest}
+    command: ["python", "-m", "application.mcp_server"]
+    env_file:
+      - ../.env
+    environment:
+      # The MCP server connects with the docsgpt_mcp_ro role in both
+      # dev and prod. The dev compose's postgres-init script creates
+      # the role; alembic 0006 sets its grants. Operators set the
+      # password by `ALTER ROLE docsgpt_mcp_ro WITH LOGIN PASSWORD ...`
+      # before bringing the mcp service up.
+      - MCP_DB_URL=postgresql://docsgpt_mcp_ro:${MCP_DB_PASSWORD:-mcpdev}@postgres:5432/docsgpt
+      - MCP_DOCKER_PROXY_URL=http://docker-proxy:2375
+      - MCP_COMPOSE_PROJECT=docsgpt-oss
+      - MCP_HOST=0.0.0.0
+      - MCP_PORT=7092
+    # 127.0.0.1 — never reachable beyond the dev host. Dev tokens
+    # aren't worth the bearer-leak risk of binding to 0.0.0.0.
+    ports:
+      - "127.0.0.1:7092:7092"
+    networks:
+      - default
+      - docker_proxy_net
+    depends_on:
+      postgres:
+        condition: service_healthy
+      docker-proxy:
+        condition: service_started
+
+  # Read-only Docker Engine API proxy. Exposes only the LOGS endpoint
+  # to the MCP server; all start/stop/exec/run paths return 403. Keeps
+  # the MCP container away from the raw /var/run/docker.sock so a code-
+  # execution bug there can't escape into Docker control plane.
+  # On its own network — only mcp is attached, so backend/worker
+  # compromise doesn't reach the unauthenticated Docker API.
+  docker-proxy:
+    image: tecnativa/docker-socket-proxy:0.3.0
+    restart: unless-stopped
+    environment:
+      - LOG_LEVEL=info
+      # Endpoint allowlist. CONTAINERS=1 grants `GET /containers/json`
+      # which is needed for service → container resolution; LOGS=1
+      # grants `GET /containers/<id>/logs`. Everything else (POST,
+      # exec, networks, volumes) defaults to 403.
+      - CONTAINERS=1
+      - LOGS=1
+      - POST=0
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - docker_proxy_net
+
   redis:
     image: redis:6-alpine
     ports:
@@ -107,4 +165,11 @@ services:
 
 volumes:
   postgres_data:
+
+networks:
+  default:
+  # Private network for the docker-socket-proxy. ONLY mcp + docker-proxy
+  # are attached. See docker-compose-hub.yaml for the prod rationale.
+  docker_proxy_net:
+    internal: true
 

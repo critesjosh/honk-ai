@@ -337,6 +337,195 @@ See the [`@aztec/mcp-server` README](https://github.com/AztecProtocol/mcp-server
 > is harmlessly ignored). Once it lands, semantic search activates
 > automatically with no client-side config change.
 
+## Honk-ai MCP server
+
+The honk-ai-host MCP server runs as a sibling Compose service
+(`mcp` + `docker-proxy`) on the same machine as the Flask backend.
+It exposes a **read-only** SQL / RAG / logs surface to remote
+claudebox sessions over MCP-over-HTTP, gated by Cloudflare Access at
+the edge and a per-token bearer (`mcp_tokens` table) inside the
+process.
+
+This is distinct from the public `@aztec/mcp-server` consumer-facing
+MCP described above:
+
+| Surface | Consumers | Auth | Tools |
+|---|---|---|---|
+| `@aztec/mcp-server` | Claude Desktop, Cursor, etc. | Per-Discord-user bearer | `/api/search`, ripgrep |
+| `application/mcp_server/` (this section) | claudebox operator sessions | CF Access service token + per-token bearer | `honk_sql.*`, `honk_rag.*`, `honk_logs.*` |
+
+> **Design + threat model:** `application/mcp_server/README.md` is the
+> primary spec. This section is the operator runbook; the README has
+> the rationale behind each tool, the role permission model, what a
+> `db:read` token can and cannot read, and why `pg_read_all_data` is
+> not used.
+
+### Tool surface
+
+- `honk_sql.execute(query, timeout_seconds, row_cap)` — single
+  SELECT/WITH statement. The in-process guard rejects DML/DDL,
+  multi-statement input, and **data-modifying CTEs**
+  (`WITH x AS (DELETE FROM …) SELECT * FROM x`); the
+  `docsgpt_mcp_ro` Postgres role rejects writes server-side via
+  `default_transaction_read_only = on` and hand-listed grants.
+- `honk_sql.list_tables(schema='public')` — bounded `information_schema.tables` listing.
+- `honk_sql.describe(table, schema='public')` — column metadata.
+- `honk_rag.search(query_text | query_vector, source_ids, k, include_full_text)` —
+  pgvector similarity search wrapping the same helper the live
+  retriever uses. **`source_ids` is required** — call
+  `honk_rag.list_sources` first. `query_text` is embedded server-side
+  using `EMBEDDINGS_BASE_URL`. `include_full_text=true` requires the
+  `rag:read_full_text` scope.
+- `honk_rag.list_sources()` — corpus inventory.
+- `honk_logs.tail(service, lines, since, until, grep)` — recent
+  stdout/stderr from a whitelisted service via
+  `tecnativa/docker-socket-proxy` (`CONTAINERS=1 LOGS=1 POST=0`). 256
+  KiB cap per call. The proxy lives on its own compose network
+  (`docker_proxy_net`); only the `mcp` service is attached.
+- `honk_logs.list_services()` — current container state for the
+  whitelisted services.
+
+### What a `db:read` token can / cannot read
+
+The `docsgpt_mcp_ro` role does **not** have `pg_read_all_data`. It has
+hand-listed `GRANT SELECT` on non-secret-bearing tables in full, and
+column-level `GRANT SELECT` on the secret-bearing tables that
+**excludes** bearer / OAuth / PII columns:
+
+- excluded: `agents.{key,shared_token,incoming_webhook_token}`,
+  `conversations.{api_key,shared_token}`,
+  `shared_conversations.api_key`, `token_usage.api_key`,
+  `stack_logs.api_key`, `connector_sessions.{session_token,token_info,user_email}`.
+
+A leaked `db:read` token is bounded by these grants — it does NOT
+elevate to "dump every Discord user's plaintext MCP bearer". When you
+add a new column to one of these tables, audit
+`application/alembic/versions/0006_mcp_admin_tables.py` to decide
+whether to include it in the allowlist.
+
+### First-time setup
+
+1. Add `MCP_DB_PASSWORD` to `.env`:
+   ```bash
+   echo "MCP_DB_PASSWORD=$(openssl rand -hex 32)" >> .env
+   ```
+2. Apply the migration that creates `mcp_tokens`, `mcp_audit`, and
+   the `docsgpt_mcp_ro` role (idempotent — re-running is safe):
+   ```bash
+   docker compose -f deployment/docker-compose-hub.yaml run --rm \
+     -v "$(pwd)/scripts:/app/scripts:ro" \
+     backend python scripts/db/init_postgres.py
+   ```
+3. Set the role's password (the migration creates the role with
+   `NOLOGIN`; this enables it):
+   ```bash
+   . .env && docker compose -f deployment/docker-compose-hub.yaml exec postgres \
+     psql -U docsgpt -d docsgpt -c \
+     "ALTER ROLE docsgpt_mcp_ro WITH LOGIN PASSWORD '${MCP_DB_PASSWORD}';"
+   ```
+4. Bring up the new services:
+   ```bash
+   docker compose -f deployment/docker-compose-hub.yaml --env-file .env \
+     up -d mcp docker-proxy
+   ```
+5. Add a Caddy route for `/mcp` + `/mcp/*` (already in
+   `deployment/Caddyfile` — bare `/mcp` 308-redirects to `/mcp/` so
+   both flow through the same `handle_path` prefix-strip) and a
+   **separate** Cloudflare Access application with the **same** path
+   matchers (`/mcp` AND `/mcp/*`), service-token-only policy. Do not
+   bypass SSO on the apex — the MCP route needs its own Access app.
+   If the matchers diverge between CF Access and Caddy you get
+   inconsistent scoping; double-check both sides agree.
+
+6. **After the first ingest completes** (the worker creates the
+   `documents` table on first upload), grant `docsgpt_mcp_ro` read
+   access to it:
+   ```bash
+   docker compose -f deployment/docker-compose-hub.yaml exec postgres \
+     psql -U docsgpt -d docsgpt -c \
+     "GRANT SELECT ON documents TO docsgpt_mcp_ro;"
+   ```
+   The alembic migration grants `documents` conditionally inside a
+   `DO` block, so on a fresh DB before first ingest the GRANT is a
+   no-op — without this manual step `honk_rag.search` returns
+   ``permission denied for table documents``. Re-running the migration
+   does not retry the GRANT; this is a one-time operator step on
+   first-deploy. Idempotent; safe to re-run.
+
+### Issuing a bearer token for a claudebox group
+
+```bash
+docker compose -f deployment/docker-compose-hub.yaml run --rm \
+  -v "$(pwd)/scripts:/app/scripts:ro" \
+  -e PYTHONPATH=/app \
+  backend python scripts/mcp/issue_token.py issue \
+    --label cb-claudebox-rw \
+    --scopes db:read,rag:read,logs:read
+```
+
+The plaintext is shown **once**. Copy it into the claudebox
+credentials store immediately. Only the SHA-256 hash is persisted in
+`mcp_tokens.token_hash`. Revoke with:
+
+```bash
+docker compose -f deployment/docker-compose-hub.yaml run --rm \
+  -v "$(pwd)/scripts:/app/scripts:ro" \
+  -e PYTHONPATH=/app \
+  backend python scripts/mcp/issue_token.py revoke --label cb-claudebox-rw
+```
+
+### Inspecting the audit log
+
+Every tool call — including scope rejections (`MissingScope`) and SQL
+guard rejections (`StatementRejected`) — writes one row to `mcp_audit`.
+The audit context manager wraps `require_scopes` so denials show up in
+the log with `status='denied'` rather than vanishing.
+
+The role-level `default_transaction_read_only = on` would normally
+block `INSERT INTO mcp_audit`; the audit path opts out with
+`SET LOCAL transaction_read_only = off` for that one transaction. If
+you ever see "Auditing must never crash the request" in the backend
+logs paired with a Postgres permission error, the alembic 0006
+migration didn't run cleanly — re-apply it.
+Useful queries:
+
+```sql
+-- Recent tool activity by token
+SELECT t.label, a.tool, a.status, a.row_count, a.elapsed_ms, a.ts
+FROM mcp_audit a
+LEFT JOIN mcp_tokens t ON t.id = a.token_id
+ORDER BY a.ts DESC
+LIMIT 50;
+
+-- Denied (scope-rejection or guard-rejection) calls
+SELECT a.tool, a.error, a.elapsed_ms, a.ts
+FROM mcp_audit a
+WHERE a.status = 'denied'
+ORDER BY a.ts DESC
+LIMIT 50;
+```
+
+`args_hash` is a SHA-256 over the JSON-encoded arguments — useful for
+spotting repeated identical calls. The raw arguments are not stored
+because SQL queries can include operator-pasted secrets / document
+fragments.
+
+### Why these specific tools
+
+- **SQL**: claudebox sessions answering operator questions about
+  conversation feedback, agent counts, source health, etc. need
+  ad-hoc SELECTs without the round-trip of opening a SQL shell.
+- **RAG**: claudebox audits and research sessions periodically need
+  to retrieve grounded context the same way the production retriever
+  does, with the same source filtering and embedding model.
+- **Logs**: claudebox debugging sessions need to see recent backend /
+  worker / discord-bot output without the human pasting it in. The
+  logs tool is bounded by service whitelist + per-call byte cap.
+
+The MCP server **never writes**. Mutations go through the existing
+backend HTTP API or direct `psql`, both of which already have their
+own access controls.
+
 ## Renaming source code for ingest
 
 ```bash
