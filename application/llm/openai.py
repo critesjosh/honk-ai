@@ -1,6 +1,7 @@
 import base64
 import json
 import logging
+from typing import Optional
 
 from openai import OpenAI
 
@@ -292,13 +293,53 @@ class OpenAILLM(BaseLLM):
             request_params["response_format"] = response_format
         response = self.client.chat.completions.create(**request_params)
 
+        # Empty-response telemetry. Some providers (e.g. OpenRouter →
+        # x-ai/grok-4.1-fast under safety filtering) return a 200 with
+        # zero content deltas and the OpenAI SDK does NOT raise — the
+        # stream just terminates. Without this we save an empty
+        # ``response`` row and have no signal as to why. Capture the
+        # final finish_reason + any provider error surfaced on the
+        # stream lines so the warn log below is actionable.
+        had_content = False
+        last_finish_reason: Optional[str] = None
+        provider_error: Optional[dict] = None
+
         try:
             for line in response:
                 logging.debug(f"OpenAI stream line: {line}")
+
+                # OpenRouter wraps upstream errors as an ``error`` field
+                # on a streamed line. The OpenAI SDK preserves it as a
+                # dynamic attr. Capture the first one we see — later
+                # lines tend to be the same payload. Use ``is not None``
+                # rather than truthiness so an empty-dict error payload
+                # (rare but legal) still surfaces.
+                line_error = getattr(line, "error", None)
+                if line_error is not None and provider_error is None:
+                    if isinstance(line_error, dict):
+                        provider_error = line_error
+                    elif hasattr(line_error, "model_dump"):
+                        # Pydantic v2 models (OpenAI SDK objects).
+                        try:
+                            provider_error = line_error.model_dump(exclude_none=True)
+                        except Exception:  # noqa: BLE001 — log-only fallback
+                            provider_error = {"repr": repr(line_error)}
+                    else:
+                        provider_error = getattr(
+                            line_error, "__dict__", {"repr": repr(line_error)}
+                        )
+
                 if not getattr(line, "choices", None):
                     continue
 
                 choice = line.choices[0]
+                # finish_reason lands on the final delta; keep the last
+                # non-None value so the post-loop log has something even
+                # if a later chunk arrived without one.
+                fr = getattr(choice, "finish_reason", None)
+                if fr is not None:
+                    last_finish_reason = fr
+
                 delta = getattr(choice, "delta", None)
                 reasoning_text = self._extract_reasoning_text(delta)
                 if reasoning_text:
@@ -306,18 +347,39 @@ class OpenAILLM(BaseLLM):
 
                 content = getattr(delta, "content", None)
                 if isinstance(content, str) and content:
+                    had_content = True
                     yield content
                     continue
 
                 has_tool_calls = bool(getattr(delta, "tool_calls", None))
-                finish_reason = getattr(choice, "finish_reason", None)
 
-                # Yield non-content chunks only when needed for tool-call handling.
-                if has_tool_calls or finish_reason == "tool_calls":
+                # Yield non-content chunks only when needed for tool-call
+                # handling. Use the per-chunk ``fr`` rather than the
+                # sticky ``last_finish_reason`` so a stream that emits
+                # extra chunks after a prior ``tool_calls`` finish_reason
+                # doesn't keep getting yielded as tool-call choices.
+                if has_tool_calls or fr == "tool_calls":
                     yield choice
         finally:
             if hasattr(response, "close"):
                 response.close()
+            # An empty content stream with a non-``stop`` finish_reason
+            # — or with any provider_error payload at all — is the
+            # failure mode the angry-operator session on 2026-05-10 hit
+            # (three turns silently saved as ``response=''``). Surface
+            # it so operators can grep for ``llm.empty_response`` and
+            # so message_metadata-level follow-up work has a hook.
+            empty_with_signal = not had_content and (
+                last_finish_reason not in (None, "stop", "tool_calls")
+                or provider_error is not None
+            )
+            if empty_with_signal:
+                logging.warning(
+                    "llm.empty_response model=%s finish_reason=%s provider_error=%s",
+                    model,
+                    last_finish_reason,
+                    provider_error,
+                )
 
     def _supports_tools(self):
         return True

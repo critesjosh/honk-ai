@@ -15,6 +15,7 @@ Extends coverage beyond test_openai_llm.py:
   - _get_base64_image / _upload_file_to_openai
 """
 
+import logging
 import types
 from unittest.mock import MagicMock
 
@@ -1339,6 +1340,122 @@ class TestRawGenStreamLine304:
         chunks = list(llm._raw_gen_stream(llm, model="gpt", messages=msgs))
         thoughts = [c for c in chunks if isinstance(c, dict) and c.get("type") == "thought"]
         assert len(thoughts) == 1
+
+
+@pytest.mark.unit
+class TestRawGenStreamEmptyResponseTelemetry:
+    """When the stream finishes with zero content deltas and a
+    non-``stop`` finish_reason (e.g. ``content_filter``), or with any
+    OpenRouter-style provider error payload, ``_raw_gen_stream`` must
+    emit a structured ``llm.empty_response`` warn log. Without this
+    the empty-response rows we observed in prod (2026-05-10) are
+    invisible — the DB row has ``response=''`` and ``message_metadata=
+    {}`` and no signal as to why.
+    """
+
+    def _run(self, llm, lines):
+        resp = _Response(lines=lines)
+        llm.client.chat.completions.create = lambda **kw: resp
+        msgs = [{"role": "user", "content": "hi"}]
+        return list(llm._raw_gen_stream(llm, model="x-ai/grok-4.1-fast", messages=msgs))
+
+    def test_content_filter_no_content_logs_warning(self, llm, caplog):
+        # No deltas with content, final chunk carries finish_reason=content_filter.
+        choice = _Choice(delta=_Delta(content=None), finish_reason="content_filter")
+        lines = [_StreamLine([choice])]
+        with caplog.at_level(logging.WARNING):
+            chunks = self._run(llm, lines)
+        assert chunks == []
+        msgs = [r.getMessage() for r in caplog.records if "llm.empty_response" in r.getMessage()]
+        assert len(msgs) == 1, f"expected one warn log, got {msgs}"
+        assert "finish_reason=content_filter" in msgs[0]
+        assert "model=x-ai/grok-4.1-fast" in msgs[0]
+
+    def test_length_no_content_logs_warning(self, llm, caplog):
+        # max_tokens hit before any content was produced.
+        choice = _Choice(delta=_Delta(content=None), finish_reason="length")
+        with caplog.at_level(logging.WARNING):
+            self._run(llm, [_StreamLine([choice])])
+        msgs = [r.getMessage() for r in caplog.records if "llm.empty_response" in r.getMessage()]
+        assert len(msgs) == 1
+        assert "finish_reason=length" in msgs[0]
+
+    def test_stop_with_no_content_does_NOT_log(self, llm, caplog):
+        # An empty stream that genuinely ended with stop is just a
+        # silent model — not the failure mode we care about. Still
+        # noisy enough we don't want a warn on every one.
+        choice = _Choice(delta=_Delta(content=None), finish_reason="stop")
+        with caplog.at_level(logging.WARNING):
+            self._run(llm, [_StreamLine([choice])])
+        assert not any(
+            "llm.empty_response" in r.getMessage() for r in caplog.records
+        )
+
+    def test_content_then_stop_does_NOT_log(self, llm, caplog):
+        # The happy path — content was emitted, finish_reason=stop. No
+        # warning even though we tracked the finish_reason.
+        lines = [
+            _StreamLine([_Choice(delta="hello", finish_reason=None)]),
+            _StreamLine([_Choice(delta=_Delta(content=None), finish_reason="stop")]),
+        ]
+        with caplog.at_level(logging.WARNING):
+            chunks = self._run(llm, lines)
+        assert "hello" in chunks
+        assert not any(
+            "llm.empty_response" in r.getMessage() for r in caplog.records
+        )
+
+    def test_openrouter_error_attr_logged_even_without_finish_reason(self, llm, caplog):
+        # OpenRouter wraps upstream errors as an ``error`` field on
+        # a stream line, sometimes without ever emitting a
+        # finish_reason. The error payload itself is the signal.
+        err_line = types.SimpleNamespace(
+            choices=None,
+            error={"code": 429, "message": "rate limited"},
+        )
+        with caplog.at_level(logging.WARNING):
+            self._run(llm, [err_line])
+        msgs = [r.getMessage() for r in caplog.records if "llm.empty_response" in r.getMessage()]
+        assert len(msgs) == 1
+        assert "rate limited" in msgs[0]
+
+    def test_tool_calls_finish_reason_does_NOT_log(self, llm, caplog):
+        # A tool-call turn legitimately has no content + finish_reason=
+        # tool_calls. The agent layer handles it; don't warn.
+        tool_call = types.SimpleNamespace(index=0, id="t1", function=None, type="function")
+        choice = _Choice(
+            delta=_Delta(content=None, tool_calls=[tool_call]),
+            finish_reason="tool_calls",
+        )
+        with caplog.at_level(logging.WARNING):
+            self._run(llm, [_StreamLine([choice])])
+        assert not any(
+            "llm.empty_response" in r.getMessage() for r in caplog.records
+        )
+
+    def test_chunk_after_tool_calls_is_not_yielded_as_tool_choice(self, llm):
+        # Regression: when chunk N carries ``finish_reason=tool_calls``
+        # and a (rare but legal) chunk N+1 follows with neither
+        # tool_calls deltas NOR its own finish_reason, the post-N+1
+        # iteration must NOT yield it as a tool-call choice. The yield
+        # condition uses the per-chunk finish_reason, not the sticky
+        # ``last_finish_reason``. Without this check, an extra "empty"
+        # choice from some providers would be forwarded to the
+        # handler as if it were a fresh tool call.
+        tool_call = types.SimpleNamespace(index=0, id="t1", function=None, type="function")
+        chunk_with_tools = _StreamLine([_Choice(
+            delta=_Delta(content=None, tool_calls=[tool_call]),
+            finish_reason="tool_calls",
+        )])
+        trailing_chunk = _StreamLine([_Choice(
+            delta=_Delta(content=None),
+            finish_reason=None,
+        )])
+        chunks = self._run(llm, [chunk_with_tools, trailing_chunk])
+        # Exactly one choice yielded (from chunk_with_tools), nothing
+        # from the trailing empty chunk.
+        choice_yields = [c for c in chunks if hasattr(c, "delta")]
+        assert len(choice_yields) == 1
 
 
 @pytest.mark.unit
