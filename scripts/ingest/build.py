@@ -1,4 +1,4 @@
-"""Build all 12 Aztec corpora as zip files ready for upload.
+"""Build all 13 Aztec corpora as zip files ready for upload.
 
 Usage::
 
@@ -70,6 +70,7 @@ def _walk_files(
     src_dir: Path,
     extensions: tuple,
     exclude_paths: tuple = (),
+    include_paths: tuple = (),
 ) -> List[Path]:
     """Walk ``src_dir`` and return matching files in stable order.
 
@@ -77,6 +78,11 @@ def _walk_files(
     each file's relative path under ``src_dir`` (forward-slash form,
     no leading slash). Patterns may target directories — e.g.
     ``"foo/bar/*"`` excludes every file under ``foo/bar``.
+
+    ``include_paths`` is an optional fnmatch-style allowlist with the
+    same path semantics. When non-empty, only files matching one of
+    its patterns are kept (extension + exclude filters still apply).
+    Empty is "no allowlist" — every file passes this stage.
     """
     out: List[Path] = []
     ext_lower = tuple(e.lower() for e in extensions)
@@ -91,6 +97,11 @@ def _walk_files(
         # Skip per-corpus exclusions
         if exclude_paths and any(
             fnmatch.fnmatch(rel_posix, pat) for pat in exclude_paths
+        ):
+            continue
+        # Apply per-tree allowlist if one is configured
+        if include_paths and not any(
+            fnmatch.fnmatch(rel_posix, pat) for pat in include_paths
         ):
             continue
         if path.suffix.lower() in ext_lower:
@@ -110,7 +121,12 @@ def _build_passthrough(
     for src_dir, tree in zip(src_dirs, corpus.trees):
         rel_root = staging / tree.zip_prefix.rstrip("/")
         rel_root.mkdir(parents=True, exist_ok=True)
-        for f in _walk_files(src_dir, corpus.include_extensions, tree.exclude_paths):
+        for f in _walk_files(
+            src_dir,
+            corpus.include_extensions,
+            tree.exclude_paths,
+            tree.include_paths,
+        ):
             rel = f.relative_to(src_dir)
             target = rel_root / rel
             target.parent.mkdir(parents=True, exist_ok=True)
@@ -128,7 +144,12 @@ def _build_rename_code_to_txt(
     for src_dir, tree in zip(src_dirs, corpus.trees):
         rel_root = staging / tree.zip_prefix.rstrip("/")
         rel_root.mkdir(parents=True, exist_ok=True)
-        for f in _walk_files(src_dir, corpus.include_extensions, tree.exclude_paths):
+        for f in _walk_files(
+            src_dir,
+            corpus.include_extensions,
+            tree.exclude_paths,
+            tree.include_paths,
+        ):
             rel = f.relative_to(src_dir)
             target = rel_root / (str(rel) + ".txt")
             target.parent.mkdir(parents=True, exist_ok=True)
@@ -148,6 +169,14 @@ def _build_noir_apiref(
         "totals_by_kind": {},
     }
     for src_dir, tree in zip(src_dirs, corpus.trees):
+        if tree.include_paths:
+            # noir_apiref.transform_tree doesn't take an allowlist yet;
+            # fail loud so a config typo can't silently produce an
+            # under-included corpus.
+            raise SystemExit(
+                f"corpus {corpus.slug!r}: include_paths is not yet supported "
+                f"for the noir_apiref transform"
+            )
         out_dir = staging / tree.zip_prefix.rstrip("/")
         out_dir.mkdir(parents=True, exist_ok=True)
         manifest = noir_apiref.transform_tree(
@@ -251,7 +280,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         "--corpus",
         action="append",
         help="Build only the named corpus slug(s) (repeatable). "
-             "Defaults to all 12.",
+             "Defaults to all 13.",
     )
     parser.add_argument("--verbose", "-v", action="store_true")
     args = parser.parse_args(argv)

@@ -95,6 +95,32 @@ class TestNetworkOperatorDocs:
         )
 
 
+class TestSiteRootPages:
+    """Files at `aztec-site/...` come from the unversioned
+    ``docs/docs/`` folder in aztec-packages and render at the
+    site root on docs.aztec.network (e.g. /networks)."""
+
+    def test_networks_page(self):
+        # docs/docs/networks.md → docs.aztec.network/networks. This is
+        # the canonical L1 contract address table (mainnet vs. Sepolia
+        # GSE etc.) the operator widget needs to cite directly.
+        assert _aztec_source_url("aztec-site/networks.md") == (
+            "https://docs.aztec.network/networks"
+        )
+
+    def test_strips_mdx_extension(self):
+        # `index.mdx` is excluded by the corpus today but the rewriter
+        # should still handle it correctly if we ever add it.
+        assert _aztec_source_url("aztec-site/index.mdx") == (
+            "https://docs.aztec.network"
+        )
+
+    def test_does_not_route_to_github(self):
+        url = _aztec_source_url("aztec-site/networks.md")
+        assert "github.com" not in url
+        assert url == "https://docs.aztec.network/networks"
+
+
 class TestNoirRepoMappings:
     """noir-docs/ → rendered noir-lang.org/docs (NOT GitHub).
     noir-stdlib/ stays on GitHub since those are real `.nr` source files."""

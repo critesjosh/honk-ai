@@ -21,6 +21,7 @@ Aztec-specific additions on top of upstream:
   - `version-v4.2.0/operators/<rest>` → `https://docs.aztec.network/operate/operators/<rest>` (the rendered network/operator docs live under `/operate/` on the site, NOT under `/developers/` or GitHub).
   - `version-v4.2.0/docs/<rest>` → `https://docs.aztec.network/developers/docs/<rest>` (rendered developer docs).
   - `version-v4.2.0/<file>` → `https://docs.aztec.network/developers/<file>` (top-level dev docs like `overview`, `getting_started_on_local_network` — NOT under `/developers/docs/`).
+  - `aztec-site/<rest>` → `https://docs.aztec.network/<rest>` (unversioned site-root pages from aztec-packages `docs/docs/` — today just `networks.md`, the canonical L1 contract address table including the **testnet** GSE/Rollup/Registry that the versioned operator docs explicitly defer to).
   - `noir-docs/<rest>` → `https://noir-lang.org/docs/<rest>` (rendered Noir docs, NOT GitHub).
   - `noir-stdlib/<rest>` → `noir-lang/noir` GitHub blob at the pinned commit (apiref of real `.nr` source files).
   - Everything else (code corpora — aztec.js, aztec-nr, noir-contracts, l1-contracts, typescript-api, etc.) → `aztec-packages` GitHub blob at `v4.2.0`.
@@ -145,7 +146,7 @@ Before iterating on a bug someone's reporting, run `docker ps` and check whether
 
 ## Data sources (knowledge base corpus)
 
-> **Reproducible ingest:** the full re-ingest workflow (build all 12 corpora, upload, swap the agent's source list) lives under `scripts/ingest/` — see `scripts/ingest/README.md` for the version-bump checklist. `scripts/ingest/corpora.py` is the single source of truth for corpus paths, extensions, and transforms.
+> **Reproducible ingest:** the full re-ingest workflow (build all 13 corpora, upload, swap the agent's source list) lives under `scripts/ingest/` — see `scripts/ingest/README.md` for the version-bump checklist. `scripts/ingest/corpora.py` is the single source of truth for corpus paths, extensions, and transforms.
 
 All indexed content comes from the sibling **`aztec-packages` repo** pinned at the `v4.2.0` git tag. On the dev host the repo lives at `/mnt/user-data/josh/aztec-packages/`; the worktree used for ingest is typically checked out at `/tmp/aztec-v4.2.0`:
 
@@ -153,12 +154,13 @@ All indexed content comes from the sibling **`aztec-packages` repo** pinned at t
 git -C ../aztec-packages worktree add --detach /tmp/aztec-v4.2.0 v4.2.0
 ```
 
-**Twelve corpora** are ingested into the `sources` table (one row per corpus, UUID auto-generated) and `documents` table (one row per chunk, pgvector 3072-dim embeddings via OpenAI `text-embedding-3-large`). UUIDs for the ones the MCP bot should serve go into `AZTEC_SOURCE_IDS` in `.env`:
+**Thirteen corpora** are ingested into the `sources` table (one row per corpus, UUID auto-generated) and `documents` table (one row per chunk, pgvector 3072-dim embeddings via OpenAI `text-embedding-3-large`). UUIDs for the ones the MCP bot should serve go into `AZTEC_SOURCE_IDS` in `.env`:
 
-| Source (display name) | Path in aztec-packages | Transform | Excludes | File ext |
+| Source (display name) | Path in aztec-packages | Transform | Excludes / Includes | File ext |
 |---|---|---|---|---|
-| **Aztec Developer Docs v4.2.0 (clean)** | `docs/developer_versioned_docs/version-v4.2.0/` | passthrough | `docs/resources/migration_notes.*` | .md .mdx .json |
-| **Aztec Network Docs v4.2.0 (clean)** | `docs/network_versioned_docs/version-v4.2.0/` | passthrough | `operators/reference/changelog/*`, `reference/changelog/*` | .md |
+| **Aztec Developer Docs v4.2.0 (clean)** | `docs/developer_versioned_docs/version-v4.2.0/` | passthrough | excludes `docs/resources/migration_notes.*` | .md .mdx .json |
+| **Aztec Network Docs v4.2.0 (clean)** | `docs/network_versioned_docs/version-v4.2.0/` | passthrough | excludes `operators/reference/changelog/*`, `reference/changelog/*` | .md |
+| **Aztec Site Networks Page v4.2.0** | `docs/docs/` | passthrough | **includes only** `networks.md` (the L1 contract address table — mainnet vs. testnet GSE/Rollup/Registry that the versioned operator docs defer to) | .md .mdx |
 | **Aztec.nr Framework v4.2.0 (apiref)** | `noir-projects/aztec-nr/` | **noir_apiref** | — | .nr → .nr.md |
 | Aztec Example Contracts v4.2.0 | `noir-projects/noir-contracts/contracts/` | rename_code_to_txt | — | .nr → .nr.txt |
 | Aztec Protocol Circuits v4.2.0 | `noir-projects/noir-protocol-circuits/` | rename_code_to_txt | — | .nr → .nr.txt |
@@ -172,22 +174,25 @@ git -C ../aztec-packages worktree add --detach /tmp/aztec-v4.2.0 v4.2.0
 
 ### Three transforms, three intents
 
-The 12 corpora split into three buckets by transform:
+The 13 corpora split into three buckets by transform:
 
 - **`passthrough`** — markdown ingested as-is.
 - **`rename_code_to_txt`** — source code with `.txt` appended so the parser allowlist accepts it (`Token.nr` → `Token.nr.txt`). Used where the body IS the answer (examples, circuits, TS, Solidity). Original path preserved in `metadata.source`.
 - **`noir_apiref`** — `.nr` files run through `scripts/ingest/noir_apiref.py` to produce a Markdown view of just the public surface (doc comments + signatures, no bodies, no `//` comments, no `#[test]`). Output `foo.nr.md`. Used for `aztec-nr` and `noir-stdlib`. The chunker tags these `chunk_type=apiref` (via file extension in `application/parser/file/bulk.py`), exempting them from the `<50` token discard. See `PLAN-rag-apiref.md`.
 
-### Per-corpus exclusions (`exclude_paths`)
+### Per-corpus exclusions / inclusions (`exclude_paths` / `include_paths`)
 
 `SourceTree.exclude_paths` (`scripts/ingest/corpora.py`) is a tuple of fnmatch patterns relative to the source tree. Currently:
 - **Aztec Developer Docs** excludes `docs/resources/migration_notes.*`.
 - **Aztec Network Docs** excludes `operators/reference/changelog/*` and `reference/changelog/*`.
 
+`SourceTree.include_paths` is an optional allowlist with the same semantics; when non-empty only matching files are kept. Used by:
+- **Aztec Site Networks Page** — `include_paths=("networks.md",)` over `docs/docs/`, so the corpus contains exactly one file. Honored by the `passthrough` and `rename_code_to_txt` transforms; `noir_apiref` fails loud if used.
+
 ### How ingest runs
 The full reproducible workflow is in `scripts/ingest/README.md`. Short version:
 
-1. `python -m scripts.ingest.build --aztec-pkg /tmp/aztec-vNEW --noir /tmp/noir-vNEW --out /tmp/build` builds zips for all 12 corpora.
+1. `python -m scripts.ingest.build --aztec-pkg /tmp/aztec-vNEW --noir /tmp/noir-vNEW --out /tmp/build` builds zips for all 13 corpora.
 2. `python -m scripts.ingest.upload --build-dir /tmp/build --base-url ... --token "$INTERNAL_KEY" --out /tmp/build/upload_manifest.json` uploads each zip to `POST /api/upload`, polls `GET /api/task_status?task_id=...` until `SUCCESS`, captures the resulting `sources.id` per corpus.
 3. `python -m scripts.ingest.swap_sources --upload-manifest ... --agent-id $PROD_AGENT_ID --out /tmp/swap.sql` generates SQL (does NOT execute) to point the agent's `source_id` + `extra_source_ids` at the new corpora, plus the canonical-order `AZTEC_SOURCE_IDS` block to paste into `.env`.
 4. Run `psql -f /tmp/swap.sql`, update `.env`, then `docker compose … up -d --force-recreate backend worker`.

@@ -78,6 +78,15 @@ class SourceTree:
     #
     #     exclude_paths=("operators/reference/changelog/*",)
     exclude_paths: Tuple[str, ...] = ()
+    # Optional fnmatch-style allowlist. When non-empty, ONLY files
+    # whose relative path matches one of these patterns are kept (in
+    # addition to the ``include_extensions`` check). Empty (default)
+    # means "include every file that passes the other filters". Use
+    # this to pull a single file or a short list out of a tree that
+    # otherwise contains far more than we want to index — e.g. just
+    # ``networks.md`` out of ``docs/docs/`` rather than the whole
+    # unversioned-docs folder.
+    include_paths: Tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -117,7 +126,7 @@ class Corpus:
         return tuple(t.path for t in self.trees)
 
 
-# ── The 12 corpora ─────────────────────────────────────────────────────────
+# ── The 13 corpora ─────────────────────────────────────────────────────────
 
 
 CORPORA: Tuple[Corpus, ...] = (
@@ -185,6 +194,33 @@ CORPORA: Tuple[Corpus, ...] = (
         transform="passthrough",
         notes="from noir-lang/noir at the commit pinned by aztec-packages "
               "v4.2.0 (see CLAUDE.md for the canonical commit hash)",
+    ),
+    Corpus(
+        # Site-root unversioned pages in aztec-packages that the
+        # versioned developer/network docs explicitly defer to. The
+        # only entry today is ``networks.md`` — the canonical L1
+        # contract address table comparing mainnet vs. Sepolia
+        # (Governance Staking Escrow, Rollup, Registry, etc.). The
+        # versioned network docs hardcode mainnet addresses with a
+        # "for mainnet" qualifier and point operators here for the
+        # testnet column; without this corpus the bot has no way to
+        # produce the testnet GSE address and tends to serve the
+        # mainnet one for testnet questions.
+        name="Aztec Site Networks Page v4.2.0",
+        slug="aztec_site_networks",
+        source_root="aztec-packages",
+        trees=(
+            SourceTree(
+                "docs/docs",
+                "aztec-site",
+                include_paths=("networks.md",),
+            ),
+        ),
+        include_extensions=(".md", ".mdx"),
+        transform="passthrough",
+        notes="single-file corpus: docs/docs/networks.md, rendered at "
+              "docs.aztec.network/networks. Add more site-root pages "
+              "here by extending include_paths.",
     ),
     # ---- Apiref corpora (noir_apiref transform) ------------------------
     Corpus(

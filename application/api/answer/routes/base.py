@@ -51,6 +51,10 @@ _AZTEC_DEV_TOP_BASE = "https://docs.aztec.network/developers"
 # Network docs (sequencer/prover/operator content) are rendered under
 # /operate/ on the site even though the corpus prefix is `operators/`.
 _AZTEC_OPERATE_BASE = "https://docs.aztec.network/operate"
+# Unversioned site-root pages from aztec-packages' ``docs/docs/`` —
+# e.g. ``networks.md`` rendered at /networks. Lives in the
+# ``aztec_site_networks`` corpus (zip prefix ``aztec-site/``).
+_AZTEC_SITE_BASE = "https://docs.aztec.network"
 _AZTEC_GITHUB_BASE = (
     "https://github.com/AztecProtocol/aztec-packages/blob/v4.2.0"
 )
@@ -121,6 +125,7 @@ def _aztec_source_url(source_path: str) -> str:
       * Rendered Aztec developer docs under `docs/`  → docs.aztec.network/developers/docs/<rest>
       * Top-level developer docs (overview, etc.)     → docs.aztec.network/developers/<rest>
       * Network / operator docs                       → docs.aztec.network/operate/operators/<rest>
+      * Unversioned site-root pages (networks.md)    → docs.aztec.network/<rest>
       * Noir language docs + stdlib                   → github.com/noir-lang/noir at pinned commit
       * Aztec source code (TS / Sol / Noir)           → github.com/AztecProtocol/aztec-packages at v4.2.0
     """
@@ -149,6 +154,15 @@ def _aztec_source_url(source_path: str) -> str:
         rest = source_path[len("version-v4.2.0/"):]
         rest = _strip_index_suffix(_strip_doc_ext(rest))
         return f"{_AZTEC_DEV_TOP_BASE}/{rest}".rstrip("/")
+
+    # Unversioned aztec-packages ``docs/docs/`` pages — rendered at
+    # the site root (e.g. ``aztec-site/networks.md`` →
+    # ``docs.aztec.network/networks``). Same Docusaurus URL scheme as
+    # the developer docs above.
+    if source_path.startswith("aztec-site/"):
+        rest = source_path[len("aztec-site/"):]
+        rest = _strip_index_suffix(_strip_doc_ext(rest))
+        return f"{_AZTEC_SITE_BASE}/{rest}".rstrip("/")
 
     # Noir language docs are rendered at noir-lang.org/docs. Strip the
     # markdown extension and any `/index` suffix to match the
