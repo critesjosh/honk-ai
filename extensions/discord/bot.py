@@ -1,5 +1,6 @@
 import asyncio
 import json
+import math
 import os
 import re
 import logging
@@ -256,27 +257,56 @@ def _register_feedback_target(
 # blocks around ``message.create_thread`` and the ``target.typing /
 # target.send`` block in ``on_message``). On detection we record an
 # expiry timestamp keyed by guild_id and bail out of subsequent
-# ``on_message`` handling for that guild — we add a single ⚠️ reaction
-# on the trigger message so the user gets visual feedback that we
-# noticed, and skip every outbound write until the breaker expires.
-# DM contexts (``message.guild is None``) key under ``None``.
+# ``on_message`` handling for that guild. Each silenced mention (the
+# trip itself plus every subsequent mention during the cooldown) gets
+# a brief "rate-limited, try again in ~N min" reply, deduped to once
+# per channel per breaker window. If that reply itself 429s, we fall
+# back to a single ⏳ reaction (separate endpoint family, more likely
+# to land). DM contexts (``message.guild is None``) key under ``None``.
 #
-# The cooldown is configurable for ops; the default of 5 minutes is
-# longer than the response's ``retry-after`` because that retry window
-# only describes when *Discord* will accept the next write, not when
-# the *external* contention will let up. Picking too short means we
-# keep walking back into the bucket; too long means a brief blip
-# silences the bot for longer than necessary. 5 minutes is a starting
-# point — tune via ``DISCORD_SHARED_429_COOLDOWN_SECONDS`` based on
-# observed incident lengths.
+# The cooldown is configurable for ops; the default of 60 seconds is
+# longer than the response's ``retry-after`` (which only describes
+# when *Discord* will accept our next write, not when the *external*
+# shared-bucket contention will let up) but well short of any
+# documented incident length. Sizing rationale:
+#
+# - Observed ``retry_after`` on shared-scope 40062s is 2.5-3s, matching
+#   Discord's own published example (api-docs PR #5574). The bucket
+#   itself cycles in single-digit seconds.
+# - Discord's docs explicitly exclude ``X-RateLimit-Scope: shared``
+#   429s from the 10k-invalid-per-10-min Cloudflare ban budget — so
+#   the cooldown isn't gating against THAT line. It guards against
+#   pattern-recognition / anti-abuse heuristics and against amplifying
+#   the herd that's keeping the bucket pinned.
+# - discord.py's own "if you can't wait this out, stop trying"
+#   threshold is ``max_ratelimit_timeout``'s 30s floor. 60s sits
+#   comfortably above that.
+# - The structural defense against the 2026-05-08 Noir flagging is
+#   ``bot.http.max_ratelimit_timeout = 2.0`` (set below), which kills
+#   discord.py's retry loop before it can stack invalid responses.
+#   The cooldown is belt-and-suspenders.
+#
+# Tune via ``DISCORD_SHARED_429_COOLDOWN_SECONDS`` based on observed
+# incident lengths in your guild. Going below 30s risks re-walking
+# into the bucket; going above ~120s has no evidence of benefit for
+# shared-scope message-send 429s.
 _SHARED_429_TRIPPED_GUILDS: dict[Optional[int], float] = {}
 _SHARED_429_COOLDOWN_SECONDS = _env_int(
     "DISCORD_SHARED_429_COOLDOWN_SECONDS",
-    300,
+    60,
     min_value=10,
 )
 _SHARED_429_ERROR_CODE = 40062
-_BREAKER_REACTION = "\N{WARNING SIGN}"
+_BREAKER_REACTION = "\N{HOURGLASS WITH FLOWING SAND}"
+
+# Per-channel dedup of breaker notices. While the breaker is open we
+# want each affected user to see ONE clear "rate-limited, try again in
+# ~N min" reply, not one per mention — repeated notices would just add
+# more writes to the same throttled bucket. Keyed by ``channel.id`` (or
+# ``thread.id`` when the bot replies in a thread); value is the breaker
+# expiry timestamp recorded at notice time, so a new trip (with a fresh
+# expiry) re-arms a new notice for that channel.
+_BREAKER_NOTIFIED: dict[int, float] = {}
 
 
 def _is_shared_429(exc) -> bool:
@@ -333,7 +363,7 @@ def _breaker_open(guild_id: Optional[int]) -> bool:
 
 
 async def _signal_breaker_open(message: "discord.Message") -> None:
-    """Best-effort ⚠️ reaction so the user knows the bot saw the mention.
+    """Best-effort ⏳ reaction so the user knows the bot saw the mention.
 
     Reactions go through a different endpoint family than typing/send
     and may not be in the same shared bucket — but if they are, we
@@ -344,6 +374,107 @@ async def _signal_breaker_open(message: "discord.Message") -> None:
         await message.add_reaction(_BREAKER_REACTION)
     except (discord.HTTPException, discord.Forbidden, discord.NotFound, discord.RateLimited):
         pass
+
+
+def _breaker_time_remaining(guild_id: Optional[int]) -> float:
+    """Return seconds remaining on the breaker for ``guild_id``.
+
+    Returns 0.0 if no entry exists or the recorded expiry has already
+    elapsed. Does NOT pop expired entries — that's ``_breaker_open``'s
+    job. Callers asking for ETA only care about a non-negative number.
+    """
+    expiry = _SHARED_429_TRIPPED_GUILDS.get(guild_id)
+    if expiry is None:
+        return 0.0
+    remaining = expiry - time.monotonic()
+    return remaining if remaining > 0 else 0.0
+
+
+def _format_breaker_eta(seconds: float) -> str:
+    """Render breaker time-remaining as a user-friendly phrase.
+
+    Uses ``ceil`` rather than ``round`` so we never *understate* the
+    wait — telling a user "try again in 1 minute" when 89s remain
+    would have them retry into a still-open breaker.
+    """
+    if seconds < 60:
+        return "in less than a minute"
+    minutes = math.ceil(seconds / 60)
+    if minutes == 1:
+        return "in about 1 minute"
+    return f"in about {minutes} minutes"
+
+
+def _claim_breaker_notice(channel_id: int, guild_id: Optional[int]) -> bool:
+    """Reserve a notice slot for ``channel_id`` in the current window.
+
+    Returns True if a notice should be sent (and records it); False if
+    a notice has already gone out for this channel during the current
+    breaker window. Also lazily evicts stale entries so the dict can't
+    grow unbounded across long-running deploys.
+    """
+    now = time.monotonic()
+    stale = [cid for cid, exp in _BREAKER_NOTIFIED.items() if exp <= now]
+    for cid in stale:
+        _BREAKER_NOTIFIED.pop(cid, None)
+
+    current_expiry = _SHARED_429_TRIPPED_GUILDS.get(guild_id)
+    # "Raced closed" covers two shapes: the breaker was popped already
+    # (current_expiry is None), or the entry is still present but has
+    # already elapsed because nobody called _breaker_open to evict it
+    # since. Both mean we shouldn't record a stale expiry — the next
+    # genuine trip will set a fresh one and we want THAT window's
+    # notice to fire.
+    if current_expiry is None or current_expiry <= now:
+        return True
+    if _BREAKER_NOTIFIED.get(channel_id) == current_expiry:
+        return False
+    _BREAKER_NOTIFIED[channel_id] = current_expiry
+    return True
+
+
+async def _signal_breaker_silenced(
+    message: "discord.Message",
+    target=None,
+    *,
+    eta_seconds: float,
+) -> None:
+    """User-facing signal for a silenced mention.
+
+    Tries a brief text reply first ("⏳ I'm being rate-limited by
+    Discord right now — please try again ..."). On any of the four
+    expected write failures (HTTPException / Forbidden / NotFound /
+    RateLimited) falls back to a single ⏳ reaction, which uses a
+    separate endpoint family and is more likely to land while the
+    shared bucket is pinned.
+
+    Per-channel dedup: at most one notice per (target.id, breaker
+    window). Subsequent silenced mentions in the same channel during
+    the same window get nothing (no notice, no reaction) so the bot
+    doesn't pile additional writes onto an already-throttled bucket.
+
+    Note: notice failures here are NOT treated as a fresh 429 trip —
+    we don't call ``_trip_breaker``, so the original cooldown keeps
+    counting down rather than being extended by our own retries.
+    """
+    if target is None:
+        target = message.channel
+
+    guild_id = message.guild.id if message.guild is not None else None
+    if not _claim_breaker_notice(target.id, guild_id):
+        return
+
+    text = (
+        f"⏳ I'm being rate-limited by Discord right now — "
+        f"please try again {_format_breaker_eta(eta_seconds)}."
+    )
+    try:
+        await target.send(text)
+        return
+    except (discord.HTTPException, discord.Forbidden, discord.NotFound, discord.RateLimited) as exc:
+        logger.info("Breaker-notice send failed (swallowed): %s", exc)
+
+    await _signal_breaker_open(message)
 
 
 # Discord decorations to remove from quoted thread message bodies.
@@ -1169,26 +1300,28 @@ async def on_message(message):
             return  # Bot not mentioned, so do not process
 
     # Per-guild circuit breaker: if we've recently observed a
-    # shared-bucket 429 here, skip every outbound write for the
-    # cooldown. Checked BEFORE any thread state allocation / lock
-    # acquisition so a tripped guild has minimal overhead per
-    # mention. DMs key under ``None``; if a DM ever trips the breaker
-    # (rare — DMs aren't typically in shared buckets) it also
-    # short-circuits.
+    # shared-bucket 429 here, skip the /stream call for the cooldown.
+    # Checked BEFORE any thread state allocation / lock acquisition so
+    # a tripped guild has minimal overhead per mention. DMs key under
+    # ``None``; if a DM ever trips the breaker (rare — DMs aren't
+    # typically in shared buckets) it also short-circuits.
     #
-    # No ⚠️ reaction on the bail-out path — that would be a Discord
-    # write per silenced mention against an account that's already
-    # being throttled, which defeats the breaker's purpose. The user
-    # whose mention TRIPPED the breaker already got the reaction at
-    # the trip site; subsequent mentions during the cooldown silently
-    # no-op (same UX as if 40062 had hit reactions too).
+    # User-facing signal: one notice per channel per breaker window,
+    # via ``_signal_breaker_silenced``. Earlier silenced mentions in
+    # the same channel just no-op so we don't pile more writes onto
+    # the throttled bucket.
     guild_id = message.guild.id if message.guild is not None else None
     if _breaker_open(guild_id):
+        eta_seconds = _breaker_time_remaining(guild_id)
         logger.info(
-            "Shared-429 breaker open for guild=%s; skipping reply on message %s",
+            "Shared-429 breaker open; skipping reply guild=%s channel=%s message=%s author=%s eta=%.0fs",
             guild_id,
+            message.channel.id,
             message.id,
+            message.author.id,
+            eta_seconds,
         )
+        await _signal_breaker_silenced(message, eta_seconds=eta_seconds)
         return
 
     # Decide which conversation cache backs this turn. When we're
@@ -1297,9 +1430,13 @@ async def on_message(message):
                 # payload would carry a phantom prompt with no response.
                 if _is_shared_429(exc):
                     _trip_breaker(guild_id, f"create_thread for message {message.id}: {exc}")
-                    await _signal_breaker_open(message)
                     if conversation["history"] and "response" not in conversation["history"][-1]:
                         conversation["history"].pop()
+                    await _signal_breaker_silenced(
+                        message,
+                        target=target,
+                        eta_seconds=_breaker_time_remaining(guild_id),
+                    )
                     return
                 logger.warning(
                     "Could not create thread (falling back to parent channel): %s",
@@ -1330,9 +1467,13 @@ async def on_message(message):
                         guild_id,
                         f"typing on {getattr(target, 'id', '?')}: {typing_exc}",
                     )
-                    await _signal_breaker_open(message)
                     if conversation["history"] and "response" not in conversation["history"][-1]:
                         conversation["history"].pop()
+                    await _signal_breaker_silenced(
+                        message,
+                        target=target,
+                        eta_seconds=_breaker_time_remaining(guild_id),
+                    )
                     return
                 logger.warning("Typing indicator failed (continuing): %s", typing_exc)
 
@@ -1344,18 +1485,21 @@ async def on_message(message):
             # (5-180s of LLM cost), so bailing here saves backend work
             # we can't deliver — sends will fail with the same 40062.
             #
-            # No reaction on this path — the user who concurrently
-            # tripped the breaker got a reaction on THEIR mention. We
-            # also already issued a typing event above, which is
-            # enough indication the bot saw this mention.
+            # Emit a per-channel-deduped notice so the user (who saw
+            # a typing indicator a moment ago and is expecting an
+            # answer) understands why nothing is coming.
             if _breaker_open(guild_id):
+                eta_seconds = _breaker_time_remaining(guild_id)
                 logger.info(
-                    "Shared-429 breaker tripped concurrently; aborting /stream for guild=%s message=%s",
+                    "Shared-429 breaker tripped concurrently; aborting /stream guild=%s channel=%s message=%s eta=%.0fs",
                     guild_id,
+                    message.channel.id,
                     message.id,
+                    eta_seconds,
                 )
                 if conversation["history"] and "response" not in conversation["history"][-1]:
                     conversation["history"].pop()
+                await _signal_breaker_silenced(message, target=target, eta_seconds=eta_seconds)
                 return
 
             try:
@@ -1441,7 +1585,6 @@ async def on_message(message):
             # success path.
             if _is_shared_429(exc):
                 _trip_breaker(guild_id, f"write to {getattr(target, 'id', '?')}: {exc}")
-                await _signal_breaker_open(message)
             logger.warning(
                 "Failed to send reply to %s: %s",
                 getattr(target, "id", "?"),
@@ -1449,6 +1592,14 @@ async def on_message(message):
             )
             if conversation["history"] and "response" not in conversation["history"][-1]:
                 conversation["history"].pop()
+            if _is_shared_429(exc):
+                # Notice send after history cleanup so a failed notice
+                # can't leave a phantom prompt in conversation state.
+                await _signal_breaker_silenced(
+                    message,
+                    target=target,
+                    eta_seconds=_breaker_time_remaining(guild_id),
+                )
             return
 
         # Keep conversation history to last 10 exchanges.
