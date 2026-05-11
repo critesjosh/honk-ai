@@ -133,7 +133,7 @@ docker compose -f deployment/docker-compose-hub.yaml --env-file .env exec postgr
 
 1. Add the public hostname to Cloudflare.
 2. Create an **Access application** covering `https://$PUBLIC_HOSTNAME/*` with the SSO policy of your choice.
-3. Either provision a **Cloudflare Tunnel** from the server (`cloudflared`) — preferred, no public IP — or add a firewall rule allowing only Cloudflare's IP ranges to reach port 443. If your origin sits in a region where CF backbone routing has been flaky (we hit this with a LHR-anchored tunnel), the same compose can be run with cloudflared on a separate bastion in a CF-friendly region, fronted by an SSH reverse tunnel. See `PLAN-bastion-relay.md` for the topology, decisions, and a step-by-step migration runbook.
+3. Either provision a **Cloudflare Tunnel** from the server (`cloudflared`) — preferred, no public IP — or add a firewall rule allowing only Cloudflare's IP ranges to reach port 443. If the origin's region has flaky CF backbone routing (we hit this on LHR), anchor `cloudflared` on a bastion in a healthier region and reverse-SSH Caddy to it; this is the current production topology on `aztec.adjacentpossible.dev`. Runbook: **"Bastion-anchored Cloudflare Tunnel"** below.
 4. Caddy already trusts Cloudflare as its upstream proxy (see `deployment/Caddyfile`) and propagates `Cf-Access-Authenticated-User-Email` as `X-Auth-Email` to the backend.
 
 For programmatic clients (the Discord bot, CI), issue a **Service Token** in Cloudflare Access so they can pass the `CF-Access-Client-Id` and `CF-Access-Client-Secret` headers without SSO.
@@ -230,6 +230,101 @@ Run the full deployment on a staging hostname first (e.g., `docs-staging.yourcom
 - [ ] Retrieval quality check: ask a question you know the answer to from the Aztec corpus, confirm a sensible answer.
 
 Only after all green: flip DNS / firewall / Cloudflare Access to the production hostname.
+
+## Bastion-anchored Cloudflare Tunnel
+
+`aztec.adjacentpossible.dev` ingresses through `cloudflared` on `ci-bastion.aztecprotocol.com` (AWS us-east-2), not the origin. Path: `CF edge → cloudflared on bastion → bastion 127.0.0.1:5080 → SSH -R → origin 127.0.0.1:5080 → Caddy:80 → backend/frontend-ask`. The origin's Caddy is already bound loopback-only in `deployment/docker-compose-hub.yaml` (`127.0.0.1:5080:80`); this section assumes that and only documents what's outside the compose.
+
+**Trust expansion**: anyone with a shell on bastion can reach the origin via `curl -H "Host: $PUBLIC_HOSTNAME" http://localhost:5080/...`, bypassing Cloudflare Access. Accepted because bastion is employees-only. `/api/internal/*` still requires `INTERNAL_KEY` / `MCP_PROVISIONING_KEY`.
+
+### Origin side
+
+1. Mint a dedicated SSH key (don't reuse a CI key — keeps ingress revocable independently):
+   ```bash
+   ssh-keygen -t ed25519 -f ~/.ssh/aztec_docs_relay -N "" -C "aztec-docs-relay@$(hostname)"
+   ```
+2. Pin the bastion host key; cross-check the fingerprint against a trusted source:
+   ```bash
+   ssh-keyscan -t ed25519 ci-bastion.aztecprotocol.com >> ~/.ssh/known_hosts
+   ssh-keygen -l -F ci-bastion.aztecprotocol.com -f ~/.ssh/known_hosts
+   ```
+3. Install `~/.config/systemd/user/aztec-docs-tunnel.service`:
+   ```ini
+   [Unit]
+   Description=SSH reverse tunnel origin → ci-bastion
+   After=network-online.target
+   Wants=network-online.target
+   [Service]
+   ExecStart=/usr/bin/ssh -N -R localhost:5080:localhost:5080 \
+     -o ServerAliveInterval=30 -o ServerAliveCountMax=3 \
+     -o ExitOnForwardFailure=yes -o StrictHostKeyChecking=yes -o BatchMode=yes \
+     -i %h/.ssh/aztec_docs_relay ubuntu@ci-bastion.aztecprotocol.com
+   Restart=always
+   RestartSec=5
+   [Install]
+   WantedBy=default.target
+   ```
+   `ExitOnForwardFailure=yes` is load-bearing: without it the SSH session can outlive a dead remote bind. Then enable:
+   ```bash
+   loginctl enable-linger "$(whoami)"   # one-time
+   systemctl --user daemon-reload && systemctl --user enable --now aztec-docs-tunnel.service
+   ```
+
+### Bastion side
+
+1. The bastion admin adds the origin's public key to `~ubuntu/.ssh/authorized_keys` restricted to the agreed port and nothing else:
+   ```
+   restrict,permitlisten="localhost:5080",from="<origin egress IP>" ssh-ed25519 AAAA… aztec-docs-relay@origin
+   ```
+   To forward additional ports later (e.g. `127.0.0.1:7092` to expose the honk-ai MCP server to claudebox without a public hostname), append another `permitlisten="localhost:7092"` clause. The `-R` will silently fail-fast if `permitlisten` doesn't include the port.
+2. Install `cloudflared`, store `CF_TOKEN` in `/etc/cloudflared/aztec-docs.env` (mode `0600`), then `/etc/systemd/system/cloudflared-aztec-docs.service`:
+   ```ini
+   [Service]
+   EnvironmentFile=/etc/cloudflared/aztec-docs.env
+   ExecStart=/usr/bin/cloudflared tunnel run --token ${CF_TOKEN}
+   Restart=always
+   ```
+   No `--url` — token-managed tunnels ignore it. The upstream URL is dashboard config and is the source of truth.
+3. **In the CF Zero Trust dashboard**, set the tunnel's public hostname Service URL to `http://localhost:5080` **before** starting the bastion service. This applies to *all* connectors, so any pre-existing origin-anchored connector starts failing at the same instant — that IS the cutover moment.
+
+### Validate, cut over, roll back
+
+```bash
+# From origin, prove the tunnel reaches Caddy. Caddy is Host-matched
+# on $PUBLIC_HOSTNAME — the explicit header is mandatory.
+ssh -i ~/.ssh/aztec_docs_relay ubuntu@ci-bastion.aztecprotocol.com -- \
+  curl -is -H "Host: $PUBLIC_HOSTNAME" http://localhost:5080/api/health
+```
+
+Roll back by reverting the dashboard Service URL. The prod compose has no `cloudflared` service today, so if you need the old origin-anchored path back, run `cloudflared tunnel run` on the origin directly against the same token.
+
+| Failure | Mitigation |
+| --- | --- |
+| Bastion down / rebooted | Reanchor: `cloudflared tunnel run` on origin against the same token, revert dashboard URL. |
+| `permitlisten` doesn't include a port you tried to add | `authorized_keys` edit on bastion; the failing `-R` already restart-loops so detection is automatic. |
+| CF backbone fails to us-east-2 | Provision a second relay in a different region. Today this is a single-anchor topology. |
+
+## Capacity & SLOs (production)
+
+| Subsystem | Limit | Source |
+| --- | --- | --- |
+| Gunicorn | 4 procs × 8 `gthread` = **32 in-flight slots**; each `/stream` pins a slot for the whole 5–15 s answer | `application/Dockerfile` |
+| Postgres | Default `max_connections=100`. SQLAlchemy pool 10+20 per backend proc; pgvector retrieval uses its own raw `psycopg.connect()` (bypasses the pool) | `application/storage/db/engine.py` |
+| pgvector | 3072-dim ⇒ **every retrieval is a seq scan** (pgvector skips IVFFlat above 2000 dims). CPU-bound on Postgres. | `application/vectorstore/pgvector.py` |
+| Container caps | None set in compose. Dev compose (`docsgpt-oss-*`) competes for host RAM/CPU if up alongside prod. | `deployment/docker-compose-hub.yaml` |
+
+SLO targets:
+
+| Endpoint | Metric | Target |
+| --- | --- | --- |
+| `/stream` | P95 first-token / total | < 3 s / < 15 s |
+| `/api/search` | P95 total | < 4 s |
+| Any | 5xx + timeout + disconnect | < 1 % |
+| Postgres | Active connections | < 80 of 100 |
+
+**Observed ceiling**: ~10–20 concurrent `/stream` answers under current OpenRouter quotas, well below the 32-slot floor. First-failing subsystem is upstream LLM latency, not the stack. Next bottlenecks if OpenRouter is no longer the constraint: pgvector seq-scan CPU, then Postgres `max_connections` (bump in `deployment/postgres-init/` along with `shared_buffers`).
+
+**Re-running the stress test**: `scripts/loadtest/run_stress.py` (`httpx` + manual SSE). Captures `ttft_ms` and `total_ms` per request (a client-side retrieval-vs-LLM phase split is *not* extractable — the `{type:"source"}` SSE frame is emitted at end-of-stream). Results land in `scripts/loadtest/results/<timestamp>/`. Run from outside the origin to exercise the full edge path.
 
 ## Development workflow (for code changes)
 
