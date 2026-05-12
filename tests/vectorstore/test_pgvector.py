@@ -97,12 +97,19 @@ class TestPGVectorStoreSearch:
         assert results[0].page_content == "hello world"
         assert results[0].metadata["source"] == "test.txt"
 
-    def test_search_returns_empty_on_error(self):
-        store, mock_conn, mock_cursor, _ = _make_store()
+    def test_search_propagates_db_error(self):
+        # Previously the store swallowed SQL/connection errors and
+        # returned []. That hid real backend faults (column-grant gaps,
+        # broken connection pool, schema drift) as "no docs found",
+        # so the LLM happily answered from training prior — exactly the
+        # ungrounded failure mode that grounded RAG is supposed to
+        # prevent. Codex flagged this; the contract now propagates so
+        # /stream and /api/search 5xx instead of silently degrading.
+        store, _mock_conn, mock_cursor, _ = _make_store()
         mock_cursor.execute.side_effect = Exception("connection lost")
 
-        results = store.search("query")
-        assert results == []
+        with pytest.raises(Exception, match="connection lost"):
+            store.search("query")
 
     def test_search_handles_null_metadata(self):
         store, _, mock_cursor, _ = _make_store()
@@ -188,10 +195,13 @@ class TestPGVectorStoreSearchByVectorWithScore:
         assert store.search_by_vector_with_score([0.0], k=5, source_ids=[]) == []
         mock_cursor.execute.assert_not_called()
 
-    def test_returns_empty_on_sql_error(self):
+    def test_propagates_sql_error(self):
+        # See test_search_propagates_db_error for rationale — broad
+        # except → return [] hid real faults. Now propagates.
         store, _, mock_cursor, _ = _make_store(source_id="src")
         mock_cursor.execute.side_effect = Exception("conn lost")
-        assert store.search_by_vector_with_score([0.0], k=5) == []
+        with pytest.raises(Exception, match="conn lost"):
+            store.search_by_vector_with_score([0.0], k=5)
 
     def test_results_ordered_by_distance_ascending(self):
         # Confirm the SQL orders by distance (lower = closer under cosine)

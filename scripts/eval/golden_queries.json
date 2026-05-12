@@ -3,9 +3,18 @@
     "tag": "noir-stdlib-poseidon2",
     "bucket": "identifier",
     "query": "How do I use std::hash::poseidon2 in Noir?",
-    "expected_source_prefixes": ["noir-stdlib/", "noir-docs/"],
-    "expected_apiref_paths": ["noir-stdlib/hash/poseidon2.nr", "noir-stdlib/hash/mod.nr"],
-    "banned_identifiers": ["std::hash::poseidon2_hash", "UNCONSTRAINED_ONCHAIN"],
+    "expected_source_prefixes": [
+      "noir-stdlib/",
+      "noir-docs/"
+    ],
+    "expected_apiref_paths": [
+      "noir-stdlib/hash/poseidon2.nr",
+      "noir-stdlib/hash/mod.nr"
+    ],
+    "banned_identifiers": [
+      "std::hash::poseidon2_hash",
+      "UNCONSTRAINED_ONCHAIN"
+    ],
     "max_response_time_s": 15,
     "min_distinct_sources": 3
   },
@@ -13,9 +22,13 @@
     "tag": "noir-lang-unconstrained",
     "bucket": "concept",
     "query": "What is the difference between a proving function and an unconstrained function in Noir?",
-    "expected_source_prefixes": ["noir-docs/"],
+    "expected_source_prefixes": [
+      "noir-docs/"
+    ],
     "expected_concept_prefix": "noir-docs/",
-    "banned_identifiers": ["UNCONSTRAINED_ONCHAIN"],
+    "banned_identifiers": [
+      "UNCONSTRAINED_ONCHAIN"
+    ],
     "max_response_time_s": 15,
     "min_distinct_sources": 3
   },
@@ -23,18 +36,31 @@
     "tag": "typescript-api-pxe",
     "bucket": "identifier",
     "query": "How do I create a PXE client with aztec.js?",
-    "expected_source_prefixes": ["typescript-api/"],
-    "banned_identifiers": ["UNCONSTRAINED_ONCHAIN"],
+    "expected_source_prefixes": [
+      "typescript-api/"
+    ],
+    "banned_identifiers": [
+      "UNCONSTRAINED_ONCHAIN"
+    ],
     "max_response_time_s": 15,
-    "min_distinct_sources": 3
+    "min_distinct_sources": 3,
+    "expected_first_prefixes": [
+      "typescript-api/",
+      "aztec.js/"
+    ]
   },
   {
     "tag": "aztec-nr-private-storage",
     "bucket": "concept",
     "query": "How do I write a private function in an Aztec contract that updates storage?",
-    "expected_source_prefixes": ["version-v4.2.0/"],
+    "expected_source_prefixes": [
+      "version-v4.2.0/"
+    ],
     "expected_concept_prefix": "version-v4.2.0/",
-    "banned_identifiers": ["UNCONSTRAINED_ONCHAIN", "MessageDelivery.OFFCHAIN_CONSTRAINED"],
+    "banned_identifiers": [
+      "UNCONSTRAINED_ONCHAIN",
+      "MessageDelivery.OFFCHAIN_CONSTRAINED"
+    ],
     "max_response_time_s": 15,
     "min_distinct_sources": 2
   },
@@ -42,7 +68,9 @@
     "tag": "example-token-contract",
     "bucket": "example",
     "query": "Show me an example of a simple Aztec token contract.",
-    "expected_source_prefixes": ["noir-contracts/"],
+    "expected_source_prefixes": [
+      "noir-contracts/"
+    ],
     "banned_identifiers": [],
     "max_response_time_s": 15,
     "min_distinct_sources": 2
@@ -51,8 +79,13 @@
     "tag": "noir-boundedvec",
     "bucket": "identifier",
     "query": "How does BoundedVec work in Noir?",
-    "expected_source_prefixes": ["noir-docs/", "noir-stdlib/"],
-    "expected_apiref_paths": ["noir-stdlib/collections/bounded_vec.nr"],
+    "expected_source_prefixes": [
+      "noir-docs/",
+      "noir-stdlib/"
+    ],
+    "expected_apiref_paths": [
+      "noir-stdlib/collections/bounded_vec.nr"
+    ],
     "banned_identifiers": [],
     "max_response_time_s": 15,
     "min_distinct_sources": 2
@@ -61,7 +94,9 @@
     "tag": "cli-deploy",
     "bucket": "concept",
     "query": "How do I deploy a contract using the Aztec CLI?",
-    "expected_source_prefixes": ["version-v4.2.0/"],
+    "expected_source_prefixes": [
+      "version-v4.2.0/"
+    ],
     "expected_concept_prefix": "version-v4.2.0/",
     "banned_identifiers": [],
     "max_response_time_s": 15,
@@ -71,18 +106,30 @@
     "tag": "aztec-js-wallet-api",
     "bucket": "identifier",
     "query": "What wallet API methods are available in aztec.js?",
-    "expected_source_prefixes": ["typescript-api/", "aztec.js/"],
+    "expected_source_prefixes": [
+      "typescript-api/",
+      "aztec.js/"
+    ],
     "banned_identifiers": [],
     "max_response_time_s": 15,
-    "min_distinct_sources": 3
+    "min_distinct_sources": 3,
+    "expected_first_prefixes": [
+      "typescript-api/",
+      "aztec.js/"
+    ]
   },
   {
     "tag": "note-delivery-modes",
     "bucket": "concept",
     "query": "What are the different MessageDelivery modes in Aztec?",
-    "expected_source_prefixes": ["version-v4.2.0/"],
+    "expected_source_prefixes": [
+      "version-v4.2.0/"
+    ],
     "expected_concept_prefix": "version-v4.2.0/",
-    "banned_identifiers": ["UNCONSTRAINED_ONCHAIN", "CONSTRAINED_OFFCHAIN"],
+    "banned_identifiers": [
+      "UNCONSTRAINED_ONCHAIN",
+      "CONSTRAINED_OFFCHAIN"
+    ],
     "max_response_time_s": 15,
     "min_distinct_sources": 2
   },
@@ -90,7 +137,9 @@
     "tag": "noir-format-strings",
     "bucket": "concept",
     "query": "How do format strings work in Noir?",
-    "expected_source_prefixes": ["noir-docs/"],
+    "expected_source_prefixes": [
+      "noir-docs/"
+    ],
     "expected_concept_prefix": "noir-docs/",
     "banned_identifiers": [],
     "max_response_time_s": 15,
@@ -100,7 +149,9 @@
     "tag": "aztec-state-management",
     "bucket": "concept",
     "query": "What is a note in Aztec and how does it differ from public state?",
-    "expected_source_prefixes": ["version-v4.2.0/"],
+    "expected_source_prefixes": [
+      "version-v4.2.0/"
+    ],
     "expected_concept_prefix": "version-v4.2.0/",
     "banned_identifiers": [],
     "max_response_time_s": 15,
@@ -110,8 +161,13 @@
     "tag": "noir-stdlib-option",
     "bucket": "identifier",
     "query": "How do I use the Option type in Noir?",
-    "expected_source_prefixes": ["noir-stdlib/", "noir-docs/"],
-    "expected_apiref_paths": ["noir-stdlib/option.nr"],
+    "expected_source_prefixes": [
+      "noir-stdlib/",
+      "noir-docs/"
+    ],
+    "expected_apiref_paths": [
+      "noir-stdlib/option.nr"
+    ],
     "banned_identifiers": [],
     "max_response_time_s": 15,
     "min_distinct_sources": 2
@@ -120,8 +176,12 @@
     "tag": "cross-source-private-tx",
     "bucket": "concept",
     "query": "Walk me through sending a private transaction from aztec.js including what happens in the contract.",
-    "expected_source_prefixes": ["version-v4.2.0/"],
-    "banned_identifiers": ["UNCONSTRAINED_ONCHAIN"],
+    "expected_source_prefixes": [
+      "version-v4.2.0/"
+    ],
+    "banned_identifiers": [
+      "UNCONSTRAINED_ONCHAIN"
+    ],
     "max_response_time_s": 30,
     "min_distinct_sources": 3
   },
@@ -130,31 +190,41 @@
     "bucket": "concept",
     "query": "How does it differ from public state?",
     "history": [
-      {"prompt": "What is a note in Aztec?", "response": "A note in Aztec is a chunk of private data..."}
+      {
+        "prompt": "What is a note in Aztec?",
+        "response": "A note in Aztec is a chunk of private data..."
+      }
     ],
-    "expected_source_prefixes": ["version-v4.2.0/"],
+    "expected_source_prefixes": [
+      "version-v4.2.0/"
+    ],
     "expected_concept_prefix": "version-v4.2.0/",
     "banned_identifiers": [],
     "max_response_time_s": 15,
     "min_distinct_sources": 2,
-    "notes": "Tests rephrase/multi-turn — the follow-up needs conversation context to retrieve well."
+    "notes": "Tests rephrase/multi-turn \u2014 the follow-up needs conversation context to retrieve well."
   },
   {
     "tag": "l1-contracts-rollup",
     "bucket": "concept",
     "query": "How does the Aztec rollup contract work on L1?",
-    "expected_source_prefixes": ["l1-contracts/"],
+    "expected_source_prefixes": [
+      "l1-contracts/"
+    ],
     "banned_identifiers": [],
     "max_response_time_s": 15,
     "min_distinct_sources": 1
   },
-
   {
     "tag": "apiref-compute-secret-hash",
     "bucket": "identifier",
     "query": "What is the signature of compute_secret_hash in aztec-nr?",
-    "expected_source_prefixes": ["aztec-nr/"],
-    "expected_apiref_paths": ["aztec-nr/aztec/src/hash.nr"],
+    "expected_source_prefixes": [
+      "aztec-nr/"
+    ],
+    "expected_apiref_paths": [
+      "aztec-nr/aztec/src/hash.nr"
+    ],
     "banned_identifiers": [],
     "max_response_time_s": 15,
     "min_distinct_sources": 1
@@ -163,7 +233,10 @@
     "tag": "apiref-poseidon2-hash-with-separator",
     "bucket": "identifier",
     "query": "How do I call poseidon2_hash_with_separator?",
-    "expected_source_prefixes": ["aztec-nr/", "noir-stdlib/"],
+    "expected_source_prefixes": [
+      "aztec-nr/",
+      "noir-stdlib/"
+    ],
     "expected_apiref_paths": [
       "aztec-nr/aztec/src/protocol/hash.nr",
       "aztec-nr/aztec/src/hash.nr"
@@ -176,8 +249,12 @@
     "tag": "apiref-create-note",
     "bucket": "identifier",
     "query": "What's the signature of create_note in aztec-nr?",
-    "expected_source_prefixes": ["aztec-nr/"],
-    "expected_apiref_paths": ["aztec-nr/aztec/src/note/lifecycle.nr"],
+    "expected_source_prefixes": [
+      "aztec-nr/"
+    ],
+    "expected_apiref_paths": [
+      "aztec-nr/aztec/src/note/lifecycle.nr"
+    ],
     "banned_identifiers": [],
     "max_response_time_s": 15,
     "min_distinct_sources": 1
@@ -186,8 +263,12 @@
     "tag": "apiref-destroy-note",
     "bucket": "identifier",
     "query": "How do I call destroy_note?",
-    "expected_source_prefixes": ["aztec-nr/"],
-    "expected_apiref_paths": ["aztec-nr/aztec/src/note/lifecycle.nr"],
+    "expected_source_prefixes": [
+      "aztec-nr/"
+    ],
+    "expected_apiref_paths": [
+      "aztec-nr/aztec/src/note/lifecycle.nr"
+    ],
     "banned_identifiers": [],
     "max_response_time_s": 15,
     "min_distinct_sources": 1
@@ -196,8 +277,12 @@
     "tag": "apiref-note-interface",
     "bucket": "identifier",
     "query": "What methods does the NoteHash trait require?",
-    "expected_source_prefixes": ["aztec-nr/"],
-    "expected_apiref_paths": ["aztec-nr/aztec/src/note/note_interface.nr"],
+    "expected_source_prefixes": [
+      "aztec-nr/"
+    ],
+    "expected_apiref_paths": [
+      "aztec-nr/aztec/src/note/note_interface.nr"
+    ],
     "banned_identifiers": [],
     "max_response_time_s": 15,
     "min_distinct_sources": 1
@@ -206,7 +291,9 @@
     "tag": "apiref-private-context",
     "bucket": "identifier",
     "query": "What methods does PrivateContext expose for note management?",
-    "expected_source_prefixes": ["aztec-nr/"],
+    "expected_source_prefixes": [
+      "aztec-nr/"
+    ],
     "expected_apiref_paths": [
       "aztec-nr/aztec/src/context/private_context.nr"
     ],
@@ -218,8 +305,12 @@
     "tag": "apiref-stdlib-aes128",
     "bucket": "identifier",
     "query": "What is the signature of aes128_encrypt in the Noir stdlib?",
-    "expected_source_prefixes": ["noir-stdlib/"],
-    "expected_apiref_paths": ["noir-stdlib/aes128.nr"],
+    "expected_source_prefixes": [
+      "noir-stdlib/"
+    ],
+    "expected_apiref_paths": [
+      "noir-stdlib/aes128.nr"
+    ],
     "banned_identifiers": [],
     "max_response_time_s": 15,
     "min_distinct_sources": 1
@@ -228,8 +319,12 @@
     "tag": "apiref-stdlib-bounded-vec-push",
     "bucket": "identifier",
     "query": "What's the signature of BoundedVec::push in Noir?",
-    "expected_source_prefixes": ["noir-stdlib/"],
-    "expected_apiref_paths": ["noir-stdlib/collections/bounded_vec.nr"],
+    "expected_source_prefixes": [
+      "noir-stdlib/"
+    ],
+    "expected_apiref_paths": [
+      "noir-stdlib/collections/bounded_vec.nr"
+    ],
     "banned_identifiers": [],
     "max_response_time_s": 15,
     "min_distinct_sources": 1
@@ -238,8 +333,12 @@
     "tag": "apiref-stdlib-option-some",
     "bucket": "identifier",
     "query": "What's the signature of Option::some?",
-    "expected_source_prefixes": ["noir-stdlib/"],
-    "expected_apiref_paths": ["noir-stdlib/option.nr"],
+    "expected_source_prefixes": [
+      "noir-stdlib/"
+    ],
+    "expected_apiref_paths": [
+      "noir-stdlib/option.nr"
+    ],
     "banned_identifiers": [],
     "max_response_time_s": 15,
     "min_distinct_sources": 1
@@ -248,8 +347,12 @@
     "tag": "apiref-aztec-storage-map",
     "bucket": "identifier",
     "query": "What's the signature of Map::at in aztec-nr?",
-    "expected_source_prefixes": ["aztec-nr/"],
-    "expected_apiref_paths": ["aztec-nr/aztec/src/state_vars/map.nr"],
+    "expected_source_prefixes": [
+      "aztec-nr/"
+    ],
+    "expected_apiref_paths": [
+      "aztec-nr/aztec/src/state_vars/map.nr"
+    ],
     "banned_identifiers": [],
     "max_response_time_s": 15,
     "min_distinct_sources": 1

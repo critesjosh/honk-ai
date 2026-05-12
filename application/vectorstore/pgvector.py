@@ -198,11 +198,15 @@ class PGVectorStore(BaseVectorStore):
                 )
             return out
 
-        except Exception as e:
-            logging.error(
-                f"Error searching documents (by vector): {e}", exc_info=True
-            )
-            return []
+        # NB: deliberately no broad ``except Exception: return []`` here.
+        # The prior code masked real backend errors as empty retrieval,
+        # so a misconfigured DB or a column-grant gap looked like "no
+        # relevant docs" to callers (which then answered from the LLM's
+        # training prior, the worst-case failure mode for a grounded
+        # RAG). Letting the exception propagate surfaces those as a 5xx
+        # at /stream / /api/search, which is the correct visibility for
+        # an operational fault. Callers that legitimately want graceful
+        # degradation can catch at their boundary.
         finally:
             cursor.close()
 

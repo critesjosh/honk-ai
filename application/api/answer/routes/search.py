@@ -6,6 +6,7 @@ from flask_restx import fields, Resource
 
 from application.api.answer.routes.base import _aztec_source_url, answer_ns
 from application.core.settings import settings
+from application.retriever.apiref_resolver import resolve_canonical_apiref
 from application.storage.db.repositories.agents import AgentsRepository
 from application.storage.db.session import db_readonly
 from application.vectorstore.vector_creator import VectorCreator
@@ -226,6 +227,33 @@ class SearchResource(Resource):
             k=candidate_k,
             source_ids=list(source_ids),
         )
+
+        # Scoped apiref resolver — mirror of the ClassicRAG path so that
+        # /api/search (called by @aztec/mcp-server) and /stream both get
+        # the canonical reference pinned first for identifier queries.
+        # Returns None for concept queries and TS queries without a
+        # matching .nr apiref, in which case the result list is unchanged.
+        try:
+            pin = resolve_canonical_apiref(docsearch, query, query_vector, source_ids)
+        except Exception:
+            logger.warning(
+                "apiref_resolver raised on /api/search; falling back",
+                exc_info=True,
+            )
+            pin = None
+        if pin is not None:
+            pinned_doc, pinned_distance = pin
+            existing_top = pairs[0][0] if pairs else None
+            same = False
+            if existing_top is not None and hasattr(existing_top, "metadata"):
+                same = (
+                    existing_top.metadata.get("source")
+                    == pinned_doc.metadata.get("source")
+                    and (getattr(existing_top, "page_content", "") or "")[:200]
+                    == (pinned_doc.page_content or "")[:200]
+                )
+            if not same:
+                pairs = [(pinned_doc, pinned_distance)] + list(pairs)
 
         seen_keys: set = set()
         results: List[Dict[str, Any]] = []

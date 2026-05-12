@@ -3,6 +3,7 @@ import os
 
 from application.core.settings import settings
 from application.llm.llm_creator import LLMCreator
+from application.retriever.apiref_resolver import resolve_canonical_apiref
 from application.retriever.base import BaseRetriever
 from application.utils import num_tokens_from_string
 from application.vectorstore.vector_creator import VectorCreator
@@ -288,6 +289,56 @@ class ClassicRAG(BaseRetriever):
             k=candidate_k,
             source_ids=list(self.vectorstores),
         )
+
+        # Scoped apiref resolver — see apiref_resolver.py for the design.
+        # Returns the apiref chunk that DEFINES an identifier in the
+        # question (scoped to inferred source family), or None. We pin
+        # the resolved chunk at position 0 if we don't already have it,
+        # so the SSE source frame (which mirrors retrieval order) cites
+        # the canonical reference first for identifier-shaped queries.
+        # For concept queries and TS questions without matching apiref,
+        # resolver returns None and behavior is unchanged from the
+        # single-pass baseline.
+        apiref_pinned = False
+        try:
+            pin = resolve_canonical_apiref(
+                docsearch,
+                self.question,
+                query_vector,
+                self.vectorstores,
+            )
+        except Exception:
+            logging.warning(
+                "apiref_resolver raised; falling back to standard retrieval",
+                exc_info=True,
+            )
+            pin = None
+        if pin is not None:
+            pinned_doc, pinned_distance = pin
+            pinned_key = (
+                pinned_doc.metadata.get("source"),
+                pinned_doc.metadata.get("filename"),
+                (pinned_doc.page_content or "")[:200],
+            )
+            # If the pinned chunk is already the global #1, leave the
+            # list alone (idempotent). Otherwise prepend it. ``pairs`` is
+            # (Document, distance); dedup happens inside the packer.
+            existing_top = pairs[0] if pairs else None
+            if existing_top is not None:
+                top_key = (
+                    existing_top[0].metadata.get("source") if hasattr(existing_top[0], "metadata") else None,
+                    existing_top[0].metadata.get("filename") if hasattr(existing_top[0], "metadata") else None,
+                    (getattr(existing_top[0], "page_content", "") or "")[:200],
+                )
+                if top_key == pinned_key:
+                    apiref_pinned = False  # already first; no-op
+                else:
+                    pairs = [(pinned_doc, pinned_distance)] + list(pairs)
+                    apiref_pinned = True
+            else:
+                pairs = [(pinned_doc, pinned_distance)]
+                apiref_pinned = True
+
         all_docs, cumulative_tokens = self._pack_into_budget(
             pairs, token_budget
         )
@@ -295,6 +346,7 @@ class ClassicRAG(BaseRetriever):
             f"ClassicRAG._get_data: Retrieval complete - retrieved "
             f"{len(all_docs)} documents (global rerank over "
             f"{len(self.vectorstores)} sources, candidate_k={candidate_k}, "
+            f"apiref_pinned={apiref_pinned}, "
             f"cumulative_tokens={cumulative_tokens}/{token_budget})"
         )
         return all_docs

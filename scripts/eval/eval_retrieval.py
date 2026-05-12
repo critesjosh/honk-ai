@@ -218,6 +218,11 @@ def run_stream_eval(api_key: str, base_url: str = "http://localhost:7091"):
         banned = q.get("banned_identifiers", [])
         max_time = q.get("max_response_time_s", 15)
         expected_apiref_paths = q.get("expected_apiref_paths", []) or []
+        # Optional override for the first-citation prefix check. Defaults to
+        # APIREF_PREFIXES when unset. Set for identifier queries whose
+        # canonical reference source is NOT a .nr apiref (e.g. TypeScript
+        # API queries should cite typescript-api/* first, not aztec-nr/).
+        expected_first_prefixes = q.get("expected_first_prefixes") or list(APIREF_PREFIXES)
 
         t0 = time.time()
         try:
@@ -281,10 +286,13 @@ def run_stream_eval(api_key: str, base_url: str = "http://localhost:7091"):
                 source_titles.add(src)
         diversity_pass = len(source_titles) >= min_sources
 
-        # Bucket-specific: identifier queries must cite an apiref source
-        # FIRST. Sources have already been rewritten to public URLs; we
-        # match on the rewritten URL containing one of the expected
-        # apiref segments (e.g. "aztec-nr/aztec/src/hash.nr").
+        # Bucket-specific: identifier queries must cite the canonical
+        # reference source FIRST. Two ways to express the expectation:
+        #   1. expected_apiref_paths — match a corpus-relative path against
+        #      the rewritten URL (e.g. "aztec-nr/aztec/src/hash.nr").
+        #   2. expected_first_prefixes — match a corpus prefix against the
+        #      rewritten URL. Defaults to APIREF_PREFIXES; override to
+        #      ("typescript-api/",) for TS-apiref queries, etc.
         first_cited_apiref = False
         if bucket_name == "identifier" and sources:
             first_url = sources[0].get("source", "") or ""
@@ -295,7 +303,7 @@ def run_stream_eval(api_key: str, base_url: str = "http://localhost:7091"):
                 )
             else:
                 first_cited_apiref = any(
-                    pfx.rstrip("/") in first_url for pfx in APIREF_PREFIXES
+                    pfx.rstrip("/") in first_url for pfx in expected_first_prefixes
                 )
             bucket_pass = first_cited_apiref
         else:
