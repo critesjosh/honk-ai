@@ -184,7 +184,7 @@ async def iter_sse_data_lines(resp: httpx.Response) -> Iterable[bytes]:
 
 # ───────────────────────────────────────────────────────── client functions ──
 WIDGET_MODEL_ID = "x-ai/grok-4.1-fast"
-DISCORD_MODEL_ID = "z-ai/glm-4.6"
+DISCORD_MODEL_ID = "qwen/qwen3.6-flash"
 
 # Canonical Aztec system prompt used by the prod docs.aztec.network agent
 # (verified 2026-04-27: prompts.name = "Aztec 4.2.0 — grounded, Discord-safe",
@@ -216,8 +216,10 @@ async def widget_request(
     The Aztec fork's `_load_conversation_history` accepts both this and a
     native list, so this form works against both the patched prod backend
     and the unpatched upstream-style dev backend. Forces `model_id` to
-    grok-4.1-fast so the reasoning-disable shim kicks in (the agent's
-    default is `LLM_NAME` from .env which uses glm-4.6 with reasoning).
+    grok-4.1-fast so the load mimics the prod widget agent regardless of
+    the loadtest agent row's `default_model_id`. The Discord-bot path
+    forces `qwen/qwen3.6-flash` — see `DISCORD_MODEL_ID` and
+    `discord_request`.
     """
     payload = {
         "question": prompt.query,
@@ -237,7 +239,7 @@ async def discord_request(
     prompt: Prompt,
     res: Result,
 ) -> None:
-    """POST /stream — discord label. Forces glm-4.6 to mimic the bot."""
+    """POST /stream — discord label. Forces qwen3.6-flash to mimic the bot."""
     payload = {
         "question": prompt.query,
         "api_key": api_key,

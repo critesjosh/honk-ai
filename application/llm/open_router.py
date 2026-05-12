@@ -9,7 +9,7 @@ OPEN_ROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 # 100% of it). Extend this tuple when you encounter another one.
 _REASONING_DISABLED_MODEL_PREFIXES = (
     "x-ai/grok-4.1-fast",
-    "z-ai/glm-4.6",
+    "qwen/qwen3.6-flash",
 )
 
 

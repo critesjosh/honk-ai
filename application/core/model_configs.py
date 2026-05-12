@@ -207,14 +207,14 @@ GROQ_MODELS = [
 
 OPENROUTER_MODELS = [
     AvailableModel(
-        id="z-ai/glm-4.6",
+        id="qwen/qwen3.6-flash",
         provider=ModelProvider.OPENROUTER,
-        display_name="GLM 4.6",
-        description="Default Aztec model. Z.AI GLM 4.6 — strong general + coding, cost-effective, 200k context.",
+        display_name="Qwen 3.6 Flash",
+        description="Default Aztec model (LLM_NAME). Used by the Aztec 4.2.0 (Discord) and Ask Aztec — public web (/ask) agents. Alibaba Qwen 3.6 Flash — 1M context, fast, ~$0.25/$1.50 per 1M.",
         capabilities=ModelCapabilities(
             supports_tools=True,
             supports_structured_output=True,
-            context_window=200000,
+            context_window=1000000,
             supported_attachment_types=OPENROUTER_ATTACHMENTS,
         ),
     ),

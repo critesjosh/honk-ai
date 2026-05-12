@@ -386,13 +386,13 @@ def main():
     )
     args = parser.parse_args()
 
+    global load_golden_queries
     queries = load_golden_queries()
     if args.bucket != "all":
         original = len(queries)
         queries = [q for q in queries if q.get("bucket") == args.bucket]
         # Mutate the on-disk-loaded list reference used by the runners by
         # monkey-patching ``load_golden_queries`` for this invocation.
-        global load_golden_queries
         _filtered = list(queries)
 
         def _loader():

@@ -113,8 +113,12 @@ when a real-world failure surfaces a gap.
   banned name is genuinely valid in some context but wrong here, narrow the
   query's banned list.
 - **`slow:<n>s`** (stream mode) — answer exceeded the time budget. Check
-  `RAG_MAX_DOC_TOKENS` (10k in prod) and the model latency curve — Grok and
-  GLM are sub-15s on this budget; reasoning-mode models are not.
+  `RAG_MAX_DOC_TOKENS` (10k in prod) and the model latency curve — Qwen
+  3.6 Flash (current Discord and /ask default, also `LLM_NAME` fallback)
+  and Grok 4.1 Fast (current widget default) are both sub-15s on this
+  budget; models that reason by default and aren't in
+  `_REASONING_DISABLED_MODEL_PREFIXES` (e.g. step-3.5-flash unflagged)
+  are not.
 - **`low-diversity`** (stream mode) — fewer distinct sources cited than
   required. Often a sign of the FIFO starvation regression returning;
   re-run retriever mode to localize.
