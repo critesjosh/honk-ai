@@ -75,14 +75,14 @@ http://{$PUBLIC_HOSTNAME} {
 	# inconsistent scoping and either lock out legitimate clients
 	# or expose the surface unauthenticated.
 	#
-	# Bare `/mcp` 308-redirects (method-preserving) to `/mcp/`, then
-	# handle_path strips the prefix so the upstream FastMCP server
-	# sees a path relative to its mount root. The previous
-	# `/mcp/*`-only matcher missed bare `/mcp`, which fell through to
-	# the catch-all `respond` below and returned a 200 sentinel
-	# instead of reaching the MCP server.
-	redir /mcp /mcp/ 308
-	handle_path /mcp/* {
+	# FastMCP's streamable-HTTP transport mounts the JSON-RPC endpoint
+	# at upstream path `/mcp` (NOT `/`) and 307-redirects `/mcp/` →
+	# `/mcp`. So we forward the prefix verbatim with `handle` (not
+	# `handle_path`, which would strip `/mcp/` and route the request to
+	# upstream `/` → 404). Matching both bare `/mcp` and `/mcp/*` lets
+	# clients use either form; FastMCP canonicalizes internally.
+	@mcp path /mcp /mcp/*
+	handle @mcp {
 		reverse_proxy mcp:7092 {
 			flush_interval -1
 		}
