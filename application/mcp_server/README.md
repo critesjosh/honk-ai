@@ -41,6 +41,41 @@ recent container stdout.
   KiB cap per call. `next_since` from the response paginates.
 - `honk_logs.list_services()` — current container state.
 
+## Per-call analytics for `/api/search`
+
+`/api/search` (the endpoint `@aztec/mcp-server` calls — see the
+consumer surface in the table above) writes one `user_logs` row per
+authenticated call. Analytics fields live in
+**`user_logs.metadata`** (jsonb, added by alembic 0007), which the
+`docsgpt_mcp_ro` role has SELECT on. Bearer keys are *never* persisted
+— attribution comes from `user_logs.user_id` (the agent owner's
+pseudonym) and `metadata->>'agent_id'`.
+
+`metadata` keys for `endpoint='api_search'` rows:
+- `action` — constant `"api_search"`
+- `agent_id` — UUID string of the agent whose key authenticated the call
+- `question` — the query text (clipped to 10k chars)
+- `chunks_requested` — the clamped `chunks` parameter
+- `result_count` — number of results returned (0 if the agent has no sources)
+- `sources` — list of public-URL-rewritten source URLs from the response
+- `timestamp` — ISO-8601 UTC string captured at log-write time
+
+`user_logs.data` is still the request-log column used by `/stream` and
+carries bearer keys; it remains off-limits to `docsgpt_mcp_ro`. For
+`/api/search` rows, `data` is NULL.
+
+Example query — top 10 most-active MCP-key holders in the last 7 days:
+
+```sql
+SELECT user_id, COUNT(*) AS calls
+FROM user_logs
+WHERE endpoint = 'api_search'
+  AND timestamp > now() - interval '7 days'
+GROUP BY user_id
+ORDER BY calls DESC
+LIMIT 10;
+```
+
 ## Defense-in-depth
 
 1. **Cloudflare Access at the edge** — operator adds a service-token-only

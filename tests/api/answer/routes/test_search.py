@@ -472,12 +472,22 @@ class TestSearchGlobal:
 
 @contextmanager
 def _patch_search_db(conn):
+    """Swap both ``db_readonly`` and ``db_session`` for the test conn.
+
+    ``db_session`` is patched alongside ``db_readonly`` so the
+    ``_log_request`` user_logs write lands on the same fixture
+    connection as agent/sources reads. Without this, the post-success
+    log write would try to open a real Postgres session and the test
+    would fail in environments without a default DSN.
+    """
     @contextmanager
     def _yield():
         yield conn
 
     with patch(
         "application.api.answer.routes.search.db_readonly", _yield
+    ), patch(
+        "application.api.answer.routes.search.db_session", _yield,
     ):
         yield
 
@@ -678,3 +688,387 @@ class TestGetSourcesFromApiKeyPg:
         with _patch_search_db(pg_conn), flask_app.app_context():
             got = SearchResource()._get_sources_from_api_key("dup-key")
         assert got == [str(primary["id"])]
+
+
+# ---------------------------------------------------------------------------
+# user_logs observability — every authenticated /api/search call must write
+# a row so MCP-server traffic is attributable per agent key alongside
+# /stream. ``user_logs`` is the only persistence path for /api/search.
+# ---------------------------------------------------------------------------
+
+
+class TestSearchUserLogs:
+    """Per-call attribution for ``/api/search`` lands in
+    ``user_logs.metadata`` (added by migration 0007). The
+    ``docsgpt_mcp_ro`` role has SELECT on ``metadata`` but NOT on
+    ``data``, so writing analytics into ``metadata`` is what makes them
+    visible to claudebox via the host MCP server's ``honk_sql.*`` tools.
+
+    Bearer keys (api_key) are deliberately NOT persisted — the call is
+    attributable via ``user_logs.user_id`` (agent owner pseudonym) and
+    ``metadata->>'agent_id'`` (specific issued key).
+    """
+
+    def _fake_vs(self, pairs):
+        vs = MagicMock()
+        vs._embedding.embed_query.return_value = [0.0] * 8
+        vs.search_by_vector_with_score.return_value = pairs
+        return vs
+
+    def _read_api_search_logs(self, pg_conn, *, user_id):
+        """Return all rows for endpoint='api_search' attributed to
+        ``user_id``. Queries the actual table the MCP role would hit,
+        with the same column projection (``id, user_id, endpoint,
+        timestamp, metadata``) so the test mirrors operator access.
+        """
+        from sqlalchemy import text
+
+        result = pg_conn.execute(
+            text(
+                """
+                SELECT id, user_id, endpoint, timestamp, metadata
+                FROM user_logs
+                WHERE endpoint = :endpoint AND user_id = :user_id
+                ORDER BY id
+                """
+            ),
+            {"endpoint": "api_search", "user_id": user_id},
+        )
+        return [dict(r._mapping) for r in result.fetchall()]
+
+    def test_writes_user_log_row_on_success(self, pg_conn, flask_app):
+        from application.api.answer.routes.search import SearchResource
+        from application.storage.db.repositories.agents import AgentsRepository
+        from application.storage.db.repositories.sources import SourcesRepository
+
+        src = SourcesRepository(pg_conn).create("src", user_id="discord_p_v1:abc")
+        agent = AgentsRepository(pg_conn).create(
+            "discord_p_v1:abc", "Aztec MCP", "published",
+            key="log-success-key",
+            source_id=str(src["id"]),
+        )
+
+        vs = self._fake_vs([
+            (_make_doc(
+                "hit body",
+                {"source": "version-v4.2.0/docs/foo.md", "title": "Foo"},
+            ), 0.1),
+        ])
+
+        with _patch_search_db(pg_conn), patch(
+            "application.api.answer.routes.search.VectorCreator.create_vectorstore",
+            return_value=vs,
+        ), flask_app.app_context():
+            with flask_app.test_request_context(
+                json={
+                    "question": "what is poseidon",
+                    "api_key": "log-success-key",
+                    "chunks": 3,
+                },
+            ):
+                result = SearchResource().post()
+        assert result.status_code == 200
+
+        rows = self._read_api_search_logs(pg_conn, user_id="discord_p_v1:abc")
+        assert len(rows) == 1, "exactly one user_logs row per call"
+        row = rows[0]
+        assert row["endpoint"] == "api_search"
+        assert row["user_id"] == "discord_p_v1:abc"
+
+        meta = row["metadata"]
+        assert meta["action"] == "api_search"
+        assert meta["question"] == "what is poseidon"
+        assert meta["chunks_requested"] == 3
+        assert meta["result_count"] == 1
+        # Sources are the public-URL-rewritten form, matching the response.
+        assert meta["sources"] and meta["sources"][0].startswith(
+            "https://docs.aztec.network/"
+        )
+        # Agent id stored as a string so JSONB consumers don't have to
+        # know about UUID types.
+        assert isinstance(meta["agent_id"], str)
+        assert meta["agent_id"] == str(agent["id"])
+
+    def test_does_not_persist_bearer_key(self, pg_conn, flask_app):
+        """Defense-in-depth regression: the api_key MUST NOT appear in
+        the persisted row. Migration 0007 makes ``metadata`` MCP-readable;
+        if a future refactor accidentally puts ``api_key`` in metadata
+        (or anywhere queryable as ``docsgpt_mcp_ro``), this test fails.
+        """
+        from application.api.answer.routes.search import SearchResource
+        from application.storage.db.repositories.agents import AgentsRepository
+        from application.storage.db.repositories.sources import SourcesRepository
+        from sqlalchemy import text as sa_text
+
+        src = SourcesRepository(pg_conn).create("src", user_id="u-leak")
+        AgentsRepository(pg_conn).create(
+            "u-leak", "Aztec MCP", "published",
+            key="should-not-be-in-row",
+            source_id=str(src["id"]),
+        )
+
+        vs = self._fake_vs([
+            (_make_doc("body", {"source": "version-v4.2.0/docs/x.md"}), 0.1),
+        ])
+
+        with _patch_search_db(pg_conn), patch(
+            "application.api.answer.routes.search.VectorCreator.create_vectorstore",
+            return_value=vs,
+        ), flask_app.app_context():
+            with flask_app.test_request_context(
+                json={"question": "q", "api_key": "should-not-be-in-row"},
+            ):
+                SearchResource().post()
+
+        # Cast both columns to text and grep — defeats whatever JSONB
+        # nesting a future regression might use to hide the key.
+        result = pg_conn.execute(
+            sa_text(
+                """
+                SELECT (COALESCE(data::text, '') || COALESCE(metadata::text, ''))
+                FROM user_logs
+                WHERE endpoint = 'api_search' AND user_id = 'u-leak'
+                """
+            )
+        )
+        for (combined,) in result.fetchall():
+            assert "should-not-be-in-row" not in combined, (
+                "bearer key leaked into user_logs row"
+            )
+
+    def test_redacts_bearer_key_echoed_in_question(self, pg_conn, flask_app):
+        """A client that echoes its own ``api_key`` into the ``question``
+        field would otherwise drop the plaintext bearer into
+        ``metadata.question``, which the ``docsgpt_mcp_ro`` role can
+        SELECT. The bearer must be redacted before the row is written.
+        Codex review finding (review round 1).
+        """
+        from application.api.answer.routes.search import SearchResource
+        from application.storage.db.repositories.agents import AgentsRepository
+        from application.storage.db.repositories.sources import SourcesRepository
+        from sqlalchemy import text as sa_text
+
+        src = SourcesRepository(pg_conn).create("src", user_id="u-echo")
+        bearer = "echo-bearer-key-xyz123"
+        AgentsRepository(pg_conn).create(
+            "u-echo", "Aztec MCP", "published",
+            key=bearer,
+            source_id=str(src["id"]),
+        )
+
+        vs = self._fake_vs([
+            (_make_doc("body", {"source": "version-v4.2.0/docs/x.md"}), 0.1),
+        ])
+
+        # Question contains the bearer three times in different
+        # positions (front, middle, tail). All three occurrences must be
+        # redacted. Redaction runs BEFORE the 10k slice, so a bearer
+        # echo near the slice boundary can't be half-truncated into the
+        # row — that property is implicit, not exercised at the boundary.
+        question = (
+            f"please search for {bearer} thanks "
+            f"also {bearer} and {bearer} at the end"
+        )
+
+        with _patch_search_db(pg_conn), patch(
+            "application.api.answer.routes.search.VectorCreator.create_vectorstore",
+            return_value=vs,
+        ), flask_app.app_context():
+            with flask_app.test_request_context(
+                json={"question": question, "api_key": bearer},
+            ):
+                result = SearchResource().post()
+        assert result.status_code == 200
+
+        rows = self._read_api_search_logs(pg_conn, user_id="u-echo")
+        assert len(rows) == 1
+        stored = rows[0]["metadata"]["question"]
+        assert bearer not in stored, (
+            "bearer leaked into metadata.question — redaction failed"
+        )
+        assert "[REDACTED_BEARER]" in stored
+        # Also re-run the column-cast leak check on the row in case a
+        # future refactor parks the bearer in some other JSONB field.
+        result = pg_conn.execute(
+            sa_text(
+                """
+                SELECT (COALESCE(data::text, '') || COALESCE(metadata::text, ''))
+                FROM user_logs
+                WHERE endpoint = 'api_search' AND user_id = 'u-echo'
+                """
+            )
+        )
+        for (combined,) in result.fetchall():
+            assert bearer not in combined
+
+    def test_request_succeeds_when_question_is_non_string(self, pg_conn, flask_app):
+        """Best-effort logging: a malformed ``question`` (non-string, e.g.
+        an int from a rogue client) must not turn a successful 200
+        search into a 500 via the log path. ``post()`` already accepts
+        the request because ``not 42`` is False; ``_log_request`` must
+        coerce defensively or swallow. Codex review finding.
+        """
+        from application.api.answer.routes.search import SearchResource
+        from application.storage.db.repositories.agents import AgentsRepository
+        from application.storage.db.repositories.sources import SourcesRepository
+
+        src = SourcesRepository(pg_conn).create("src", user_id="u-typed")
+        AgentsRepository(pg_conn).create(
+            "u-typed", "Aztec MCP", "published",
+            key="typed-key",
+            source_id=str(src["id"]),
+        )
+
+        vs = self._fake_vs([
+            (_make_doc("body", {"source": "version-v4.2.0/docs/x.md"}), 0.1),
+        ])
+
+        with _patch_search_db(pg_conn), patch(
+            "application.api.answer.routes.search.VectorCreator.create_vectorstore",
+            return_value=vs,
+        ), flask_app.app_context():
+            # JSON number, not a string — Flask passes it through as int.
+            with flask_app.test_request_context(
+                json={"question": 42, "api_key": "typed-key"},
+            ):
+                result = SearchResource().post()
+        # Request itself succeeds even though the log payload assembly
+        # has to coerce. The log row is best-effort here — we don't
+        # care if it lands; we care that 200 isn't downgraded.
+        assert result.status_code == 200
+
+    def test_writes_user_log_row_when_agent_has_no_sources(self, pg_conn, flask_app):
+        """Empty-source agents still authenticate and return 200; the
+        call should be attributable in user_logs with ``result_count=0``.
+        Otherwise misconfigured agents are silently invisible.
+        """
+        from application.api.answer.routes.search import SearchResource
+        from application.storage.db.repositories.agents import AgentsRepository
+
+        AgentsRepository(pg_conn).create(
+            "discord_p_v1:def", "Aztec MCP", "published",
+            key="log-empty-key",
+        )
+
+        with _patch_search_db(pg_conn), flask_app.app_context():
+            with flask_app.test_request_context(
+                json={"question": "q", "api_key": "log-empty-key"},
+            ):
+                result = SearchResource().post()
+        assert result.status_code == 200
+        assert result.json == []
+
+        rows = self._read_api_search_logs(pg_conn, user_id="discord_p_v1:def")
+        assert len(rows) == 1
+        assert rows[0]["metadata"]["result_count"] == 0
+        assert rows[0]["metadata"]["sources"] == []
+
+    def test_no_user_log_row_on_missing_question(self, pg_conn, flask_app):
+        """400 responses must not produce a log row — there's no
+        agent to attribute the call to and the field validator
+        rejected it before any work was done."""
+        from application.api.answer.routes.search import SearchResource
+        from sqlalchemy import text as sa_text
+
+        with _patch_search_db(pg_conn), flask_app.app_context():
+            with flask_app.test_request_context(json={"api_key": "x"}):
+                result = SearchResource().post()
+        assert result.status_code == 400
+
+        n = pg_conn.execute(
+            sa_text("SELECT COUNT(*) FROM user_logs WHERE endpoint = 'api_search'")
+        ).scalar()
+        assert n == 0
+
+    def test_no_user_log_row_on_invalid_api_key(self, pg_conn, flask_app):
+        """401 responses must not produce a log row — without a
+        resolved agent we don't have a user_id to attribute to."""
+        from application.api.answer.routes.search import SearchResource
+        from sqlalchemy import text as sa_text
+
+        with _patch_search_db(pg_conn), flask_app.app_context():
+            with flask_app.test_request_context(
+                json={"question": "q", "api_key": "no-such-key"},
+            ):
+                result = SearchResource().post()
+        assert result.status_code == 401
+
+        n = pg_conn.execute(
+            sa_text("SELECT COUNT(*) FROM user_logs WHERE endpoint = 'api_search'")
+        ).scalar()
+        assert n == 0
+
+    def test_no_user_log_row_when_search_500s(self, pg_conn, flask_app):
+        """500 responses must not produce a log row — the call did not
+        successfully complete and we'd be recording a misleading
+        ``result_count=0`` for an actual failure."""
+        from application.api.answer.routes.search import SearchResource
+        from application.storage.db.repositories.agents import AgentsRepository
+        from application.storage.db.repositories.sources import SourcesRepository
+
+        src = SourcesRepository(pg_conn).create("src", user_id="u-err")
+        AgentsRepository(pg_conn).create(
+            "u-err", "a", "published",
+            key="log-err-key",
+            source_id=str(src["id"]),
+        )
+
+        with _patch_search_db(pg_conn), patch(
+            "application.api.answer.routes.search.SearchResource._get_sources_from_api_key",
+            side_effect=RuntimeError("boom"),
+        ), flask_app.app_context():
+            with flask_app.test_request_context(
+                json={"question": "q", "api_key": "log-err-key"},
+            ):
+                result = SearchResource().post()
+        assert result.status_code == 500
+
+        rows = self._read_api_search_logs(pg_conn, user_id="u-err")
+        assert rows == []
+
+    def test_request_succeeds_when_log_write_raises(self, pg_conn, flask_app):
+        """Best-effort logging: if the user_logs write fails (e.g.
+        Postgres transient error), the search response MUST still
+        succeed. Mirrors the swallowed-exception discipline in
+        /stream's log write (base.py:700-704)."""
+        from application.api.answer.routes.search import SearchResource
+        from application.storage.db.repositories.agents import AgentsRepository
+        from application.storage.db.repositories.sources import SourcesRepository
+
+        src = SourcesRepository(pg_conn).create("src", user_id="u-swallow")
+        AgentsRepository(pg_conn).create(
+            "u-swallow", "a", "published",
+            key="log-swallow-key",
+            source_id=str(src["id"]),
+        )
+
+        vs = self._fake_vs([
+            (_make_doc("body", {"source": "version-v4.2.0/docs/x.md"}), 0.1),
+        ])
+
+        # Patch ``db_session`` (the symbol used by ``_log_request``)
+        # to raise on entry. ``db_readonly`` stays pointed at the
+        # fixture conn so the auth + sources lookups succeed.
+        @contextmanager
+        def _broken_session():
+            raise RuntimeError("postgres on fire")
+            yield  # pragma: no cover
+
+        @contextmanager
+        def _yield():
+            yield pg_conn
+
+        with patch(
+            "application.api.answer.routes.search.db_readonly", _yield,
+        ), patch(
+            "application.api.answer.routes.search.db_session", _broken_session,
+        ), patch(
+            "application.api.answer.routes.search.VectorCreator.create_vectorstore",
+            return_value=vs,
+        ), flask_app.app_context():
+            with flask_app.test_request_context(
+                json={"question": "q", "api_key": "log-swallow-key"},
+            ):
+                result = SearchResource().post()
+        assert result.status_code == 200
+        assert len(result.json) == 1

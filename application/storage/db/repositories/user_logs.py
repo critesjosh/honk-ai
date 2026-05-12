@@ -34,19 +34,38 @@ class UserLogsRepository:
         user_id: Optional[str] = None,
         endpoint: Optional[str] = None,
         data: Optional[dict] = None,
+        metadata: Optional[dict] = None,
         timestamp: Optional[datetime] = None,
     ) -> None:
+        """Append a row.
+
+        ``data`` is the free-form request payload (may contain bearer
+        keys / response bodies). ``metadata`` is the non-secret analytics
+        surface added in migration 0007 — the ``docsgpt_mcp_ro`` role
+        has SELECT on ``metadata`` but NOT on ``data``, so anything that
+        should be visible to claudebox via the host MCP server must go
+        in ``metadata``. See migration 0007 for the contract.
+        """
         self._conn.execute(
             text(
                 """
-                INSERT INTO user_logs (user_id, endpoint, data, timestamp)
-                VALUES (:user_id, :endpoint, CAST(:data AS jsonb), COALESCE(:timestamp, now()))
+                INSERT INTO user_logs (user_id, endpoint, data, metadata, timestamp)
+                VALUES (
+                    :user_id,
+                    :endpoint,
+                    CAST(:data AS jsonb),
+                    CAST(:metadata AS jsonb),
+                    COALESCE(:timestamp, now())
+                )
                 """
             ),
             {
                 "user_id": user_id,
                 "endpoint": endpoint,
                 "data": json.dumps(data, default=str) if data is not None else None,
+                "metadata": (
+                    json.dumps(metadata, default=str) if metadata is not None else None
+                ),
                 "timestamp": timestamp,
             },
         )

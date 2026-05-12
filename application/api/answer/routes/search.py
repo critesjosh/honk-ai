@@ -1,3 +1,4 @@
+import datetime
 import logging
 from typing import Any, Dict, List
 
@@ -8,7 +9,8 @@ from application.api.answer.routes.base import _aztec_source_url, answer_ns
 from application.core.settings import settings
 from application.retriever.apiref_resolver import resolve_canonical_apiref
 from application.storage.db.repositories.agents import AgentsRepository
-from application.storage.db.session import db_readonly
+from application.storage.db.repositories.user_logs import UserLogsRepository
+from application.storage.db.session import db_readonly, db_session
 from application.vectorstore.vector_creator import VectorCreator
 
 logger = logging.getLogger(__name__)
@@ -314,6 +316,82 @@ class SearchResource(Resource):
 
         return results
 
+    _BEARER_REDACTED = "[REDACTED_BEARER]"
+
+    def _log_request(
+        self,
+        *,
+        agent: Dict[str, Any],
+        api_key: str,
+        question: Any,
+        chunks: int,
+        results: List[Dict[str, Any]],
+    ) -> None:
+        """Persist a ``user_logs`` row for this /api/search call.
+
+        ``user_logs`` is the only persistence path for ``/api/search``
+        (no conversations/messages are written), so this is the single
+        hook into per-key analytics for MCP-server traffic.
+
+        Storage policy: analytics fields land in the ``metadata`` column
+        (added in migration 0007), NOT in ``data``. The ``docsgpt_mcp_ro``
+        role has SELECT on ``metadata`` but is denied SELECT on ``data``,
+        so this is what the host MCP server (``honk_sql.*``) can surface
+        to claudebox. Bearer keys are deliberately omitted from the row
+        — the call is already attributable via ``user_logs.user_id``
+        (the agent owner's pseudonym) and ``metadata->>'agent_id'``.
+
+        Best-effort: failure to log MUST NOT fail the request. Mirrors
+        the swallowed-exception discipline in /stream's log write
+        (``base.py:700``). The entire payload assembly is inside the
+        ``try`` so a malformed ``question`` (e.g. non-string from a
+        rogue client) can't turn a successful 200 search into a 500
+        via the log path.
+        """
+        try:
+            agent_id = agent.get("id")
+            # ``user_id`` is the agent owner's pseudonym
+            # (``discord_p_v1:*`` for Discord-issued MCP keys,
+            # ``local`` for the bot agent, ``public-web`` for the /ask
+            # agent). Stored on the row itself, not duplicated into
+            # metadata.
+            user_id = agent.get("user_id")
+            # Defensive coercion: ``question`` is whatever the client
+            # put in the JSON body. We don't trust it to be a string.
+            question_str = question if isinstance(question, str) else str(question)
+            # Bearer-leak guard: if the client echoed the api_key into
+            # the question field (deliberately or by accident), redact
+            # it before persisting — ``metadata`` is readable by the
+            # MCP role, so an unredacted echo would re-introduce the
+            # bearer-leak risk that migration 0007 is engineered to
+            # avoid. ``api_key`` itself is never copied into the row.
+            if api_key and api_key in question_str:
+                question_str = question_str.replace(api_key, self._BEARER_REDACTED)
+            metadata = {
+                "action": "api_search",
+                "agent_id": str(agent_id) if agent_id is not None else None,
+                # Clip to 10k chars (matches /stream's per-field cap in
+                # base.py:690-692) AFTER redaction so a giant bearer-
+                # padded question can't push the real key past the slice
+                # boundary.
+                "question": question_str[:10000],
+                "chunks_requested": chunks,
+                "result_count": len(results),
+                "sources": [r.get("source") for r in results if r.get("source")],
+                "timestamp": datetime.datetime.now(datetime.timezone.utc),
+            }
+            with db_session() as conn:
+                UserLogsRepository(conn).insert(
+                    user_id=user_id,
+                    endpoint="api_search",
+                    metadata=metadata,
+                )
+        except Exception as log_err:
+            logger.error(
+                f"Failed to persist api_search user log: {log_err}",
+                exc_info=True,
+            )
+
     @answer_ns.expect(search_model)
     @answer_ns.doc(description="Search for relevant documents based on query")
     def post(self):
@@ -337,14 +415,11 @@ class SearchResource(Resource):
 
         try:
             source_ids = self._get_sources_from_api_key(api_key)
-
-            if not source_ids:
-                return make_response([], 200)
-
-            results = self._search_global(question, source_ids, chunks)
-
-            return make_response(results, 200)
-
+            results = (
+                self._search_global(question, source_ids, chunks)
+                if source_ids
+                else []
+            )
         except Exception as e:
             logger.error(
                 f"/api/search - error: {str(e)}",
@@ -352,3 +427,17 @@ class SearchResource(Resource):
                 exc_info=True,
             )
             return make_response({"error": "Search failed"}, 500)
+
+        # Log AFTER the search succeeds (even if results == []), so an
+        # authenticated-but-empty call is still attributable. ``api_key``
+        # is passed so ``_log_request`` can redact any echo of it from
+        # ``question`` before persisting — it is NEVER stored on the row.
+        self._log_request(
+            agent=agent,
+            api_key=api_key,
+            question=question,
+            chunks=chunks,
+            results=results,
+        )
+
+        return make_response(results, 200)

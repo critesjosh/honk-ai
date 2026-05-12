@@ -101,6 +101,10 @@ user_logs_table = Table(
     Column("endpoint", Text),
     Column("timestamp", DateTime(timezone=True), nullable=False, server_default=func.now()),
     Column("data", JSONB),
+    # Added by 0007_user_logs_metadata. Non-secret-bearing per-call
+    # analytics surface; the ``docsgpt_mcp_ro`` role has SELECT here
+    # but NOT on ``data``. See the migration for the secrets contract.
+    Column("metadata", JSONB),
 )
 
 stack_logs_table = Table(
