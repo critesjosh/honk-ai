@@ -255,7 +255,16 @@ Only after all green: flip DNS / firewall / Cloudflare Access to the production 
    After=network-online.target
    Wants=network-online.target
    [Service]
-   ExecStart=/usr/bin/ssh -N -R localhost:5080:localhost:5080 \
+   # -R 5080: public Caddy ingress for the docs frontend / API.
+   # -R 7092: honk-ai MCP container (docker-compose-hub.yaml publishes
+   #   127.0.0.1:7092:7092 for the ``mcp`` service). Reached over the
+   #   bastion by the claudebox-deploy host, which mirrors it back via
+   #   its own ``cloxy-tunnel.service``. The MCP server runs with
+   #   ``MCP_AUTH_REQUIRED=false`` in this mode; the trust boundary is
+   #   the SSH-key chain itself.
+   ExecStart=/usr/bin/ssh -N \
+     -R localhost:5080:localhost:5080 \
+     -R localhost:7092:localhost:7092 \
      -o ServerAliveInterval=30 -o ServerAliveCountMax=3 \
      -o ExitOnForwardFailure=yes -o StrictHostKeyChecking=yes -o BatchMode=yes \
      -i %h/.ssh/aztec_docs_relay ubuntu@ci-bastion.aztecprotocol.com
@@ -272,11 +281,13 @@ Only after all green: flip DNS / firewall / Cloudflare Access to the production 
 
 ### Bastion side
 
-1. The bastion admin adds the origin's public key to `~ubuntu/.ssh/authorized_keys` restricted to the agreed port and nothing else:
+1. The bastion admin adds the origin's public key to `~ubuntu/.ssh/authorized_keys` restricted to the agreed ports and nothing else:
    ```
-   restrict,permitlisten="localhost:5080",from="<origin egress IP>" ssh-ed25519 AAAA… aztec-docs-relay@origin
+   restrict,permitlisten="localhost:5080",permitlisten="localhost:7092",from="<origin egress IP>" ssh-ed25519 AAAA… aztec-docs-relay@origin
    ```
-   To forward additional ports later (e.g. `127.0.0.1:7092` to expose the honk-ai MCP server to claudebox without a public hostname), append another `permitlisten="localhost:7092"` clause. The `-R` will silently fail-fast if `permitlisten` doesn't include the port.
+   `permitlisten="localhost:7092"` is what lets josh-box reverse-forward port 7092 so the claudebox-deploy host can reach the honk-ai MCP server without a public hostname. The `-R` fails-fast under `ExitOnForwardFailure=yes` if the clause is missing.
+
+   Separately, the claudebox-deploy host's outbound key (the one used by `cloxy-tunnel.service`) needs **`permitopen="127.0.0.1:7092"`** — *not* `permitlisten`. OpenSSH uses two different allowlists: `permitlisten` gates `-R` (which port the client may bind on the server side), `permitopen` gates `-L` / dynamic forwarding (which `host:port` the client may forward to from the server side). Mixing them up surfaces as "administratively prohibited" channel-open errors at first use, not at SSH-handshake time, so test once after each edit.
 2. Install `cloudflared`, store `CF_TOKEN` in `/etc/cloudflared/aztec-docs.env` (mode `0600`), then `/etc/systemd/system/cloudflared-aztec-docs.service`:
    ```ini
    [Service]
@@ -437,17 +448,31 @@ See the [`@aztec/mcp-server` README](https://github.com/AztecProtocol/mcp-server
 The honk-ai-host MCP server runs as a sibling Compose service
 (`mcp` + `docker-proxy`) on the same machine as the Flask backend.
 It exposes a **read-only** SQL / RAG / logs surface to remote
-claudebox sessions over MCP-over-HTTP, gated by Cloudflare Access at
-the edge and a per-token bearer (`mcp_tokens` table) inside the
-process.
+claudebox sessions over MCP-over-HTTP. The current production
+deployment uses a **network-only trust model**: the MCP container's
+port 7092 is bound to josh-box's loopback (`127.0.0.1:7092`) and
+reached exclusively through an SSH-tunnel chain (claudebox-deploy host
+→ bastion → josh-box). There is **no public Caddy route** and the
+bearer middleware is **off** (`MCP_AUTH_REQUIRED=false`). Access is
+gated by SSH-key possession on each hop plus the column-level Postgres
+grants on the `docsgpt_mcp_ro` role; `mcp_audit` rows are still
+written but `token_id` is null in this mode.
 
 This is distinct from the public `@aztec/mcp-server` consumer-facing
 MCP described above:
 
 | Surface | Consumers | Auth | Tools |
 |---|---|---|---|
-| `@aztec/mcp-server` | Claude Desktop, Cursor, etc. | Per-Discord-user bearer | `/api/search`, ripgrep |
-| `application/mcp_server/` (this section) | claudebox operator sessions | CF Access service token + per-token bearer | `honk_sql.*`, `honk_rag.*`, `honk_logs.*` |
+| `@aztec/mcp-server` | Claude Desktop, Cursor, etc. | Per-Discord-user bearer (`agents.key`, via Discord `/mcp-key`) | `/api/search`, ripgrep |
+| `application/mcp_server/` (this section) | claudebox operator sessions | SSH key possession + `docsgpt_mcp_ro` Postgres role grants | `honk_sql.*`, `honk_rag.*`, `honk_logs.*` |
+
+To re-introduce per-issuer auth (e.g. multiple claudebox installs that
+should be distinguishable in `mcp_audit`, or to re-open the public
+Caddy route), flip `MCP_AUTH_REQUIRED=true` in the `mcp` service env
+and restore the Caddy `@mcp` block plus a Cloudflare Access
+service-token application. The bearer-issuance script
+(`scripts/mcp/issue_token.py`) and the `mcp_tokens` table are
+deliberately kept intact for that path.
 
 > **Design + threat model:** `application/mcp_server/README.md` is the
 > primary spec. This section is the operator runbook; the README has
@@ -523,14 +548,40 @@ whether to include it in the allowlist.
    docker compose -f deployment/docker-compose-hub.yaml --env-file .env \
      up -d mcp docker-proxy
    ```
-5. Add a Caddy route for `/mcp` + `/mcp/*` (already in
-   `deployment/Caddyfile` — bare `/mcp` 308-redirects to `/mcp/` so
-   both flow through the same `handle_path` prefix-strip) and a
-   **separate** Cloudflare Access application with the **same** path
-   matchers (`/mcp` AND `/mcp/*`), service-token-only policy. Do not
-   bypass SSO on the apex — the MCP route needs its own Access app.
-   If the matchers diverge between CF Access and Caddy you get
-   inconsistent scoping; double-check both sides agree.
+5. **Network-trust mode (current production):** no Caddy route, no
+   Cloudflare Access application. The `mcp` service publishes
+   `127.0.0.1:7092:7092` (see `deployment/docker-compose-hub.yaml`)
+   and the path in is the SSH tunnel chain — josh-box's
+   `aztec-docs-tunnel.service` reverse-forwards port 7092 to bastion,
+   and the claudebox-deploy host's `cloxy-tunnel.service`
+   local-forwards bastion's 7092 back to its own loopback. The
+   bastion-side `authorized_keys` entries need different OpenSSH
+   options for the two sides:
+   - josh-box's key (used by `-R`): `permitlisten="localhost:7092"`
+   - claudebox-deploy's key (used by `-L`): `permitopen="127.0.0.1:7092"`
+   Wrong/missing option fails-fast under `ExitOnForwardFailure=yes`
+   for `permitlisten`, but surfaces as channel-open errors at first
+   use for `permitopen`. Test once after each edit.
+
+   **Bearer mode (re-enable if you need per-issuer audit or want
+   external access):** four moving parts must change together —
+     1. Flip `MCP_AUTH_REQUIRED=true` in the `mcp` service env.
+     2. Restore the Caddy `@mcp` block (see git history of
+        `deployment/Caddyfile` before this PR).
+     3. Create a Cloudflare Access application with both `/mcp` and
+        `/mcp/*` as path matchers, service-token-only policy.
+     4. Issue a bearer with `scripts/mcp/issue_token.py` — see
+        "Issuing a bearer token" below.
+   And then, on the claudebox side: cloxy's MCP sidecar strips
+   inbound `Authorization` headers
+   (`cloxy/cmd/sidecar/main.go:stripForwardedSecurityHeaders`), so a
+   bearer can't ride session-container requests through to the MCP
+   server. Bearer-mode revert needs a bearer-injecting local proxy on
+   the claudebox-deploy host (or a cloxy patch adding per-upstream
+   auth-header config) to land at the same time. Without that,
+   flipping `MCP_AUTH_REQUIRED=true` breaks every honk_* tool call
+   from claudebox. The two modes share the same migration; you can
+   flip between them without re-bootstrapping the database.
 
 6. **After the first ingest completes** (the worker creates the
    `documents` table on first upload), grant `docsgpt_mcp_ro` read
@@ -548,6 +599,10 @@ whether to include it in the allowlist.
    first-deploy. Idempotent; safe to re-run.
 
 ### Issuing a bearer token for a claudebox group
+
+Only applies in bearer mode (`MCP_AUTH_REQUIRED=true`). In the current
+network-trust default, this step is unnecessary — the SSH tunnel chain
+is the auth.
 
 ```bash
 docker compose -f deployment/docker-compose-hub.yaml run --rm \

@@ -59,36 +59,20 @@ http://{$PUBLIC_HOSTNAME} {
 		}
 	}
 
-	# Honk-ai-host MCP server. Read-only SQL / RAG / logs surface for
-	# remote claudebox clients. Cloudflare Access on $PUBLIC_HOSTNAME is
-	# the first authentication layer; the MCP server itself enforces a
-	# per-token bearer (mcp_tokens table) — see AZTEC_SETUP.md "Honk-ai
-	# MCP server" for the operator runbook.
-	#
-	# IMPORTANT operator action (out-of-band, not in this file):
-	# add a separate Cloudflare Access *application* with both `/mcp`
-	# and `/mcp/*` as Application paths, service-token-only policy.
-	# The default Access app on $PUBLIC_HOSTNAME is for human SSO;
-	# MCP clients use CF-Access-Client-Id / CF-Access-Client-Secret
-	# headers. If the matchers diverge between CF Access and Caddy
-	# (e.g. CF uses `/mcp*` while Caddy strips `/mcp/`) you get
-	# inconsistent scoping and either lock out legitimate clients
-	# or expose the surface unauthenticated.
-	#
-	# FastMCP's streamable-HTTP transport mounts the JSON-RPC endpoint
-	# at upstream path `/mcp` (NOT `/`) and 307-redirects `/mcp/` →
-	# `/mcp`. So we forward the prefix verbatim with `handle` (not
-	# `handle_path`, which would strip `/mcp/` and route the request to
-	# upstream `/` → 404). Matching both bare `/mcp` and `/mcp/*` lets
-	# clients use either form; FastMCP canonicalizes internally.
-	@mcp path /mcp /mcp/*
-	handle @mcp {
-		reverse_proxy mcp:7092 {
-			flush_interval -1
-		}
-	}
+	# The honk-ai MCP server has no public route. The previous /mcp
+	# Caddy block (added in #119 to fix FastMCP path handling) and its
+	# matching Cloudflare Access "service-token only" application + the
+	# "Claudebox honkai mcp bypass" policy are retired here, together
+	# with the FastMCP bearer middleware on the MCP server
+	# (`MCP_AUTH_REQUIRED=false`, see deployment/docker-compose-hub.yaml).
+	# claudebox clients now reach the server through the SSH-tunnel chain
+	# to the host's loopback :7092 (`docker-compose-hub.yaml` publishes
+	# `127.0.0.1:7092:7092` for the ``mcp`` service). Re-adding the
+	# public route requires re-enabling the bearer middleware and the
+	# Access application *together* — see AZTEC_SETUP.md → "Honk-ai
+	# MCP server" for the bearer-mode revert checklist.
 
-	# Public /ask landing page (anonymous, RAG-only). Served by the
+# Public /ask landing page (anonymous, RAG-only). Served by the
 	# frontend-ask nginx container as a separate bundle from the admin
 	# SPA so the two design systems can evolve independently. The /ask
 	# bundle calls same-origin /stream above, so no CORS is involved.

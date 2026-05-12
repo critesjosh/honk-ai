@@ -3,8 +3,14 @@
 # Differences from upstream:
 #  - builds images from local source (not :develop pulls)
 #  - postgres uses pgvector (user data + vector store in one database)
-#  - only Caddy publishes host ports; postgres/redis/backend/frontend
-#    stay on the internal compose network
+#  - host ports published only on loopback (127.0.0.1):
+#      caddy: 5080 (bastion-tunnel ingress for /api/*, /stream, /ask)
+#      mcp:   7092 (SSH-tunnel ingress for honk-ai introspection from
+#                   claudebox; only reachable via the bastion-mediated
+#                   tunnel chain set up by claudebox-deploy host's
+#                   cloxy-tunnel.service + josh-box's aztec-docs-tunnel)
+#    Everything else (postgres / redis / backend / worker / frontend /
+#    discord-bot / docker-proxy) is bridge-network-only.
 #  - secrets come from ../.env (generate via: openssl rand -hex 32)
 #
 # First-boot bootstrap (see AZTEC_SETUP.md):
@@ -134,11 +140,17 @@ services:
       - backend
 
   # MCP server (honk-ai-host MCP). Read-only SQL / RAG / logs surface
-  # exposed to remote claudebox clients via Cloudflare Access. The
-  # in-process bearer-token check (mcp_tokens table) is the second
-  # layer; CF Access at the edge is the first. See AZTEC_SETUP.md for
-  # the operator runbook (token issuance, scope wiring, Caddy/CF Access
-  # route).
+  # for remote claudebox sessions. Current production runs in network-
+  # trust mode: no CF Access app, no Caddy /mcp route, MCP_AUTH_REQUIRED
+  # is false. The container is published only on the host's loopback
+  # (127.0.0.1:7092:7092) and is reached exclusively over the bastion-
+  # anchored SSH tunnel chain from the claudebox-deploy host. To prevent
+  # the unauthenticated server from being reachable to traffic-serving
+  # services, mcp is isolated on its own compose network (`mcp_internal`)
+  # shared only with postgres. The bearer plumbing (mcp_tokens, alembic
+  # 0006, scripts/mcp/issue_token.py) is preserved for the reverse path —
+  # see AZTEC_SETUP.md → "Honk-ai MCP server" for the operating-mode
+  # switch and what else has to change on the claudebox side.
   mcp:
     build:
       context: ../application
@@ -156,16 +168,40 @@ services:
       - MCP_COMPOSE_PROJECT=docsgpt-aztec
       - MCP_HOST=0.0.0.0
       - MCP_PORT=7092
-    # Networks: ``default`` so Caddy + Postgres can reach us, and
-    # ``docker_proxy_net`` so we can talk to the proxy. Backend/worker
-    # are NOT on docker_proxy_net — a compromise of either of those
-    # services should not give them an unauthenticated Docker API.
+      # Network-trust deployment: the public Caddy /mcp route has been
+      # retired in favour of an SSH-tunnel-only access path
+      # (claudebox-deploy → bastion → josh-box :7092). The bearer
+      # middleware is disabled because SSH-key possession + the
+      # docsgpt_mcp_ro role grants are the defense layers in this mode.
+      # If you republish the service to a non-loopback interface, set
+      # MCP_AUTH_REQUIRED=true and restore the Caddy route + CF Access
+      # application together.
+      - MCP_AUTH_REQUIRED=false
+    # Networks:
+    # - mcp_internal: shared only with postgres so we can reach the DB.
+    #   The default compose network is intentionally NOT attached — with
+    #   MCP_AUTH_REQUIRED=false, backend/worker/discord-bot/etc. on the
+    #   default network would otherwise have unauthenticated reach to
+    #   honk_sql/honk_rag/honk_logs. mcp_internal contains only us and
+    #   postgres, so only postgres can initiate a connection to us, and
+    #   it has no reason to. The host's loopback :7092 publish (above)
+    #   is the only path real callers (the SSH tunnel chain) use.
+    # - docker_proxy_net: for honk_logs.* via tecnativa/docker-socket-
+    #   proxy. Backend/worker are NOT on this network — a compromise of
+    #   either of those services should not give them an unauthenticated
+    #   Docker API.
     networks:
-      - default
+      - mcp_internal
       - docker_proxy_net
-    # No host port — Caddy reaches mcp:7092 internally. External
-    # clients reach the server through Caddy + Cloudflare Tunnel +
-    # Cloudflare Access; see deployment/Caddyfile for the route.
+    # Publish to loopback only. The host's :7092 is consumed by josh-box's
+    # aztec-docs-tunnel.service (-R 7092:127.0.0.1:7092) which forwards to
+    # bastion, where claudebox-deploy host's cloxy-tunnel.service maps
+    # bastion's :7092 back to its own loopback. End-to-end the only
+    # external surface is the SSH tunnel chain; the docker port is never
+    # bound to 0.0.0.0. The MCP server inside the container is now
+    # MCP_AUTH_REQUIRED=false (see above) so do NOT relax the bind.
+    ports:
+      - "127.0.0.1:7092:7092"
     depends_on:
       postgres:
         condition: service_healthy
@@ -209,6 +245,13 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./postgres-init:/docker-entrypoint-initdb.d:ro
+    # On both networks: ``default`` is the path for backend / worker /
+    # discord-bot, ``mcp_internal`` is the path for the host-side MCP
+    # server (which is intentionally NOT on ``default``; see comments
+    # under the ``mcp`` service for the threat model).
+    networks:
+      - default
+      - mcp_internal
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U docsgpt -d docsgpt"]
       interval: 5s
@@ -223,8 +266,22 @@ volumes:
 
 networks:
   # Default compose network — backend, worker, frontend-ask, redis,
-  # postgres, caddy, discord-bot, mcp.
+  # postgres, caddy, discord-bot. NOT mcp; in network-trust mode the
+  # honk-ai MCP server is unauthenticated and the only legitimate caller
+  # is the SSH tunnel chain landing on the host-published loopback port.
+  # If mcp shared this network, a code-exec compromise of any
+  # traffic-serving container (backend / worker / discord-bot / etc.)
+  # would broaden to honk_sql/honk_rag/honk_logs over `mcp:7092`.
   default:
+  # Private network shared only by mcp + postgres so the MCP server can
+  # reach Postgres without sitting on the default network. postgres is on
+  # both networks (default for backend/worker/discord-bot; mcp_internal
+  # for mcp). NOT marked internal:true because mcp's honk_rag.search
+  # tool needs egress to the embeddings API (OpenAI). Compose-network
+  # isolation between mcp_internal and `default` is automatic; the
+  # `internal:` flag only controls outbound internet egress, not
+  # container-to-container reachability.
+  mcp_internal:
   # Private network for the docker-socket-proxy. ONLY mcp + docker-proxy
   # are attached. Keeps backend/worker code-execution bugs from being
   # able to reach the unauthenticated proxy's Docker Engine surface.

@@ -32,6 +32,7 @@ from fastmcp.server.dependencies import get_access_token
 
 from application.mcp_server.audit import audit_call
 from application.mcp_server.auth import (
+    KNOWN_SCOPES,
     SCOPE_DB_READ,
     SCOPE_LOGS_READ,
     SCOPE_RAG_FULL_TEXT,
@@ -89,8 +90,21 @@ def build_server(
     *,
     connection_string: str | None = None,
     server_name: str = "honk-ai",
+    auth_required: bool = True,
 ) -> FastMCP:
-    """Construct the FastMCP server with all three tool families wired in."""
+    """Construct the FastMCP server with all three tool families wired in.
+
+    ``auth_required`` (default True) enforces the ``mcp_tokens`` bearer at the
+    FastMCP middleware layer and resolves ``_current_token`` from the verified
+    access token. When False, FastMCP runs with no auth middleware and
+    ``_current_token`` returns a synthetic TokenInfo with all canonical scopes
+    granted and ``token_id=None``. The ``mcp_audit`` row is still written; the
+    ``token_id`` column is nullable for this case. Anonymous mode is intended
+    for deployments where the network boundary itself is the auth boundary
+    (e.g. the MCP container is bound to loopback only and reached exclusively
+    through SSH tunnels with key-based access). The Postgres role
+    ``docsgpt_mcp_ro`` remains the second defense layer in either mode.
+    """
 
     db_url = connection_string or _resolve_connection_string_from_env()
     if not db_url:
@@ -100,8 +114,15 @@ def build_server(
             "POSTGRES_URI."
         )
 
-    store = TokenStore(connection_string=db_url)
-    verifier = MCPTokensVerifier(store)
+    if auth_required:
+        store = TokenStore(connection_string=db_url)
+        verifier: MCPTokensVerifier | None = MCPTokensVerifier(store)
+    else:
+        verifier = None
+        logger.warning(
+            "mcp_server: MCP_AUTH_REQUIRED is disabled; the bearer middleware is OFF. "
+            "This is only safe when the listening interface is private (loopback / SSH tunnel)."
+        )
 
     sql = SQLExecutor(db_url)
     rag = RAGSearcher(connection_string=db_url)
@@ -109,7 +130,15 @@ def build_server(
 
     mcp = FastMCP(name=server_name, auth=verifier)
 
+    _anonymous_token = TokenInfo(
+        token_id=None,
+        label="anonymous",
+        scopes=KNOWN_SCOPES,
+    )
+
     def _current_token() -> TokenInfo:
+        if not auth_required:
+            return _anonymous_token
         access = get_access_token()
         if access is None:
             # FastMCP rejects unauthenticated requests at the auth
@@ -332,6 +361,19 @@ def build_server(
     return mcp
 
 
+def _env_bool(name: str, default: bool) -> bool:
+    """Parse a boolean env var with a strict allowlist; unknown values fail loud."""
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    val = raw.strip().lower()
+    if val in {"1", "true", "yes", "on"}:
+        return True
+    if val in {"0", "false", "no", "off"}:
+        return False
+    raise ValueError(f"{name}={raw!r} is not a recognised boolean (use true/false)")
+
+
 def run() -> None:
     """Entry point for ``python -m application.mcp_server``."""
     logging.basicConfig(
@@ -340,5 +382,6 @@ def run() -> None:
     )
     host = os.environ.get("MCP_HOST", "0.0.0.0")
     port = int(os.environ.get("MCP_PORT", "7092"))
-    server = build_server()
+    auth_required = _env_bool("MCP_AUTH_REQUIRED", default=True)
+    server = build_server(auth_required=auth_required)
     server.run(transport="http", host=host, port=port)

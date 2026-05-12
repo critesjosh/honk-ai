@@ -44,17 +44,25 @@ logger = logging.getLogger(__name__)
 class TokenInfo:
     """Resolved metadata for a verified bearer."""
 
-    token_id: str
+    token_id: str | None
     """Stable opaque ID used by ``mcp_audit`` to attribute calls.
 
-    Never includes the plaintext token.
+    Never includes the plaintext token. May be None when the server is
+    deployed with auth disabled (network-only trust boundary); audit rows
+    still get written but with a null token_id column.
     """
 
     label: str
-    """Human-readable label set at issuance time (e.g. ``cb-claudebox-rw``)."""
+    """Human-readable label set at issuance time (e.g. ``cb-claudebox-rw``).
+
+    Set to ``"anonymous"`` when auth is disabled.
+    """
 
     scopes: frozenset[str]
-    """Granted scopes (e.g. ``{"db:read", "rag:read", "logs:read"}``)."""
+    """Granted scopes (e.g. ``{"db:read", "rag:read", "logs:read"}``).
+
+    Set to :data:`KNOWN_SCOPES` (everything) when auth is disabled.
+    """
 
 
 # Canonical scopes recognised by the server. Tools require a subset of

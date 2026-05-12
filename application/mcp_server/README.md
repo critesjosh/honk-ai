@@ -12,10 +12,15 @@ documented here is for claudebox operator sessions and has direct read
 access to the docsgpt Postgres database, the pgvector RAG store, and
 recent container stdout.
 
-| Surface | Consumers | Auth | Tools |
+| Surface | Consumers | Auth (current production = network-trust) | Tools |
 | --- | --- | --- | --- |
 | `@aztec/mcp-server` | Claude Desktop / Cursor / Codex | Per-Discord-user bearer (`agents.key`) | `/api/search`, ripgrep |
-| This server | claudebox operator sessions | CF Access service token **+** per-token bearer (`mcp_tokens`) | `honk_sql.*`, `honk_rag.*`, `honk_logs.*` |
+| This server | claudebox operator sessions | SSH-key chain (`claudebox-deploy → bastion → josh-box`) + `docsgpt_mcp_ro` Postgres-role grants | `honk_sql.*`, `honk_rag.*`, `honk_logs.*` |
+
+This server supports two operating modes, gated by `MCP_AUTH_REQUIRED`:
+
+- **`MCP_AUTH_REQUIRED=false` (current production)** — the FastMCP bearer middleware is off, the mcp container publishes only `127.0.0.1:7092:7092`, no Caddy `/mcp` route, no Cloudflare Access application. The mcp container is isolated on its own compose network (`mcp_internal`, shared only with postgres) so backend/worker/discord-bot/frontend-ask/caddy cannot reach `mcp:7092` even though it serves anonymously — the only path in is the host-published loopback port reached over the SSH tunnel chain. Access is gated by SSH-key possession on each hop plus the Postgres-role grants. `mcp_audit.token_id` is null in this mode.
+- **`MCP_AUTH_REQUIRED=true`** — the previous design: per-token bearers in `mcp_tokens` (alembic 0006), CF Access service-token application gating `/mcp` + `/mcp/*`, Caddy route mounted. Restoring this mode also requires restoring a bearer-injecting layer on the caller side; cloxy's MCP sidecar strips inbound `Authorization` headers, so a bearer can't be passed through claudebox without a host-side proxy.
 
 ## Tool surface
 
@@ -78,13 +83,21 @@ LIMIT 10;
 
 ## Defense-in-depth
 
-1. **Cloudflare Access at the edge** — operator adds a service-token-only
+Layers 1 and 2 are **opt-in** in current production (`MCP_AUTH_REQUIRED=false`); 3–6 always apply.
+
+1. **Cloudflare Access at the edge** *(bearer-mode only)* — operator adds a service-token-only
    Access application gating both `/mcp` and `/mcp/*` on the apex
    hostname. SSO clients are rejected at the edge; only requests carrying
    `CF-Access-Client-Id` / `CF-Access-Client-Secret` headers reach Caddy.
-2. **Per-token bearer** — `mcp_tokens` stores SHA-256 hashes of
+   In network-trust mode this layer is replaced by the loopback-only
+   docker port-publish + the SSH-key chain on the bastion tunnel.
+2. **Per-token bearer** *(bearer-mode only)* — `mcp_tokens` stores SHA-256 hashes of
    operator-issued bearers, the granted scopes, expiration, and
    revocation timestamp. Plaintext is shown once at issuance.
+   In network-trust mode the bearer middleware is off (`auth=None`
+   to FastMCP) and `_current_token()` returns a synthetic anonymous
+   `TokenInfo` with all canonical scopes granted; `mcp_audit.token_id`
+   is null for those calls.
 3. **Least-privilege Postgres role** — `docsgpt_mcp_ro` is created by
    alembic 0006 with:
    - `default_transaction_read_only = on` at the role level,
@@ -133,12 +146,14 @@ where:
    `POSTGRES_URI`. In prod, `MCP_DB_URL` is set to the `docsgpt_mcp_ro`
    role and the others stay as the privileged `docsgpt` role used by
    the backend.
-2. `TokenStore` opens a connection per `verify()` call to look up the
-   bearer's SHA-256 hash in `mcp_tokens`. Constant-time compare,
-   revoke/expiry check. Returns `TokenInfo(token_id, label, scopes)`.
-3. `FastMCP` mounts the streamable-HTTP transport at the configured
-   path. Caddy strips `/mcp/` before forwarding so the upstream sees
-   the mount root.
+2. *(bearer mode)* `TokenStore` opens a connection per `verify()` call
+   to look up the bearer's SHA-256 hash in `mcp_tokens`. Constant-time
+   compare, revoke/expiry check. Returns `TokenInfo(token_id, label,
+   scopes)`. `MCP_AUTH_REQUIRED=false` skips this step entirely; FastMCP
+   is constructed with `auth=None`.
+3. `FastMCP` mounts the streamable-HTTP transport at upstream path
+   `/mcp` (with a 307 redirect from `/mcp/`). Callers should use `/mcp`
+   directly to avoid the redirect round-trip.
 4. Each tool handler enters an `audit_call` context first, then
    `require_scopes` (so scope failures show up in `mcp_audit`), then
    the actual work via `asyncio.to_thread` (psycopg / requests are
@@ -167,11 +182,16 @@ docker compose -f deployment/docker-compose-hub.yaml run --rm \
 docker compose -f deployment/docker-compose-hub.yaml --env-file .env up -d \
   mcp docker-proxy
 
-# 5. Add the Caddy route (already in deployment/Caddyfile) + a
+# 5. Network-trust mode (current production): nothing more to do
+#    here. The compose service publishes 127.0.0.1:7092:7092 and the
+#    SSH tunnel chain (managed from claudebox-deploy host) provides
+#    reachability. Skip step 6.
+#
+#    Bearer mode (alternative): re-enable Caddy's @mcp block + add a
 #    Cloudflare Access application gating /mcp and /mcp/* with a
-#    service-token-only policy.
+#    service-token-only policy. Then step 6.
 
-# 6. Issue at least one bearer for a claudebox group:
+# 6. (Bearer mode only) Issue at least one bearer for a claudebox group:
 docker compose -f deployment/docker-compose-hub.yaml run --rm \
   -v "$(pwd)/scripts:/app/scripts:ro" -e PYTHONPATH=/app \
   backend python scripts/mcp/issue_token.py issue \
