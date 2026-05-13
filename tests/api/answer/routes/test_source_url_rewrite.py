@@ -95,6 +95,87 @@ class TestNetworkOperatorDocs:
         )
 
 
+class TestDocusaurusIdOverrides:
+    """Files whose Docusaurus ``id:`` frontmatter differs from the
+    filename get a different URL slug — keeping the filename slug 404s.
+
+    Spot-checks a handful of the 14 known overrides recorded in
+    ``application.api.answer.routes.aztec_doc_slugs``; the full set is
+    covered by the data file itself.
+    """
+
+    def test_registering_sequencer_uses_id_slug(self):
+        # File: docs/network_versioned_docs/version-v4.2.0/operators/setup/registering-sequencer.md
+        # Frontmatter: id: registering_sequencer
+        # Live URL: .../operate/operators/setup/registering_sequencer (200)
+        # Filename-slug URL (.../registering-sequencer) returns 404.
+        assert _aztec_source_url(
+            "version-v4.2.0/operators/setup/registering-sequencer.md"
+        ) == (
+            "https://docs.aztec.network/operate/operators/setup/registering_sequencer"
+        )
+
+    def test_staking_provider_uses_id_slug(self):
+        # id: become_a_staking_provider (drastically different from filename)
+        assert _aztec_source_url(
+            "version-v4.2.0/operators/setup/staking-provider.md"
+        ) == (
+            "https://docs.aztec.network/operate/operators/setup/become_a_staking_provider"
+        )
+
+    def test_sequencer_setup_uses_id_slug(self):
+        # id: sequencer_management (file lives under setup/, but id moves it to /setup/sequencer_management)
+        assert _aztec_source_url(
+            "version-v4.2.0/operators/setup/sequencer-setup.md"
+        ) == (
+            "https://docs.aztec.network/operate/operators/setup/sequencer_management"
+        )
+
+    def test_governance_participation_uses_id_slug(self):
+        # id: creating_and_voting_on_proposals (under sequencer-management/)
+        assert _aztec_source_url(
+            "version-v4.2.0/operators/sequencer-management/governance-participation.md"
+        ) == (
+            "https://docs.aztec.network/operate/operators/sequencer-management/creating_and_voting_on_proposals"
+        )
+
+    def test_unmapped_operator_doc_falls_back_to_filename(self):
+        # claiming-rewards.md has no `id:` frontmatter — must not be
+        # remapped. Confirmed 200 on the live site at the filename slug.
+        assert _aztec_source_url(
+            "version-v4.2.0/operators/sequencer-management/claiming-rewards.md"
+        ) == (
+            "https://docs.aztec.network/operate/operators/sequencer-management/claiming-rewards"
+        )
+
+    def test_index_md_with_id_still_uses_parent_path(self):
+        # operators/keystore/index.md declares id: advanced_keystore_guide,
+        # but Docusaurus serves index files at the parent path regardless
+        # of the declared id. We must NOT inject the id into the URL here.
+        assert _aztec_source_url(
+            "version-v4.2.0/operators/keystore/index.md"
+        ) == (
+            "https://docs.aztec.network/operate/operators/keystore"
+        )
+
+    def test_apply_slug_override_defensive_index_guard(self):
+        # If the override map ever accidentally contains a key ending in
+        # ``/index``, ``apply_slug_override`` must NOT mangle the
+        # already-stripped parent-folder URL. ``base.py`` strips
+        # ``/index`` before calling the helper, so the helper sees a
+        # path like ``operators/keystore`` paired with the unstripped
+        # source ``...operators/keystore/index`` — returning ``rest``
+        # unchanged is the safe behaviour.
+        from application.api.answer.routes.aztec_doc_slugs import apply_slug_override, AZTEC_DOC_SLUG_OVERRIDES
+
+        # Inject a hypothetical bad entry to exercise the guard.
+        AZTEC_DOC_SLUG_OVERRIDES["version-v4.2.0/foo/bar/index"] = "should_be_ignored"
+        try:
+            assert apply_slug_override("foo/bar", "version-v4.2.0/foo/bar/index") == "foo/bar"
+        finally:
+            del AZTEC_DOC_SLUG_OVERRIDES["version-v4.2.0/foo/bar/index"]
+
+
 class TestSiteRootPages:
     """Files at `aztec-site/...` come from the unversioned
     ``docs/docs/`` folder in aztec-packages and render at the

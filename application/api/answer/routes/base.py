@@ -8,6 +8,7 @@ from typing import Any, Dict, Generator, Iterable, List, Optional, Tuple
 from flask import jsonify, make_response, Response
 from flask_restx import Namespace
 
+from application.api.answer.routes.aztec_doc_slugs import apply_slug_override
 from application.api.answer.services.continuation_service import ContinuationService
 from application.api.answer.services.conversation_service import ConversationService
 from application.core.model_utils import (
@@ -135,15 +136,25 @@ def _aztec_source_url(source_path: str) -> str:
     # Network / operator docs — rendered at /operate/operators/<rest> on
     # the site. The corpus path is `version-v4.2.0/operators/<rest>` per
     # the way the network docs are ingested.
+    #
+    # ``apply_slug_override`` swaps the final path segment when the
+    # source file declares ``id:`` in its Docusaurus frontmatter (e.g.
+    # ``registering-sequencer.md`` declares ``id: registering_sequencer``
+    # so the site serves it at ``.../registering_sequencer``, not the
+    # filename slug).
     if source_path.startswith("version-v4.2.0/operators/"):
+        source_no_ext = _strip_doc_ext(source_path)
         rest = source_path[len("version-v4.2.0/"):]  # keep "operators/<rest>"
         rest = _strip_index_suffix(_strip_doc_ext(rest))
+        rest = apply_slug_override(rest, source_no_ext)
         return f"{_AZTEC_OPERATE_BASE}/{rest}".rstrip("/")
 
     # Rendered Aztec developer docs — files under `docs/` subfolder.
     if source_path.startswith("version-v4.2.0/docs/"):
+        source_no_ext = _strip_doc_ext(source_path)
         rest = source_path[len("version-v4.2.0/docs/"):]
         rest = _strip_index_suffix(_strip_doc_ext(rest))
+        rest = apply_slug_override(rest, source_no_ext)
         return f"{_AZTEC_DOCS_BASE}/{rest}".rstrip("/")
 
     # Top-level developer docs (overview, ai_tooling, getting_started_*)
@@ -151,8 +162,10 @@ def _aztec_source_url(source_path: str) -> str:
     # corpus and are rendered at /developers/<filename> on the site, NOT
     # under /developers/docs/.
     if source_path.startswith("version-v4.2.0/"):
+        source_no_ext = _strip_doc_ext(source_path)
         rest = source_path[len("version-v4.2.0/"):]
         rest = _strip_index_suffix(_strip_doc_ext(rest))
+        rest = apply_slug_override(rest, source_no_ext)
         return f"{_AZTEC_DEV_TOP_BASE}/{rest}".rstrip("/")
 
     # Unversioned aztec-packages ``docs/docs/`` pages — rendered at
