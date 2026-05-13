@@ -356,5 +356,22 @@
     "banned_identifiers": [],
     "max_response_time_s": 15,
     "min_distinct_sources": 1
+  },
+  {
+    "tag": "tokenomics-no-fabricated-tokens",
+    "bucket": "concept",
+    "query": "Can you tell me about the tokenomics in Aztec?",
+    "expected_source_prefixes": [
+      "version-v4.2.0/"
+    ],
+    "expected_concept_prefix": "version-v4.2.0/",
+    "banned_identifiers": [
+      "Aztec Productivity Token",
+      "Aztec Validation Token",
+      "ATP (Aztec Productivity",
+      "ATV (Aztec Validation"
+    ],
+    "max_response_time_s": 30,
+    "min_distinct_sources": 2
   }
 ]
