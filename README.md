@@ -26,12 +26,11 @@ removed. See [`CLAUDE.md`](./CLAUDE.md) for the architectural diff and
 - **Discord** — run `/mcp-key` in the Noir Discord (or any allowlisted
   guild — `NOIR_GUILD_IDS` is comma-separated) to provision a personal
   MCP API key. `@`-mention the bot — user-facing name **Honk AI** — in
-  any channel (or DM it) to chat directly. When mentioned in a top-level
-  guild channel the bot opens a public thread on your message and
-  replies inside; in existing threads (forum posts, threads-on-message)
-  it replies in place AND reads up to 30 prior thread messages so it
-  can answer questions tagged on someone else's discussion. In DMs it
-  replies in place with no thread context. Responses are formatted for
+  any channel (or DM it) to chat directly. The bot always replies in
+  place: in the same channel for top-level guild mentions, inside the
+  thread for thread mentions, and in the DM for DMs. In existing
+  threads it also reads up to 30 prior thread messages so it can
+  answer questions tagged on someone else's discussion. Responses are formatted for
   Discord (no Mermaid, no Markdown tables) via a custom system prompt
   and include a `-#` subtext "Sources" footer with up to 5 cited URLs.
   React with 👍 / 👎 on any of the bot's reply messages to record

@@ -129,8 +129,8 @@ bot = commands.Bot(command_prefix=PREFIX, intents=intents)
 # 40062-loop case 2.0 is precisely right.
 #
 # Trade-off: any 429 with ``retry_after > 2.0`` (rare on our bot's
-# routes — typing/send/thread-create per-route limits are typically
-# sub-second) also fails fast as RateLimited. Acceptable because
+# routes — typing/send per-route limits are typically sub-second)
+# also fails fast as RateLimited. Acceptable because
 # we'd rather surface a visible failure than sit in a multi-second
 # retry loop.
 bot.http.max_ratelimit_timeout = 2.0
@@ -254,8 +254,8 @@ def _register_feedback_target(
 # to the herd, no replies go out, and the user sees silence.
 #
 # This breaker observes 40062 at the application boundary (the catch
-# blocks around ``message.create_thread`` and the ``target.typing /
-# target.send`` block in ``on_message``). On detection we record an
+# blocks around ``target.typing`` and the ``target.send`` calls in
+# ``on_message``). On detection we record an
 # expiry timestamp keyed by guild_id and bail out of subsequent
 # ``on_message`` handling for that guild. Each silenced mention (the
 # trip itself plus every subsequent mention during the cooldown) gets
@@ -757,44 +757,73 @@ def format_for_discord(text):
 
 
 def chunk_string(text, max_length=2000):
-    """Splits a string into chunks, avoiding breaks inside code blocks."""
+    """Split text into Discord-sized chunks, packing close to ``max_length``.
+
+    Prefers paragraph / line / word boundaries, but only if the split
+    point lands past 80% of ``max_length`` (i.e. the resulting chunk
+    is at least 1600 chars for the 2000 default). Below that, splitting
+    too early wastes sends — each extra send tightens the per-channel /
+    per-thread write bucket and risks the 5-per-5s rate limit when the
+    bot rattles off several chunks back-to-back into a fresh thread
+    (observed 2026-05-12 23:18 after deploying the auto-thread removal:
+    a 3-chunk + footer reply hit per-route 429 with ``retry_after=2.57s``).
+    """
     if len(text) <= max_length:
         return [text]
 
+    # Minimum chunk length to accept a "nice" break. If no break lands
+    # past this in the current window, we hard-split at ``max_length``
+    # rather than emit a small chunk.
+    min_chunk = max_length * 4 // 5  # 80% of limit
+
     chunks = []
     while len(text) > max_length:
-        # Try to split at a code block boundary first
         split_at = -1
 
-        # Look for a double newline near the limit (paragraph break)
-        idx = text.rfind("\n\n", 0, max_length)
-        if idx > max_length // 2:
+        # Look for a paragraph break in [min_chunk, max_length).
+        idx = text.rfind("\n\n", min_chunk, max_length)
+        if idx != -1:
             split_at = idx
 
-        # If no good paragraph break, try a single newline
+        # Fall back to a single newline in the same window.
         if split_at == -1:
-            idx = text.rfind("\n", 0, max_length)
-            if idx > max_length // 2:
+            idx = text.rfind("\n", min_chunk, max_length)
+            if idx != -1:
                 split_at = idx
 
-        # Last resort: split at a space
+        # Fall back to a space in the same window.
         if split_at == -1:
-            idx = text.rfind(" ", 0, max_length)
-            if idx > 0:
+            idx = text.rfind(" ", min_chunk, max_length)
+            if idx != -1:
                 split_at = idx
-            else:
-                split_at = max_length
+
+        # No nice break in the last 20% — hard-split at ``max_length``.
+        if split_at == -1:
+            split_at = max_length
 
         chunk = text[:split_at]
 
-        # If we're splitting inside a code block, close and reopen it
+        # If we're splitting inside a code block, close it on this
+        # chunk and reopen on the next. The fence-close suffix is 4
+        # chars (``\n``` ``); reserve room so the chunk doesn't blow
+        # past ``max_length`` after appending it. Without the reserve,
+        # a hard-split at ``max_length`` inside a fence would emit a
+        # max_length+4 chunk and Discord would reject it.
+        FENCE_CLOSE = "\n```"
         open_blocks = chunk.count("```")
         if open_blocks % 2 == 1:
-            # Find the language hint from the last opening ```
+            overflow = (len(chunk) + len(FENCE_CLOSE)) - max_length
+            if overflow > 0:
+                split_at -= overflow
+                chunk = text[:split_at]
+                open_blocks = chunk.count("```")
+
+        if open_blocks % 2 == 1:
+            # Still inside a fence after any pullback — close + reopen.
             last_open = chunk.rfind("```")
             lang_match = re.match(r"```(\w*)", chunk[last_open:])
             lang = lang_match.group(1) if lang_match else ""
-            chunk += "\n```"
+            chunk += FENCE_CLOSE
             text = f"```{lang}\n" + text[split_at:].lstrip("\n")
         else:
             text = text[split_at:].lstrip("\n")
@@ -803,6 +832,9 @@ def chunk_string(text, max_length=2000):
 
     if text:
         chunks.append(text)
+    # Discord rejects messages > max_length. Defense in depth against
+    # a future refactor introducing an overflow path.
+    assert all(len(c) <= max_length for c in chunks), [len(c) for c in chunks]
     return chunks
 
 
@@ -1164,8 +1196,8 @@ async def submit_feedback(
     The backend resolves the conversation by ``user_id`` derived from
     the request's auth token. Production runs with ``AUTH_TYPE`` unset
     so anonymous calls resolve to ``user_id="local"``, which matches
-    the bot's chosen agent (the ``Aztec 4.2.0`` / ``docs.aztec.network``
-    agent). If ``AUTH_TYPE`` is ever switched to JWT mode this call
+    the bot's chosen agent (the ``Aztec 4.2.0`` agent for Honk AI's
+    @-mention path). If ``AUTH_TYPE`` is ever switched to JWT mode this call
     will start 401-ing — at that point the bot would need to mint a
     short-lived JWT against ``JWT_SECRET_KEY`` (same shared secret the
     backend already uses).
@@ -1327,9 +1359,8 @@ async def on_message(message):
     # Decide which conversation cache backs this turn. When we're
     # already inside a thread, use a per-thread cache so the bot has
     # the thread's own discussion as context (and so its prior answers
-    # in this thread carry across mentions). Everything else — DMs,
-    # top-level channel mentions where we'll spin up a fresh thread —
-    # keeps using the per-user cache exactly as before.
+    # in this thread carry across mentions). Everything else — DMs and
+    # top-level guild-channel mentions — keeps using the per-user cache.
     in_thread = isinstance(message.channel, discord.Thread)
     if in_thread:
         thread = message.channel
@@ -1401,47 +1432,16 @@ async def on_message(message):
 
         conversation["history"].append({"prompt": content})
 
-        # Decide where to post. Outside DMs and existing threads, spin
-        # up a public thread on the original message so each Q&A is
-        # its own conversation surface. The `discord.TextChannel`
-        # check intentionally excludes `Thread`, `DMChannel`,
-        # `ForumChannel`, etc.
+        # Always reply in place: same channel for top-level guild
+        # mentions, inside the thread for thread mentions, in the DM
+        # for DMs. We used to auto-create a public thread on top-level
+        # guild mentions; that was removed because
+        # ``POST /channels/.../messages/.../threads`` was the only
+        # Discord write route reliably hitting shared-bucket 40062 in
+        # production (small/low-trust servers are flagged on rapid
+        # repeated thread creation from a single author). Plain
+        # ``send`` and ``typing`` are not throttled the same way.
         target = message.channel
-        if isinstance(message.channel, discord.TextChannel):
-            raw_name = content.replace("\n", " ").replace("\r", " ").strip()
-            if not raw_name:
-                thread_name = "Aztec MCP question"
-            elif len(raw_name) > 80:
-                thread_name = raw_name[:77].rstrip() + "..."
-            else:
-                thread_name = raw_name
-            try:
-                target = await message.create_thread(
-                    name=thread_name,
-                    auto_archive_duration=1440,
-                )
-            except (discord.Forbidden, discord.HTTPException, discord.RateLimited) as exc:
-                # If the failure was a shared-bucket 429, falling back
-                # to the parent channel (typing + send) would just hit
-                # the same exhausted budget. Trip the breaker and bail
-                # immediately so we don't add more ticks to the herd.
-                # Roll back the queued prompt since no answer will
-                # follow — without this, the next mention's ``history``
-                # payload would carry a phantom prompt with no response.
-                if _is_shared_429(exc):
-                    _trip_breaker(guild_id, f"create_thread for message {message.id}: {exc}")
-                    if conversation["history"] and "response" not in conversation["history"][-1]:
-                        conversation["history"].pop()
-                    await _signal_breaker_silenced(
-                        message,
-                        target=target,
-                        eta_seconds=_breaker_time_remaining(guild_id),
-                    )
-                    return
-                logger.warning(
-                    "Could not create thread (falling back to parent channel): %s",
-                    exc,
-                )
 
         try:
             # Single-shot typing instead of `async with target.typing():`.
@@ -1545,6 +1545,23 @@ async def on_message(message):
 
             formatted = format_for_discord(answer)
             answer_chunks = chunk_string(formatted)
+            footer = _format_sources_footer(sources)
+
+            # If the footer fits in the same Discord message as the
+            # last answer chunk (after a `\n\n` separator), merge them.
+            # Saves one `send` per reply, which is what tripped the
+            # per-channel write rate limit on 2026-05-12 — three answer
+            # chunks plus a separate footer = four sends in ~2 seconds
+            # into a fresh thread, which exceeded the 5-per-5s bucket.
+            # When the combined length would exceed the Discord 2000-char
+            # limit we keep the footer separate (the original behaviour).
+            if footer and answer_chunks:
+                joiner = "\n\n"
+                merged = answer_chunks[-1].rstrip() + joiner + footer
+                if len(merged) <= 2000:
+                    answer_chunks[-1] = merged
+                    footer = None
+
             for chunk in answer_chunks:
                 sent_msg = await target.send(chunk)
                 _register_feedback_target(
@@ -1553,12 +1570,6 @@ async def on_message(message):
                     question_index,
                 )
 
-            # Send the citation footer as a separate message AFTER
-            # all answer chunks. Sent separately (rather than
-            # appended pre-chunking) so a long answer that fills
-            # the 2000-char limit can't truncate / split the
-            # footer mid-list.
-            footer = _format_sources_footer(sources)
             if footer:
                 sent_footer = await target.send(footer)
                 _register_feedback_target(

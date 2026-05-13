@@ -126,3 +126,66 @@ class TestFormatSourcesFooter:
         assert out is not None
         for i, u in enumerate(urls, start=1):
             assert f"-# {i}. <{u}>" in out
+
+
+class TestChunkStringPacking:
+    """``chunk_string`` packs to ≥ 80% of max_length so the bot ships
+    1–2 sends per reply instead of 3–4, which is what triggered the
+    per-channel write 429 on 2026-05-12."""
+
+    def test_short_text_unchunked(self, bot_module):
+        text = "hello world"
+        assert bot_module.chunk_string(text, max_length=2000) == [text]
+
+    def test_chunks_are_at_least_80pct_full(self, bot_module):
+        # Construct 3000 chars of paragraphs separated by `\n\n` every
+        # 50 chars — lots of valid split points, the chunker should
+        # pick one close to 2000, not close to 1000.
+        para = ("x" * 48 + "\n\n") * 60  # ~3000 chars total
+        chunks = bot_module.chunk_string(para, max_length=2000)
+        assert len(chunks) >= 2
+        # All chunks except the final tail must be at least 80% full.
+        # Allow the last chunk to be small (it's the remainder).
+        for c in chunks[:-1]:
+            assert len(c) >= 1600, f"chunk too small ({len(c)} < 1600): packed too loosely"
+            assert len(c) <= 2000
+
+    def test_no_paragraph_break_falls_through_to_line_then_space(self, bot_module):
+        # No `\n\n` anywhere, only `\n` every 50 chars.
+        text = ("y" * 49 + "\n") * 60
+        chunks = bot_module.chunk_string(text, max_length=2000)
+        assert len(chunks) >= 2
+        for c in chunks[:-1]:
+            assert len(c) >= 1600
+
+    def test_hard_split_when_no_break_in_last_20pct(self, bot_module):
+        # Single unbroken token longer than 2000 chars: nothing to split
+        # on past min_chunk → hard-split at max_length.
+        text = "z" * 2500
+        chunks = bot_module.chunk_string(text, max_length=2000)
+        assert len(chunks) == 2
+        assert len(chunks[0]) == 2000
+        assert len(chunks[1]) == 500
+
+    def test_code_fence_closed_and_reopened_across_chunks(self, bot_module):
+        # Open a code fence then pile on text past max_length so the
+        # split lands inside the fence. The chunker should close `` ``` ``
+        # on the first chunk and reopen with the language tag on the
+        # second.
+        body = "```rust\n" + ("let x = 1;\n" * 250)  # >>2000 chars
+        chunks = bot_module.chunk_string(body, max_length=2000)
+        assert len(chunks) >= 2
+        assert chunks[0].rstrip().endswith("```")
+        assert chunks[1].lstrip().startswith("```rust")
+        # All chunks must respect the Discord limit (regression: a
+        # previous version of the chunker emitted 2004-char chunks
+        # when fence-close was appended after a hard-split).
+        assert all(len(c) <= 2000 for c in chunks), [len(c) for c in chunks]
+
+    def test_unbroken_code_fence_does_not_overflow(self, bot_module):
+        # Fenced block with no newlines anywhere in [min_chunk, max_length]
+        # so the chunker must hard-split. Without fence-close reservation
+        # this used to emit a 2004-char first chunk.
+        body = "```rust\nlet x = " + ("a" * 2200) + ";\n```"
+        chunks = bot_module.chunk_string(body, max_length=2000)
+        assert all(len(c) <= 2000 for c in chunks), [len(c) for c in chunks]
