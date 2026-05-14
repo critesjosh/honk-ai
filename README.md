@@ -138,7 +138,11 @@ removed. See [`CLAUDE.md`](./CLAUDE.md) for the architectural diff and
   `identifier` / `concept` / `example`) with two run modes (direct
   retriever probe and end-to-end `/stream`) that assert source
   coverage, source diversity, banned identifiers, no Markdown tables,
-  and per-query response-time SLAs. See `scripts/eval/README.md`.
+  and per-query response-time SLAs. A second, manual variant-comparison
+  workflow layered on top (`provision_test_agent.py` → `eval_retrieval.py
+  --capture-answers` → `compare.py`) lets operators A/B a candidate
+  prompt / source list / model against the live agent before shipping
+  the change. See `scripts/eval/README.md`.
 - **Reasoning-disable shim** — auto-injects
   `extra_body={"reasoning": {"exclude": true}}` for reasoning-mode
   OpenRouter models (e.g. `x-ai/grok-4.1-fast`) that would otherwise

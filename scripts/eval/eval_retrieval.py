@@ -203,8 +203,17 @@ def run_retriever_eval(settings_module: str = "application.core.settings"):
 # ── Stream mode ─────────────────────────────────────────────────────────────
 
 
-def run_stream_eval(api_key: str, base_url: str = "http://localhost:7091"):
-    """Hit the /stream endpoint and check answer quality."""
+def run_stream_eval(
+    api_key: str,
+    base_url: str = "http://localhost:7091",
+    capture_answers: bool = False,
+):
+    """Hit the /stream endpoint and check answer quality.
+
+    When ``capture_answers`` is True each per-query result also carries
+    the verbatim ``query``, ``answer`` text, and ordered ``sources`` list
+    — the payload ``compare.py`` expects.
+    """
     import requests
 
     queries = load_golden_queries()
@@ -329,6 +338,21 @@ def run_stream_eval(api_key: str, base_url: str = "http://localhost:7091"):
             "bucket_pass": bucket_pass,
             "first_cited_apiref": first_cited_apiref if bucket_name == "identifier" else None,
         }
+        if capture_answers:
+            # Full payload for snapshot/compare. Sources are kept in citation
+            # order. The `/stream` SSE `source` frame rewrites the raw corpus
+            # path into the public URL in-place (see
+            # `api/answer/routes/base.py:_aztec_source_url`), so we only have
+            # the rewritten URL + the chunk title — no separate raw corpus path.
+            result["query"] = question
+            result["answer"] = answer
+            result["sources"] = [
+                {
+                    "url": s.get("source", ""),
+                    "title": s.get("title", ""),
+                }
+                for s in sources
+            ]
         results.append(result)
 
         status = "PASS" if passed else "FAIL"
@@ -392,6 +416,15 @@ def main():
         default="all",
         help="Restrict evaluation to one bucket (default: all)",
     )
+    parser.add_argument(
+        "--capture-answers",
+        action="store_true",
+        help="(stream mode) Include the full answer text + ordered cited URLs in --json-out. Required for compare.py.",
+    )
+    parser.add_argument(
+        "--label",
+        help="Label written into the snapshot envelope (e.g. 'baseline', 'variant-new-prompt'). Defaults to the api-key fingerprint.",
+    )
     args = parser.parse_args()
 
     global load_golden_queries
@@ -414,12 +447,22 @@ def main():
     print(f"Running {args.mode} eval with {len(queries)} golden queries\n")
 
     if args.mode == "retriever":
+        if args.capture_answers:
+            print(
+                "WARNING: --capture-answers is a no-op in retriever mode "
+                "(no answer is generated); ignoring.",
+                file=sys.stderr,
+            )
         results = run_retriever_eval()
     elif args.mode == "stream":
         if not args.api_key:
             print("ERROR: --api-key required for stream mode", file=sys.stderr)
             sys.exit(1)
-        results = run_stream_eval(args.api_key, args.base_url)
+        results = run_stream_eval(
+            args.api_key,
+            args.base_url,
+            capture_answers=args.capture_answers,
+        )
 
     # Summary
     passed = sum(1 for r in results if r.get("passed"))
@@ -432,8 +475,32 @@ def main():
     print(f"{'=' * 40}")
 
     if args.json_out:
+        # Snapshot envelope: a single object containing run metadata + the
+        # per-query results. compare.py reads either shape (envelope or
+        # the legacy bare list) so older runs keep working.
+        from datetime import datetime, timezone
+
+        label = args.label
+        if not label and args.mode == "stream" and args.api_key:
+            label = f"key-{args.api_key[:8]}"
+        elif not label:
+            label = args.mode
+        envelope = {
+            "label": label,
+            "mode": args.mode,
+            "base_url": args.base_url if args.mode == "stream" else None,
+            "bucket_filter": args.bucket,
+            "capture_answers": bool(args.capture_answers) and args.mode == "stream",
+            "ran_at": datetime.now(timezone.utc).isoformat(),
+            "summary": {
+                "total": total,
+                "passed": passed,
+                "by_bucket": by_bucket,
+            },
+            "results": results,
+        }
         with open(args.json_out, "w") as f:
-            json.dump(results, f, indent=2)
+            json.dump(envelope, f, indent=2)
         print(f"Results written to {args.json_out}")
 
     sys.exit(0 if passed == total else 1)
