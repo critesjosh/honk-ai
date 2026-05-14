@@ -81,3 +81,71 @@ class TestSanitizeApiError:
 
     def test_short_safe_message_passed_through(self):
         assert sanitize_api_error("Something broke") == "Something broke"
+
+    def test_bearer_token_scrubbed(self):
+        assert "error occurred" in sanitize_api_error(
+            "Authorization: Bearer abcdef1234567890"
+        )
+
+    def test_sk_key_scrubbed(self):
+        assert "error occurred" in sanitize_api_error(
+            "bad sk-proj-Abc123Xyz789Foo"
+        )
+
+    def test_anthropic_key_scrubbed(self):
+        assert "error occurred" in sanitize_api_error(
+            "bad sk-ant-api03-AbcDef0123456789"
+        )
+
+    def test_jwt_scrubbed(self):
+        assert "error occurred" in sanitize_api_error(
+            "token eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.abcdef.xyz"
+        )
+
+    def test_url_scrubbed(self):
+        # Signed URL with query string — leaks key/expiry.
+        assert "error occurred" in sanitize_api_error(
+            "upload failed at https://oai-cf-sig.example.com/bucket/x?sig=AbCdE"
+        )
+
+    def test_internal_hostname_scrubbed(self):
+        assert "error occurred" in sanitize_api_error(
+            "could not resolve backend.svc.cluster.local"
+        )
+
+    def test_filesystem_path_scrubbed(self):
+        assert "error occurred" in sanitize_api_error(
+            "missing /app/application/secrets.json"
+        )
+
+    def test_ipv4_scrubbed(self):
+        assert "error occurred" in sanitize_api_error(
+            "connect refused 10.0.42.17"
+        )
+
+    def test_org_id_scrubbed(self):
+        assert "error occurred" in sanitize_api_error(
+            "org-id: org-AbCd0123456789XYZ"
+        )
+
+    def test_project_id_scrubbed(self):
+        assert "error occurred" in sanitize_api_error(
+            "project_id=proj_ABcD0123456789xY"
+        )
+
+    def test_query_string_scrubbed(self):
+        assert "error occurred" in sanitize_api_error(
+            "bad ?api_key=AbCd0123456789xY"
+        )
+
+    def test_non_ascii_scrubbed(self):
+        # Raw protocol bytes / unicode payloads shouldn't reach the widget.
+        assert "error occurred" in sanitize_api_error("oh no \x00\xff binary")
+
+    def test_known_category_wins_even_with_leak_shape(self):
+        # 503 path is more useful than the generic fallback even if the
+        # original happened to embed a URL — we still emit canned text.
+        msg = sanitize_api_error(
+            "503 unavailable at https://api.openai.com/v1/chat"
+        )
+        assert "temporarily unavailable" in msg

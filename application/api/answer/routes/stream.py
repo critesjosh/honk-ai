@@ -7,6 +7,7 @@ from flask_restx import fields, Resource
 from application.api import api
 
 from application.api.answer.routes.base import answer_ns, BaseAnswerResource
+from application.error import sanitize_api_error
 
 from application.api.answer.services.stream_processor import StreamProcessor
 
@@ -175,7 +176,7 @@ class StreamResource(Resource, BaseAnswerResource):
                 extra={"error": str(e), "traceback": traceback.format_exc()},
             )
             return Response(
-                self.error_stream_generate("Unknown error occurred"),
+                self.error_stream_generate(sanitize_api_error(e)),
                 status=400,
                 mimetype="text/event-stream",
             )

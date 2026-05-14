@@ -203,6 +203,224 @@ class TestCompleteStreamMethod:
 
             assert any('"type": "error"' in s for s in stream)
 
+    def test_error_relays_actual_message_not_generic(
+        self, mock_mongo_db, flask_app
+    ):
+        """Outer-stream errors should surface the sanitized actual error,
+        not the generic ``Please try again later`` placeholder. Prevents
+        regressing the operator/user feedback that errors were being
+        silently swallowed at the widget."""
+        from application.api.answer.routes.base import BaseAnswerResource
+
+        with flask_app.app_context():
+            resource = BaseAnswerResource()
+            mock_agent = MagicMock()
+            mock_agent.gen.side_effect = RuntimeError("upstream timed out")
+            stream = list(
+                resource.complete_stream(
+                    question="Test?",
+                    agent=mock_agent,
+                    conversation_id=None,
+                    user_api_key=None,
+                    decoded_token={"sub": "user123"},
+                    should_save_conversation=False,
+                )
+            )
+
+            error_frames = [s for s in stream if '"type": "error"' in s]
+            assert error_frames, "expected an error SSE frame"
+            joined = "".join(error_frames)
+            assert "Please try again later" not in joined
+            assert "timed out" in joined.lower()
+
+    def test_logs_per_message_start_and_end(
+        self, mock_mongo_db, flask_app, caplog
+    ):
+        """``stream.start`` and ``stream.end`` info-level lines should fire
+        once per request so operator activity reports can read them."""
+        import logging
+
+        from application.api.answer.routes.base import BaseAnswerResource
+
+        with flask_app.app_context():
+            resource = BaseAnswerResource()
+            mock_agent = MagicMock()
+            mock_agent.gen.return_value = iter([{"answer": "ok"}])
+            with caplog.at_level(
+                logging.INFO,
+                logger="application.api.answer.routes.base",
+            ):
+                list(
+                    resource.complete_stream(
+                        question="Test?",
+                        agent=mock_agent,
+                        conversation_id=None,
+                        user_api_key=None,
+                        decoded_token={"sub": "user123"},
+                        should_save_conversation=False,
+                    )
+                )
+
+            assert any("stream.start" in r.getMessage() for r in caplog.records)
+            assert any(
+                "stream.end" in r.getMessage() and "status=ok" in r.getMessage()
+                for r in caplog.records
+            )
+
+    def test_info_logs_omit_question_text(self, mock_mongo_db, flask_app, caplog):
+        """End-user prompt text must never appear in INFO logs — it's
+        captured downstream in user_logs, but stdout/journald should only
+        get the length + a short hash for correlation."""
+        import logging
+
+        from application.api.answer.routes.base import BaseAnswerResource
+
+        secret_q = "my-secret-prompt-Abc123XYZ"
+        with flask_app.app_context():
+            resource = BaseAnswerResource()
+            mock_agent = MagicMock()
+            mock_agent.gen.return_value = iter([{"answer": "ok"}])
+            with caplog.at_level(
+                logging.INFO,
+                logger="application.api.answer.routes.base",
+            ):
+                list(
+                    resource.complete_stream(
+                        question=secret_q,
+                        agent=mock_agent,
+                        conversation_id=None,
+                        user_api_key=None,
+                        decoded_token={"sub": "user123"},
+                        should_save_conversation=False,
+                    )
+                )
+
+            for record in caplog.records:
+                msg = record.getMessage()
+                if "stream.start" in msg or "stream.end" in msg:
+                    assert secret_q not in msg
+                    assert "question_hash=" in msg
+
+    def test_inband_error_persists_failure_log_and_does_not_log_success(
+        self, mock_mongo_db, flask_app, caplog
+    ):
+        """When ``agent.gen`` yields ``{"type": "error"}``, the request is
+        a failure even though no exception was raised — assert we write an
+        error-shaped ``user_logs`` row and emit ``stream.end`` with an
+        error status, never ``status=ok``."""
+        import logging
+
+        from application.api.answer.routes.base import BaseAnswerResource
+
+        with flask_app.app_context():
+            resource = BaseAnswerResource()
+            mock_agent = MagicMock()
+            mock_agent.gen.return_value = iter(
+                [
+                    {"answer": "partial "},
+                    {"type": "error", "error": "upstream 503 unavailable"},
+                ]
+            )
+
+            with patch(
+                "application.api.answer.routes.base.UserLogsRepository"
+            ) as mock_repo_cls, patch(
+                "application.api.answer.routes.base.db_session"
+            ) as mock_session:
+                # db_session is used as a context manager.
+                mock_session.return_value.__enter__.return_value = MagicMock()
+                mock_session.return_value.__exit__.return_value = False
+                mock_repo = MagicMock()
+                mock_repo_cls.return_value = mock_repo
+
+                with caplog.at_level(
+                    logging.INFO,
+                    logger="application.api.answer.routes.base",
+                ):
+                    stream = list(
+                        resource.complete_stream(
+                            question="Test?",
+                            agent=mock_agent,
+                            conversation_id=None,
+                            user_api_key=None,
+                            decoded_token={"sub": "user123"},
+                            should_save_conversation=False,
+                        )
+                    )
+
+                assert any('"type": "error"' in s for s in stream)
+                assert not any('"type": "end"' in s for s in stream), (
+                    "in-band error should suppress the trailing end frame"
+                )
+                assert mock_repo.insert.called, (
+                    "expected an error-shaped user_logs.insert call"
+                )
+                kwargs = mock_repo.insert.call_args.kwargs
+                assert kwargs["data"]["level"] == "error"
+                assert kwargs["data"]["error_class"] == "InbandError"
+                # sanitizer should canonicalize 503 → temporarily unavailable
+                assert "temporarily unavailable" in kwargs["data"]["error"]
+                # PII shape: no raw question, no raw api_key.
+                assert "question" not in kwargs["data"]
+                assert "api_key" not in kwargs["data"]
+                assert "error_raw" not in kwargs["data"]
+
+            assert not any(
+                "stream.end" in r.getMessage() and "status=ok" in r.getMessage()
+                for r in caplog.records
+            )
+            assert any(
+                "stream.end" in r.getMessage() and "status=error" in r.getMessage()
+                for r in caplog.records
+            )
+
+    def test_outer_exception_persists_failure_log(
+        self, mock_mongo_db, flask_app
+    ):
+        """Exceptions raised by ``agent.gen`` should also persist an
+        error-shaped ``user_logs`` row so failures are counted in
+        activity reports."""
+        from application.api.answer.routes.base import BaseAnswerResource
+
+        with flask_app.app_context():
+            resource = BaseAnswerResource()
+            mock_agent = MagicMock()
+            mock_agent.gen.side_effect = RuntimeError("upstream timed out")
+
+            with patch(
+                "application.api.answer.routes.base.UserLogsRepository"
+            ) as mock_repo_cls, patch(
+                "application.api.answer.routes.base.db_session"
+            ) as mock_session:
+                mock_session.return_value.__enter__.return_value = MagicMock()
+                mock_session.return_value.__exit__.return_value = False
+                mock_repo = MagicMock()
+                mock_repo_cls.return_value = mock_repo
+
+                list(
+                    resource.complete_stream(
+                        question="Test?",
+                        agent=mock_agent,
+                        conversation_id=None,
+                        user_api_key=None,
+                        decoded_token={"sub": "user123"},
+                        should_save_conversation=False,
+                    )
+                )
+
+                assert mock_repo.insert.called
+                kwargs = mock_repo.insert.call_args.kwargs
+                data = kwargs["data"]
+                assert data["level"] == "error"
+                assert data["error_class"] == "RuntimeError"
+                # PII / secret hygiene assertions: bare api_key dropped,
+                # error_raw dropped, question body not persisted on error
+                # path (the question_hash + length stand in for it).
+                assert "api_key" not in data
+                assert "error_raw" not in data
+                assert "question" not in data
+                assert "question_hash" in data
+
     def test_saves_conversation_when_enabled(self, mock_mongo_db, flask_app):
         from application.api.answer.routes.base import BaseAnswerResource
 

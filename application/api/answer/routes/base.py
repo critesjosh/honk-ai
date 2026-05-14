@@ -1,4 +1,5 @@
 import datetime
+import hashlib
 import json
 import logging
 import queue
@@ -431,8 +432,36 @@ class BaseAnswerResource:
         Yields:
             Server-sent event strings
         """
+        request_started_at = datetime.datetime.now(datetime.timezone.utc)
+        user_id_for_log = decoded_token.get("sub") if decoded_token else None
+        # Hash the question prompt so we can correlate start/end log lines
+        # for one request without writing the end-user's text to INFO logs.
+        # Widget/Discord users paste addresses, ops context, and occasionally
+        # bearer tokens into prompts — keep that out of stdout/journald.
+        question_hash = (
+            hashlib.sha256((question or "").encode("utf-8")).hexdigest()[:12]
+            if question
+            else None
+        )
+        api_key_hash = (
+            hashlib.sha256(user_api_key.encode("utf-8")).hexdigest()[:16]
+            if user_api_key
+            else None
+        )
+        logger.info(
+            "stream.start user=%s agent_id=%s conversation_id=%s "
+            "model_id=%s save=%s question_len=%d question_hash=%s",
+            user_id_for_log,
+            agent_id,
+            conversation_id,
+            model_id or self.default_model_id,
+            should_save_conversation,
+            len(question or ""),
+            question_hash,
+        )
+        response_full, thought, source_log_docs, tool_calls = "", "", [], []
+        inband_error_payload: Optional[str] = None
         try:
-            response_full, thought, source_log_docs, tool_calls = "", "", [], []
             is_structured = False
             schema_info = None
             structured_chunks = []
@@ -508,15 +537,78 @@ class BaseAnswerResource:
                         data = json.dumps(line)
                         yield f"data: {data}\n\n"
                     elif line.get("type") == "error":
-                        sanitized_error = {
-                            "type": "error",
-                            "error": sanitize_api_error(line.get("error", "An error occurred"))
-                        }
-                        data = json.dumps(sanitized_error)
+                        # An in-band error from agent.gen (workflow node,
+                        # LLM call, tool exec) is a request failure even
+                        # though the outer generator did not raise. Emit
+                        # the sanitized error frame here and stash the
+                        # payload so the success tail downstream switches
+                        # to error-shaped logging/persistence.
+                        sanitized_inband = sanitize_api_error(
+                            line.get("error", "An error occurred")
+                        )
+                        inband_error_payload = sanitized_inband
+                        data = json.dumps(
+                            {"type": "error", "error": sanitized_inband}
+                        )
                         yield f"data: {data}\n\n"
+                        break
                     else:
                         data = json.dumps(line)
                         yield f"data: {data}\n\n"
+            if inband_error_payload is not None:
+                # The agent yielded a structured error event (see
+                # workflow_engine.py and LLM provider error paths). Treat
+                # this as a request failure: write an error-shaped
+                # user_logs row, log stream.end status=error, and return
+                # without emitting the success-tail id/end frames or the
+                # info-level user_logs row that would otherwise mark this
+                # request as successful in activity reports.
+                duration_ms = int(
+                    (
+                        datetime.datetime.now(datetime.timezone.utc)
+                        - request_started_at
+                    ).total_seconds()
+                    * 1000
+                )
+                logger.warning(
+                    "stream.end status=error_inband user=%s agent_id=%s "
+                    "conversation_id=%s sanitized=%r duration_ms=%d "
+                    "question_hash=%s",
+                    user_id_for_log,
+                    agent_id,
+                    conversation_id,
+                    inband_error_payload,
+                    duration_ms,
+                    question_hash,
+                )
+                try:
+                    with db_session() as conn:
+                        UserLogsRepository(conn).insert(
+                            user_id=user_id_for_log,
+                            endpoint="stream_answer",
+                            data={
+                                "action": "stream_answer",
+                                "level": "error",
+                                "user": user_id_for_log,
+                                "api_key_hash": api_key_hash,
+                                "agent_id": agent_id,
+                                "question_len": len(question or ""),
+                                "question_hash": question_hash,
+                                "response_len": len(response_full or ""),
+                                "error_class": "InbandError",
+                                "error": inband_error_payload,
+                                "duration_ms": duration_ms,
+                                "timestamp": datetime.datetime.now(
+                                    datetime.timezone.utc
+                                ),
+                            },
+                        )
+                except Exception as log_err:
+                    logger.error(
+                        f"Failed to persist stream_answer in-band error log: {log_err}",
+                        exc_info=True,
+                    )
+                return
             if is_structured and structured_chunks:
                 structured_data = {
                     "type": "structured_answer",
@@ -716,10 +808,48 @@ class BaseAnswerResource:
                     exc_info=True,
                 )
 
+            duration_ms = int(
+                (
+                    datetime.datetime.now(datetime.timezone.utc)
+                    - request_started_at
+                ).total_seconds()
+                * 1000
+            )
+            logger.info(
+                "stream.end status=ok user=%s agent_id=%s "
+                "conversation_id=%s response_len=%d sources=%d "
+                "tool_calls=%d duration_ms=%d question_hash=%s",
+                user_id_for_log,
+                agent_id,
+                conversation_id,
+                len(response_full),
+                len(source_log_docs or []),
+                len(tool_calls or []),
+                duration_ms,
+                question_hash,
+            )
+
             data = json.dumps({"type": "end"})
             yield f"data: {data}\n\n"
         except GeneratorExit:
-            logger.info(f"Stream aborted by client for question: {question[:50]}... ")
+            duration_ms = int(
+                (
+                    datetime.datetime.now(datetime.timezone.utc)
+                    - request_started_at
+                ).total_seconds()
+                * 1000
+            )
+            logger.info(
+                "stream.end status=aborted user=%s agent_id=%s "
+                "conversation_id=%s response_len=%d duration_ms=%d "
+                "question_hash=%s",
+                user_id_for_log,
+                agent_id,
+                conversation_id,
+                len(response_full or ""),
+                duration_ms,
+                question_hash,
+            )
             # Save partial response
 
             if should_save_conversation and response_full:
@@ -778,10 +908,57 @@ class BaseAnswerResource:
             raise
         except Exception as e:
             logger.error(f"Error in stream: {str(e)}", exc_info=True)
+            sanitized = sanitize_api_error(e)
+            duration_ms = int(
+                (
+                    datetime.datetime.now(datetime.timezone.utc)
+                    - request_started_at
+                ).total_seconds()
+                * 1000
+            )
+            logger.warning(
+                "stream.end status=error user=%s agent_id=%s "
+                "conversation_id=%s error_class=%s sanitized=%r "
+                "duration_ms=%d question_hash=%s",
+                user_id_for_log,
+                agent_id,
+                conversation_id,
+                type(e).__name__,
+                sanitized,
+                duration_ms,
+                question_hash,
+            )
+            try:
+                with db_session() as conn:
+                    UserLogsRepository(conn).insert(
+                        user_id=user_id_for_log,
+                        endpoint="stream_answer",
+                        data={
+                            "action": "stream_answer",
+                            "level": "error",
+                            "user": user_id_for_log,
+                            "api_key_hash": api_key_hash,
+                            "agent_id": agent_id,
+                            "question_len": len(question or ""),
+                            "question_hash": question_hash,
+                            "response_len": len(response_full or ""),
+                            "error_class": type(e).__name__,
+                            "error": sanitized,
+                            "duration_ms": duration_ms,
+                            "timestamp": datetime.datetime.now(
+                                datetime.timezone.utc
+                            ),
+                        },
+                    )
+            except Exception as log_err:
+                logger.error(
+                    f"Failed to persist stream_answer error log: {log_err}",
+                    exc_info=True,
+                )
             data = json.dumps(
                 {
                     "type": "error",
-                    "error": "Please try again later. We apologize for any inconvenience.",
+                    "error": sanitized,
                 }
             )
             yield f"data: {data}\n\n"

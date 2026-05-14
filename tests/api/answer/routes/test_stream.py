@@ -136,6 +136,10 @@ class TestStreamResourcePost:
     def test_general_exception_returns_400_stream(
         self, stream_client, mock_stream_processor
     ):
+        # Exception text routes through ``sanitize_api_error``: a short,
+        # leak-free string passes through verbatim, and any leaky shape
+        # (URL, token, path, etc.) collapses to the generic fallback.
+        # The legacy ``"Unknown error occurred"`` placeholder is gone.
         mock_stream_processor.build_agent.side_effect = RuntimeError("crash")
         with patch(
             "application.api.answer.routes.stream.StreamResource.validate_request",
@@ -149,7 +153,33 @@ class TestStreamResourcePost:
             assert resp.status_code == 400
             assert "text/event-stream" in resp.content_type
             data = resp.get_data(as_text=True)
-            assert "Unknown error occurred" in data
+            assert '"type": "error"' in data
+            assert "crash" in data
+            assert "Unknown error occurred" not in data
+
+    def test_general_exception_with_leaky_message_is_sanitized(
+        self, stream_client, mock_stream_processor
+    ):
+        # Provider error text that contains a URL must NOT reach the
+        # user — the sanitizer should collapse it to the generic
+        # fallback message before it lands in the SSE error frame.
+        mock_stream_processor.build_agent.side_effect = RuntimeError(
+            "boom at https://api.openai.com/v1/chat?key=sk-leak-abc12345"
+        )
+        with patch(
+            "application.api.answer.routes.stream.StreamResource.validate_request",
+            return_value=None,
+        ):
+            resp = stream_client.post(
+                "/stream",
+                data=json.dumps({"question": "test"}),
+                content_type="application/json",
+            )
+            assert resp.status_code == 400
+            data = resp.get_data(as_text=True)
+            assert "openai.com" not in data
+            assert "sk-leak" not in data
+            assert "error occurred" in data
 
     def test_index_in_data_requires_conversation_id(
         self, stream_client, mock_stream_processor
