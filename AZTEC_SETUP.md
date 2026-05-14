@@ -722,7 +722,7 @@ DocsGPT/
     storage/db/                         # SQLAlchemy Core models + repositories
     api/internal/routes.py              # create_mcp_key endpoint
   extensions/
-    discord/bot.py                      # /mcp-key, /forget-me, @-mention, thread-context, citation footer
+    discord/bot.py                      # /mcp-key, /forget-me, @-mention + reply-to-bot triggers, thread-context, citation footer
     mcp-server/                         # README pointer to @aztec/mcp-server (in-repo TS server was removed)
   scripts/db/
     init_postgres.py                    # alembic upgrade head wrapper

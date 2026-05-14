@@ -335,6 +335,18 @@ OPENROUTER_MODELS = [
             supported_attachment_types=OPENROUTER_ATTACHMENTS,
         ),
     ),
+    AvailableModel(
+        id="z-ai/glm-4.6",
+        provider=ModelProvider.OPENROUTER,
+        display_name="GLM 4.6",
+        description="Z.ai GLM-4.6 via OpenRouter. Registered to keep the per-agent backup_models fallback chain resolvable when agents list it as a backup.",
+        capabilities=ModelCapabilities(
+            supports_tools=True,
+            supports_structured_output=True,
+            context_window=200000,
+            supported_attachment_types=OPENROUTER_ATTACHMENTS,
+        ),
+    ),
 ]
 
 NOVITA_MODELS = [

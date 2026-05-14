@@ -856,6 +856,58 @@ def split_string(input_str):
     return str(bot.user.id), content
 
 
+def _is_reply_to_bot(message: "discord.Message", bot_user_id: int) -> bool:
+    """True iff ``message`` is a Discord inline reply to a bot-authored message.
+
+    Lets users follow up on a Honk AI answer in a guild channel without
+    re-typing the @-mention — Discord's reply UI is the natural way to
+    continue a thread of back-and-forth and most users reach for it
+    first.
+
+    Resolution relies on ``MessageReference.resolved`` which discord.py
+    populates from the ``referenced_message`` field that Discord ships
+    in MESSAGE_CREATE for inline replies. We do NOT fall back to
+    ``channel.fetch_message`` on a cache miss: the resolved field is
+    set by the gateway for every fresh reply we see live, so a None
+    here means either (a) the bot just started and the reply targets
+    something older than the warm cache, or (b) the reference is a
+    forward / system notice rather than a reply. In both cases the
+    user can still trigger us by @-mentioning; skipping the fetch
+    keeps Discord GET-message rate-limit headroom for code paths that
+    actually need it (`_fetch_thread_context` etc.).
+
+    Filtering non-replies is non-trivial. Many Discord system payloads
+    carry a ``MessageReference`` whose ``MessageReferenceType`` is
+    ``default`` (pin-add notices, channel-follow, crossposts, thread-
+    created / thread-starter system messages, poll-result, context-
+    menu references). In discord.py ≥ 2.5 ``MessageReferenceType.reply``
+    is an ALIAS for ``.default``, so gating on the reference's type
+    alone would still admit all of those. The robust filter is the
+    parent ``Message.type``: ``MessageType.reply`` (int value 19) is
+    only set on user-authored inline replies — pin-add / channel-
+    follow / etc. each have their own distinct ``MessageType``. We
+    require that as the primary gate, and additionally reject
+    ``MessageReferenceType.forward`` on 2.5+ as a belt-and-braces
+    check (forwards have a parent ``Message.type`` of ``default`` but
+    we don't want a future semantics change to silently slip them in).
+    """
+    ref = message.reference
+    if ref is None or ref.message_id is None:
+        return False
+    if getattr(message, "type", None) != discord.MessageType.reply:
+        return False
+    reply_enum = getattr(discord, "MessageReferenceType", None)
+    ref_type = getattr(ref, "type", None)
+    if reply_enum is not None and ref_type is not None:
+        forward_member = getattr(reply_enum, "forward", None)
+        if forward_member is not None and ref_type == forward_member:
+            return False
+    resolved = ref.resolved
+    if isinstance(resolved, discord.Message):
+        return resolved.author.id == bot_user_id
+    return False
+
+
 @bot.event
 async def setup_hook():
     """Sync slash commands once on startup (not on every reconnect).
@@ -1301,14 +1353,18 @@ async def custom_help_command(ctx):
         "`!start` - Begin a new conversation with the bot\n"
         "`!reset` - Clear your conversation history\n"
         "`!custom_help` - Display this help message\n\n"
-        "You can also mention me or send a direct message to ask a question!"
+        "You can also mention me, reply to one of my messages, or send a direct message to ask a question!"
     )
     await ctx.send(help_text)
 
 
 @bot.event
 async def on_message(message):
-    if message.author == bot.user:
+    # Ignore all bot-authored messages, not just our own. With the new
+    # reply trigger, another bot replying to a Honk AI message would
+    # otherwise drag us into a bot-to-bot loop and burn /stream calls
+    # on empty / system-generated content.
+    if getattr(message.author, "bot", False):
         return
 
     # Try the prefix-command path first; if it matches, do NOT fall
@@ -1324,12 +1380,15 @@ async def on_message(message):
     if isinstance(message.channel, discord.DMChannel):
         content = message.content.strip()
     else:
-        # In guild channels, only respond when the bot user is
-        # @-mentioned somewhere in the message.
+        # In guild channels, respond when the bot user is @-mentioned
+        # OR when this message is an inline reply to one of the bot's
+        # messages. The reply trigger lets users continue a back-and-
+        # forth with Honk AI without re-typing the @-tag, which is
+        # how most users instinctively follow up on a previous answer.
         content = message.content.strip()
         prefix, content = split_string(content)
-        if prefix is None:
-            return  # Bot not mentioned, so do not process
+        if prefix is None and not _is_reply_to_bot(message, bot.user.id):
+            return  # Neither @-mentioned nor replying to the bot
 
     # Per-guild circuit breaker: if we've recently observed a
     # shared-bucket 429 here, skip the /stream call for the cooldown.

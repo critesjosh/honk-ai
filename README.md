@@ -25,8 +25,9 @@ removed. See [`CLAUDE.md`](./CLAUDE.md) for the architectural diff and
   system-prompt override) provisioned via `scripts/db/create_ask_aztec_public_agent.py`.
 - **Discord** — run `/mcp-key` in the Noir Discord (or any allowlisted
   guild — `NOIR_GUILD_IDS` is comma-separated) to provision a personal
-  MCP API key. `@`-mention the bot — user-facing name **Honk AI** — in
-  any channel (or DM it) to chat directly. The bot always replies in
+  MCP API key. `@`-mention the bot — user-facing name **Honk AI** —
+  in any channel, reply inline to one of its previous messages, or
+  DM it to chat directly. The bot always replies in
   place: in the same channel for top-level guild mentions, inside the
   thread for thread mentions, and in the DM for DMs. In existing
   threads it also reads up to 30 prior thread messages so it can
@@ -60,8 +61,9 @@ removed. See [`CLAUDE.md`](./CLAUDE.md) for the architectural diff and
   Post-deploy verification: `scripts/db/verify_pseudonymization.sql`.
 - **Discord bot** (`extensions/discord/`) — containerized and bundled into
   the production compose. Implements the `/mcp-key` slash command and
-  @-mention chat passthrough. Reaches the backend on the internal compose
-  network (bypasses Cloudflare Access).
+  chat passthrough triggered by @-mention, inline reply to a previous bot
+  message, or DM. Reaches the backend on the internal compose network
+  (bypasses Cloudflare Access).
 - **Public /ask page** (`frontend-ask/`) — separate Vite/React/TS bundle
   served at `/ask` on the apex host. Anonymous, no login. Calls
   same-origin `POST /stream` with `save_conversation: false` so requests
