@@ -1,4 +1,5 @@
 import asyncio
+import datetime
 import json
 import math
 import os
@@ -47,6 +48,26 @@ def _env_int(name: str, default: int, min_value: int = 0) -> int:
     except ValueError:
         logger.warning("Invalid %s=%r; using default %s", name, raw, default)
         return default
+
+
+def _env_float(name: str, default: float, min_value: float = 0.0) -> float:
+    """Defensive float env parse, same shape as ``_env_int``.
+
+    Rejects non-finite values (``inf`` / ``nan``) — both would silently
+    poison the per-guild spend accumulator.
+    """
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        value = float(raw.strip())
+    except ValueError:
+        logger.warning("Invalid %s=%r; using default %s", name, raw, default)
+        return default
+    if not math.isfinite(value):
+        logger.warning("Non-finite %s=%r; using default %s", name, raw, default)
+        return default
+    return max(min_value, value)
 
 
 THREAD_CONTEXT_MSG_LIMIT = _env_int("DISCORD_THREAD_CONTEXT_LIMIT", 30)
@@ -475,6 +496,408 @@ async def _signal_breaker_silenced(
         logger.info("Breaker-notice send failed (swallowed): %s", exc)
 
     await _signal_breaker_open(message)
+
+
+# ---------------------------------------------------------------------------
+# Per-guild daily estimated-USD spend cap.
+#
+# Honk AI's @-mention path posts every guild's questions to the same backend
+# agent via a shared ``API_KEY``, which means the backend's agent-level
+# ``limited_token_mode`` cap can't distinguish "the Aztec Network server is
+# hot" from "Noir is hot" — tripping the agent cap would silence the bot
+# everywhere. This module adds a bot-side, per-guild "soft brake" that
+# tracks estimated USD spend (tiktoken token counts × a static price table)
+# in a UTC-day bucket and refuses to call ``/stream`` for a guild that has
+# crossed its configured cap.
+#
+# This is a "best-effort process-local breaker", NOT a hard accounting
+# boundary:
+#   - Tiktoken estimates the wrong tokenizer (Qwen uses its own); expect
+#     ~10–20% drift vs OpenRouter's reported usage.
+#   - A discord-bot restart wipes the counter. If the bot restarts during a
+#     spike, that guild's cap is effectively lifted for the rest of the UTC
+#     day. Mitigation if this becomes load-bearing: persist to Redis.
+#   - Concurrency: the per-guild lock is held ONLY around check / reserve /
+#     reconcile, never around the LLM call. Worst-case overshoot is
+#     ``N_concurrent_in_guild * pre_call_reserve_usd`` (~pennies at Qwen
+#     prices and the discord.py gateway's serial per-shard delivery).
+#
+# DMs (``guild_id is None``) bypass the cap entirely — DMs are 1:1 with a
+# human and serializing on a ``None`` bucket would penalize ops users
+# testing the bot.
+# ---------------------------------------------------------------------------
+
+# Conservative per-million-token USD ceilings. Defaults sit slightly above
+# Qwen3.6-flash's discounted OpenRouter rates ($0.19 input / $1.13 output
+# per 1M tokens as of 2026-05) so estimated_usd over-counts vs actual
+# OpenRouter spend; tripping the cap "early" is the safe failure mode.
+# Override these via env when the bot's resolved model changes (e.g. if
+# the ``Aztec 4.2.0`` agent is repointed to grok-4.1-fast — see
+# application/llm/open_router.py for the registered set).
+_USD_PER_PROMPT_MTOK = _env_float("DISCORD_USD_PER_PROMPT_MTOK", 0.20)
+_USD_PER_COMPLETION_MTOK = _env_float("DISCORD_USD_PER_COMPLETION_MTOK", 1.20)
+
+# Pre-call reserve: charged against the guild bucket before /stream is
+# invoked, then reconciled to actual after the response. Sized as a
+# conservative upper bound on a typical 1500-char Honk AI reply with full
+# RAG + thread context (~$0.005 at qwen). Set high enough that concurrent
+# bursts can't blow through a cap in the few hundred ms between reserve
+# and reconcile; set low enough that a transient backend 5xx burning the
+# reserve isn't material.
+_PRE_CALL_RESERVE_USD = _env_float("DISCORD_PRE_CALL_RESERVE_USD", 0.01)
+
+
+def _parse_guild_usd_caps() -> dict[int, float]:
+    """Parse the per-guild daily USD cap config.
+
+    Format: comma-separated ``<guild_id>=<usd>`` pairs, e.g.
+    ``1144692727120937080=20,1399477876461404252=5``. A guild id absent
+    from the map is uncapped. ``<usd>=0`` is accepted as a hard
+    kill-switch (refuses every call in that guild until the env is
+    edited and the bot restarted).
+
+    Validation: rejects non-integer guild ids, non-finite or negative
+    caps, and duplicate guild ids (first wins, subsequent dropped with
+    a warning). Bad entries log and are skipped rather than raised so
+    a single typo in the env can't prevent the bot from starting at all.
+    """
+    raw = os.getenv("DISCORD_GUILD_DAILY_USD_CAPS", "")
+    caps: dict[int, float] = {}
+    for piece in raw.split(","):
+        piece = piece.strip()
+        if not piece:
+            continue
+        if "=" not in piece:
+            logger.warning("Ignoring malformed DISCORD_GUILD_DAILY_USD_CAPS entry %r (missing '=')", piece)
+            continue
+        gid_part, usd_part = piece.split("=", 1)
+        gid_part = gid_part.strip()
+        usd_part = usd_part.strip()
+        try:
+            gid = int(gid_part)
+        except ValueError:
+            logger.warning("Ignoring non-integer guild id in DISCORD_GUILD_DAILY_USD_CAPS: %r", gid_part)
+            continue
+        try:
+            usd = float(usd_part)
+        except ValueError:
+            logger.warning("Ignoring non-numeric USD cap in DISCORD_GUILD_DAILY_USD_CAPS: %r=%r", gid_part, usd_part)
+            continue
+        if not math.isfinite(usd) or usd < 0:
+            logger.warning("Ignoring non-finite/negative USD cap in DISCORD_GUILD_DAILY_USD_CAPS: %r=%r", gid_part, usd_part)
+            continue
+        if gid in caps:
+            logger.warning("Duplicate guild id %r in DISCORD_GUILD_DAILY_USD_CAPS; keeping first value %.4f", gid, caps[gid])
+            continue
+        caps[gid] = usd
+    return caps
+
+
+_GUILD_USD_CAPS: dict[int, float] = _parse_guild_usd_caps()
+if _GUILD_USD_CAPS:
+    logger.info(
+        "Per-guild daily USD caps loaded: %s (prompt $/Mtok=%.4f, completion $/Mtok=%.4f, reserve=$%.4f)",
+        {gid: f"${usd:.2f}" for gid, usd in _GUILD_USD_CAPS.items()},
+        _USD_PER_PROMPT_MTOK,
+        _USD_PER_COMPLETION_MTOK,
+        _PRE_CALL_RESERVE_USD,
+    )
+else:
+    logger.info("No DISCORD_GUILD_DAILY_USD_CAPS configured; all guilds uncapped")
+
+
+# State: ``{guild_id: {"utc_date": "YYYY-MM-DD", "estimated_usd": float}}``.
+# A guild id appears here only after its first chargeable call; new UTC
+# days are sweep-reset in-place on the next access. Locked per-guild by
+# ``_GUILD_SPEND_LOCKS``.
+_GUILD_SPEND_TODAY: dict[int, dict] = {}
+_GUILD_SPEND_LOCKS: dict[int, asyncio.Lock] = {}
+# Warn-once-per-UTC-day when a guild crosses the 80% threshold or trips
+# its cap. Keyed by ``(guild_id, utc_date_str)``.
+_GUILD_SPEND_WARN_FIRED: set = set()
+_GUILD_SPEND_TRIP_FIRED: set = set()
+_GUILD_WARN_FRACTION = 0.8
+
+# Per-channel dedup of cap-reached notices, same pattern as the breaker
+# notice cache. Keyed by ``(channel_id, utc_date_str)`` so a fresh UTC
+# day automatically re-arms the notice without needing a separate sweep.
+_CAP_NOTIFIED: dict[tuple[int, str], float] = {}
+
+
+def _today_utc_str(now: Optional[datetime.datetime] = None) -> str:
+    """ISO date for the current UTC day. Single source of truth for
+    bucket keys, notice dedup keys, and log lines so they can't drift."""
+    if now is None:
+        now = datetime.datetime.now(datetime.timezone.utc)
+    return now.date().isoformat()
+
+
+def _get_guild_lock(guild_id: int) -> asyncio.Lock:
+    """Lazily create the per-guild lock. Not thread-safe — fine because
+    discord.py drives ``on_message`` from a single event loop."""
+    lock = _GUILD_SPEND_LOCKS.get(guild_id)
+    if lock is None:
+        lock = asyncio.Lock()
+        _GUILD_SPEND_LOCKS[guild_id] = lock
+    return lock
+
+
+def _sweep_guild_bucket(guild_id: int, today: str) -> dict:
+    """Return the guild's bucket, resetting if its stored date is stale.
+
+    Caller MUST hold the per-guild lock. Returns a reference into
+    ``_GUILD_SPEND_TODAY`` so mutations land in the canonical state.
+    """
+    bucket = _GUILD_SPEND_TODAY.get(guild_id)
+    if bucket is None or bucket.get("utc_date") != today:
+        bucket = {"utc_date": today, "estimated_usd": 0.0}
+        _GUILD_SPEND_TODAY[guild_id] = bucket
+    return bucket
+
+
+async def _reserve_guild_spend(
+    guild_id: Optional[int],
+    *,
+    reserve_usd: float = _PRE_CALL_RESERVE_USD,
+    now: Optional[datetime.datetime] = None,
+) -> Optional[tuple[float, str]]:
+    """Atomic check + reserve.
+
+    Returns ``(reserved_usd, reserve_date_iso)`` on success — the
+    caller MUST pass both back to ``_finalize_guild_spend`` so the
+    reconcile / refund lands on the SAME bucket the reserve credited
+    (a long call straddling 00:00 UTC mustn't refund yesterday's
+    reserve out of today's fresh bucket).
+
+    Returns ``None`` when the cap is already met / would be crossed
+    by the reserve, and the caller should refuse the call.
+
+    Guilds without a configured cap and DMs return ``(0.0, "")`` (a
+    "no-op reservation") so the caller code path is identical for
+    capped and uncapped guilds — the post-call reconcile is a no-op
+    for ``reserved_usd <= 0.0``.
+    """
+    if guild_id is None:
+        return (0.0, "")
+    cap = _GUILD_USD_CAPS.get(guild_id)
+    if cap is None:
+        return (0.0, "")
+
+    today = _today_utc_str(now)
+    async with _get_guild_lock(guild_id):
+        bucket = _sweep_guild_bucket(guild_id, today)
+        spent = bucket["estimated_usd"]
+        if spent + reserve_usd > cap:
+            # Already at or over cap (or the reserve would push us over);
+            # the only escape is a UTC rollover or an operator restart.
+            key = (guild_id, today)
+            if key not in _GUILD_SPEND_TRIP_FIRED:
+                _GUILD_SPEND_TRIP_FIRED.add(key)
+                logger.warning(
+                    "guild.spend.tripped guild=%s estimated_usd=%.4f cap_usd=%.4f utc_date=%s",
+                    guild_id,
+                    spent,
+                    cap,
+                    today,
+                )
+            return None
+        bucket["estimated_usd"] = spent + reserve_usd
+        return (reserve_usd, today)
+
+
+async def _finalize_guild_spend(
+    guild_id: Optional[int],
+    reserved_usd: float,
+    reserve_date: str,
+    *,
+    outcome: str,
+    actual_usd: Optional[float] = None,
+    now: Optional[datetime.datetime] = None,
+) -> None:
+    """Reconcile, refund, or keep-charged the pre-call reserve.
+
+    ``outcome`` is one of:
+      - ``"reconcile"``: backend returned 200 + usage frame. ``actual_usd``
+        replaces ``reserved_usd`` (delta = actual - reserved, may be
+        negative). Most common path.
+      - ``"refund"``: backend returned non-200 (no LLM call ran). The
+        full reserve is credited back to the bucket. Use for known
+        no-cost failures only (HTTP 401/403/404/422/etc).
+      - ``"keep_charged"``: backend may have run the LLM but didn't
+        return a usage frame, or the request errored mid-flight.
+        Reserve stays charged. Logged so operator can see it.
+
+    ``reserve_date`` is the UTC date this reserve was credited under
+    (returned from ``_reserve_guild_spend``). If today's UTC date has
+    rolled past it, we DO NOT refund or reconcile — yesterday's
+    bucket is already gone, and applying the delta to today's fresh
+    bucket would either give that guild a free credit (refund) or
+    silently charge today for yesterday's call (reconcile). We just
+    log the dropped reconcile so an operator can see it in journald.
+
+    No-op for empty ``reserve_date`` or ``reserved_usd <= 0.0``
+    (uncapped guild / DM paths short-circuited the reserve).
+    """
+    if guild_id is None or reserved_usd <= 0.0 or not reserve_date:
+        return
+    cap = _GUILD_USD_CAPS.get(guild_id)
+    if cap is None:
+        return
+
+    today = _today_utc_str(now)
+    if today != reserve_date:
+        logger.warning(
+            "guild.spend.cross_midnight_dropped guild=%s reserve_date=%s today=%s "
+            "reserved_usd=%.4f outcome=%s actual_usd=%s — skipping (yesterday's "
+            "bucket is already swept; applying to today would mis-attribute)",
+            guild_id,
+            reserve_date,
+            today,
+            reserved_usd,
+            outcome,
+            f"{actual_usd:.4f}" if actual_usd is not None else "None",
+        )
+        return
+
+    async with _get_guild_lock(guild_id):
+        bucket = _sweep_guild_bucket(guild_id, today)
+        # Date-equality is already guaranteed by the today/reserve_date
+        # check above and by _sweep_guild_bucket; this final assertion
+        # catches a future refactor that pulls the check out.
+        assert bucket["utc_date"] == today  # noqa: S101
+
+        if outcome == "refund":
+            bucket["estimated_usd"] = max(0.0, bucket["estimated_usd"] - reserved_usd)
+        elif outcome == "reconcile":
+            if actual_usd is None:
+                actual_usd = 0.0
+            # Apply the signed delta (actual - reserved). max(0,…) guards
+            # against floating-point drift dipping below zero on a refund.
+            bucket["estimated_usd"] = max(
+                0.0,
+                bucket["estimated_usd"] - reserved_usd + max(0.0, actual_usd),
+            )
+        elif outcome == "keep_charged":
+            logger.warning(
+                "guild.spend.kept_charged guild=%s reserved_usd=%.4f cap_usd=%.4f utc_date=%s",
+                guild_id,
+                reserved_usd,
+                cap,
+                today,
+            )
+        else:
+            logger.error("guild.spend finalize unknown outcome=%r; keeping reserve charged", outcome)
+
+        spent = bucket["estimated_usd"]
+        logger.info(
+            "guild.spend guild=%s estimated_usd=%.4f cap_usd=%.4f utc_date=%s outcome=%s",
+            guild_id,
+            spent,
+            cap,
+            today,
+            outcome,
+        )
+        # 80% warn-once threshold. Lives inside the lock so two
+        # concurrent finalizes can't race the warn-fired set.
+        if cap > 0:
+            key = (guild_id, today)
+            if spent >= cap * _GUILD_WARN_FRACTION and key not in _GUILD_SPEND_WARN_FIRED:
+                _GUILD_SPEND_WARN_FIRED.add(key)
+                logger.warning(
+                    "guild.spend.warn guild=%s estimated_usd=%.4f cap_usd=%.4f utc_date=%s",
+                    guild_id,
+                    spent,
+                    cap,
+                    today,
+                )
+
+
+def _estimate_call_usd(prompt_tokens: int, generated_tokens: int) -> float:
+    """Convert a backend ``usage`` frame to estimated USD.
+
+    Both inputs are tiktoken counts from ``application/usage.py``'s
+    decorators. The static price table is intentionally configurable
+    via env so the operator can re-tune without a deploy when the bot's
+    resolved model changes.
+    """
+    if prompt_tokens < 0:
+        prompt_tokens = 0
+    if generated_tokens < 0:
+        generated_tokens = 0
+    return (
+        prompt_tokens * _USD_PER_PROMPT_MTOK
+        + generated_tokens * _USD_PER_COMPLETION_MTOK
+    ) / 1_000_000
+
+
+def _seconds_until_utc_midnight(now: Optional[datetime.datetime] = None) -> float:
+    """Seconds remaining until 00:00 UTC. Drives the cap-reached notice
+    ETA so the user knows when the quota resets."""
+    if now is None:
+        now = datetime.datetime.now(datetime.timezone.utc)
+    tomorrow = (now + datetime.timedelta(days=1)).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    )
+    return (tomorrow - now).total_seconds()
+
+
+def _format_cap_reset_eta(seconds: float) -> str:
+    """Render time-until-UTC-midnight as 'in about Xh Ym' / 'Ym'."""
+    if seconds < 60:
+        return "in less than a minute"
+    minutes_total = math.ceil(seconds / 60)
+    hours, minutes = divmod(minutes_total, 60)
+    if hours == 0:
+        return f"in about {minutes}m"
+    if minutes == 0:
+        return f"in about {hours}h"
+    return f"in about {hours}h {minutes}m"
+
+
+def _claim_cap_notice(channel_id: int, today: str) -> bool:
+    """Reserve a cap-reached notice slot for ``channel_id`` today.
+
+    Returns True if a notice should be sent (and records it); False if a
+    notice has already gone out for this channel today. Stale entries
+    (different ``today``) are evicted lazily so the dict can't grow
+    unbounded across long-running deploys.
+    """
+    stale = [k for k in _CAP_NOTIFIED if k[1] != today]
+    for k in stale:
+        _CAP_NOTIFIED.pop(k, None)
+    key = (channel_id, today)
+    if key in _CAP_NOTIFIED:
+        return False
+    _CAP_NOTIFIED[key] = time.monotonic()
+    return True
+
+
+async def _signal_guild_cap_reached(
+    message: "discord.Message",
+    cap_usd: float,
+    target=None,
+) -> None:
+    """User-facing signal for a cap-reached refusal.
+
+    Same UX shape as ``_signal_breaker_silenced``: at most one notice
+    per channel per UTC day. Swallows the four expected write
+    failures — if the cap-reached notice itself can't be sent, the
+    user gets nothing rather than a louder failure cascade.
+    """
+    if target is None:
+        target = message.channel
+    today = _today_utc_str()
+    if not _claim_cap_notice(target.id, today):
+        return
+    eta = _format_cap_reset_eta(_seconds_until_utc_midnight())
+    text = (
+        f"💸 This server's daily AI quota (${cap_usd:.2f}) is exhausted. "
+        f"Resets at 00:00 UTC ({eta} from now)."
+    )
+    try:
+        await target.send(text)
+    except (discord.HTTPException, discord.Forbidden, discord.NotFound, discord.RateLimited) as exc:
+        logger.info("Cap-notice send failed (swallowed): %s", exc)
 
 
 # Discord decorations to remove from quoted thread message bodies.
@@ -1187,10 +1610,16 @@ def _format_sources_footer(sources):
 async def generate_answer(question, messages, conversation_id):
     """Generates an answer using the streaming API endpoint.
 
-    Returns a dict with ``answer``, ``conversation_id``, and
-    ``sources`` (the latest ``{type: "source"}`` SSE frame's payload,
-    a list of ``{source, title, text}`` dicts with public URLs
-    already rewritten by the backend's ``_aztec_source_url``).
+    Returns a dict with ``answer``, ``conversation_id``, ``sources``
+    (the latest ``{type: "source"}`` SSE frame's payload), and
+    ``usage`` — the latest ``{type: "usage"}`` frame the backend
+    emitted (``{"prompt_tokens": N, "generated_tokens": M,
+    "model_id": str}``) or ``None`` if the backend response omitted
+    it (older deploy, error path before the LLM ran, etc.).
+
+    Also returns ``http_status`` so callers in the per-guild spend cap
+    path can distinguish a backend non-200 (known no-cost — refund the
+    reserve) from a 200 that just didn't include a usage frame.
     """
     payload = {
         "question": question,
@@ -1203,6 +1632,7 @@ async def generate_answer(question, messages, conversation_id):
     answer = ""
     new_conversation_id = conversation_id
     sources: list = []
+    usage: Optional[dict] = None
     async with aiohttp.ClientSession(timeout=timeout) as session:
         async with session.post(API_URL, json=payload, headers=headers) as resp:
             if resp.status != 200:
@@ -1210,6 +1640,8 @@ async def generate_answer(question, messages, conversation_id):
                     "answer": "Sorry, I couldn't find an answer.",
                     "conversation_id": None,
                     "sources": [],
+                    "usage": None,
+                    "http_status": resp.status,
                 }
             async for line in resp.content:
                 line = line.decode("utf-8").strip()
@@ -1231,10 +1663,21 @@ async def generate_answer(question, messages, conversation_id):
                     # than append so a re-emission can't duplicate.
                     if isinstance(incoming, list):
                         sources = incoming
+                elif event_type == "usage":
+                    prompt_tokens = event.get("prompt_tokens")
+                    generated_tokens = event.get("generated_tokens")
+                    if isinstance(prompt_tokens, int) and isinstance(generated_tokens, int):
+                        usage = {
+                            "prompt_tokens": prompt_tokens,
+                            "generated_tokens": generated_tokens,
+                            "model_id": event.get("model_id"),
+                        }
     return {
         "answer": answer or "Sorry, I couldn't find an answer.",
         "conversation_id": new_conversation_id,
         "sources": sources,
+        "usage": usage,
+        "http_status": 200,
     }
 
 
@@ -1415,6 +1858,26 @@ async def on_message(message):
         await _signal_breaker_silenced(message, eta_seconds=eta_seconds)
         return
 
+    # Per-guild daily spend cap: pre-check + reserve before any state
+    # allocation or lock acquisition (mirrors the breaker pattern). For
+    # uncapped guilds and DMs this is a no-op returning (0.0, "").
+    # For capped guilds, ``None`` means the cap has been crossed for
+    # the current UTC day — emit the cap-reached notice and bail.
+    reservation = await _reserve_guild_spend(guild_id)
+    if reservation is None:
+        cap = _GUILD_USD_CAPS.get(guild_id, 0.0)
+        logger.info(
+            "guild.spend cap reached; refusing reply guild=%s channel=%s message=%s author=%s cap_usd=%.2f",
+            guild_id,
+            message.channel.id,
+            message.id,
+            message.author.id,
+            cap,
+        )
+        await _signal_guild_cap_reached(message, cap)
+        return
+    reserved_usd, reserved_date = reservation
+
     # Decide which conversation cache backs this turn. When we're
     # already inside a thread, use a per-thread cache so the bot has
     # the thread's own discussion as context (and so its prior answers
@@ -1461,6 +1924,21 @@ async def on_message(message):
         conversation.setdefault("answer_count", 0)
         conversation.setdefault("lock", asyncio.Lock())
         lock_cm = conversation["lock"]
+
+    # Per-guild spend cap accounting. ``reserved_usd`` was charged
+    # against the guild's daily bucket before lock acquisition; the
+    # outer ``finally`` in ``_do_answer`` applies one of three outcomes:
+    #   - ``refund``: LLM definitely did not run (breaker trip,
+    #     backend non-200). Reserve credited back.
+    #   - ``reconcile``: LLM ran, usage frame received. Reserve
+    #     replaced by actual estimated_usd (signed delta applied).
+    #   - ``keep_charged`` (default): LLM may have run but we have no
+    #     usage frame to reconcile against (network error, backend
+    #     timeout, older deploy). Reserve stays charged.
+    # Set the outcome at each decision point; ``finally`` applies it.
+    # NOTE: this is a no-op (returns immediately) for ``guild_id is
+    # None`` (DMs) and for guilds without a configured cap.
+    finalize_state: dict = {"outcome": "keep_charged", "actual_usd": None}
 
     async def _do_answer() -> None:
         if in_thread and THREAD_CONTEXT_MSG_LIMIT > 0:
@@ -1528,6 +2006,10 @@ async def on_message(message):
                     )
                     if conversation["history"] and "response" not in conversation["history"][-1]:
                         conversation["history"].pop()
+                    # Bailing pre-/stream: LLM did not run. Refund the
+                    # reserve so a guild can't be quietly drained by
+                    # repeated typing-429 trips during a Discord outage.
+                    finalize_state["outcome"] = "refund"
                     await _signal_breaker_silenced(
                         message,
                         target=target,
@@ -1558,6 +2040,8 @@ async def on_message(message):
                 )
                 if conversation["history"] and "response" not in conversation["history"][-1]:
                     conversation["history"].pop()
+                # Same logic as the typing-429 path: LLM did not run.
+                finalize_state["outcome"] = "refund"
                 await _signal_breaker_silenced(message, target=target, eta_seconds=eta_seconds)
                 return
 
@@ -1585,6 +2069,12 @@ async def on_message(message):
             # Surface the canned error and roll back the queued
             # prompt, mirroring the timeout path above.
             if new_conversation_id is None:
+                # Backend returned non-200 → LLM did not run. Refund.
+                # (The aiohttp ClientError / asyncio.TimeoutError path
+                # above does NOT refund — those errors don't tell us
+                # whether the LLM call landed on the backend side, so
+                # keeping the reserve charged is the safe default.)
+                finalize_state["outcome"] = "refund"
                 await target.send(answer)
                 conversation["history"].pop()
                 return
@@ -1601,6 +2091,21 @@ async def on_message(message):
             conversation["answer_count"] += 1
             conversation["conversation_id"] = new_conversation_id
             conversation["history"][-1]["response"] = answer
+
+            # Spend cap reconcile. The backend emits a ``usage`` SSE
+            # frame between ``id`` and ``end`` on the success path
+            # (see ``_build_usage_frame`` in api/answer/routes/base.py);
+            # ``generate_answer`` surfaces it on the response dict.
+            # If the backend is on an older deploy and didn't emit
+            # the frame, we leave the reserve charged with a WARN
+            # log via ``_finalize_guild_spend(outcome="keep_charged")``
+            # — the default outcome stays in place.
+            usage = response_doc.get("usage")
+            if usage is not None:
+                finalize_state["outcome"] = "reconcile"
+                finalize_state["actual_usd"] = _estimate_call_usd(
+                    usage["prompt_tokens"], usage["generated_tokens"]
+                )
 
             formatted = format_for_discord(answer)
             answer_chunks = chunk_string(formatted)
@@ -1675,11 +2180,25 @@ async def on_message(message):
         # Keep conversation history to last 10 exchanges.
         conversation["history"] = conversation["history"][-10:]
 
-    if lock_cm is not None:
-        async with lock_cm:
+    try:
+        if lock_cm is not None:
+            async with lock_cm:
+                await _do_answer()
+        else:
             await _do_answer()
-    else:
-        await _do_answer()
+    finally:
+        # ``_finalize_guild_spend`` is a no-op for uncapped guilds / DMs
+        # so this fires unconditionally. The ``finalize_state`` dict was
+        # initialised to ``keep_charged`` and updated to ``refund`` /
+        # ``reconcile`` at the natural decision points inside
+        # ``_do_answer`` (see comment block above the closure).
+        await _finalize_guild_spend(
+            guild_id,
+            reserved_usd,
+            reserved_date,
+            outcome=finalize_state["outcome"],
+            actual_usd=finalize_state["actual_usd"],
+        )
 
 
 # Only start the gateway when this module is invoked as the entry

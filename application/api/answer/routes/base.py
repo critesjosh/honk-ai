@@ -259,6 +259,42 @@ def _iter_with_heartbeat(
             raise payload  # type: ignore[misc]
 
 
+def _build_usage_frame(agent: Any, model_id: Optional[str]) -> Optional[Dict[str, Any]]:
+    """Build the SSE ``usage`` payload from the agent's LLM tally.
+
+    The ``gen_token_usage`` / ``stream_token_usage`` decorators in
+    ``application/usage.py`` accumulate tiktoken-estimated prompt and
+    generated tokens on ``llm.token_usage`` over the lifetime of the
+    request. By the time we call this (after the streaming generator
+    has fully drained — see the ordering at the ``id`` emit sites),
+    the tally is final for the request.
+
+    Returns ``None`` when no usable LLM tally exists (e.g. a test
+    double agent without a real ``llm.token_usage``). Caller skips the
+    emit in that case so unknown-frame defensiveness in clients isn't
+    exercised on every test path.
+
+    Token counts here are estimates (``cl100k_base``), not provider-
+    reported usage. Bot-side billing layered on top of this frame
+    should over-estimate $/token to compensate for tokenizer drift
+    against non-OpenAI models like Qwen.
+    """
+    llm = getattr(agent, "llm", None)
+    token_usage = getattr(llm, "token_usage", None) if llm is not None else None
+    if not isinstance(token_usage, dict):
+        return None
+    prompt_tokens = token_usage.get("prompt_tokens")
+    generated_tokens = token_usage.get("generated_tokens")
+    if not isinstance(prompt_tokens, int) or not isinstance(generated_tokens, int):
+        return None
+    return {
+        "type": "usage",
+        "prompt_tokens": prompt_tokens,
+        "generated_tokens": generated_tokens,
+        "model_id": model_id,
+    }
+
+
 class BaseAnswerResource:
     """Shared base class for answer endpoints"""
 
@@ -701,6 +737,10 @@ class BaseAnswerResource:
                 data = json.dumps(id_data)
                 yield f"data: {data}\n\n"
 
+                usage_frame = _build_usage_frame(agent, model_id or self.default_model_id)
+                if usage_frame is not None:
+                    yield f"data: {json.dumps(usage_frame)}\n\n"
+
                 data = json.dumps({"type": "end"})
                 yield f"data: {data}\n\n"
                 return
@@ -768,6 +808,10 @@ class BaseAnswerResource:
             id_data = {"type": "id", "id": str(conversation_id)}
             data = json.dumps(id_data)
             yield f"data: {data}\n\n"
+
+            usage_frame = _build_usage_frame(agent, model_id or self.default_model_id)
+            if usage_frame is not None:
+                yield f"data: {json.dumps(usage_frame)}\n\n"
 
             tool_calls_for_logging = self._prepare_tool_calls_for_logging(
                 getattr(agent, "tool_calls", tool_calls) or tool_calls
