@@ -3,6 +3,15 @@ import { streamAnswer, type StreamSource } from "../lib/stream";
 import { MessageView, type ChatMessage } from "./Message";
 import { SigHeadline } from "./SigHeadline";
 import { Disclaimer } from "./Disclaimer";
+import {
+  buildShareUrl,
+  clearShareHash,
+  copyToClipboard,
+  decodeShare,
+  encodeShare,
+  readShareHash,
+  type ShareMessage,
+} from "../lib/share";
 
 const STARTERS = [
   "What makes Aztec different from other ZK rollups?",
@@ -21,6 +30,12 @@ export function ChatSurface() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
+  const [shareState, setShareState] = useState<"idle" | "ok" | "fail">("idle");
+  // True while the surface is showing a conversation loaded from a
+  // `#share=...` URL — used to render a small banner so the recipient
+  // knows what they're looking at. Cleared on `reset()` or after the
+  // user submits a new question (their thread, their show).
+  const [viewingShared, setViewingShared] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const taRef = useRef<HTMLTextAreaElement>(null);
   const abortRef = useRef<AbortController | null>(null);
@@ -29,6 +44,40 @@ export function ChatSurface() {
   // scroll up, and back to true when they scroll back down. Default is
   // true so the very first answer streams into view.
   const stickyRef = useRef<boolean>(true);
+  // Flipped as soon as the user does anything local (sends, resets,
+  // edits the textarea). A slow `decodeShare` promise resolving later
+  // would otherwise clobber whatever they've started typing or asked.
+  const userInteractedRef = useRef<boolean>(false);
+
+  // On first mount, replay a shared conversation if the URL hash carries
+  // one. Decoding is async (uses DecompressionStream), so we set state
+  // when it resolves; a malformed/oversize hash silently drops back to
+  // the empty-state surface.
+  useEffect(() => {
+    const token = readShareHash();
+    if (!token) return;
+    let cancelled = false;
+    decodeShare(token).then((shared) => {
+      if (cancelled || userInteractedRef.current) return;
+      if (!shared || shared.length === 0) return;
+      const replayed: ChatMessage[] = shared.map((m: ShareMessage, i) =>
+        m.role === "user"
+          ? { id: i, role: "user", text: m.text }
+          : {
+              id: i,
+              role: "bot",
+              text: m.text,
+              sources: m.sources ?? [],
+              streaming: false,
+            },
+      );
+      setMessages(replayed);
+      setViewingShared(true);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const onScroll = useCallback(() => {
     const el = scrollRef.current;
@@ -65,8 +114,17 @@ export function ChatSurface() {
     (override?: string) => {
       const q = (override ?? input).trim();
       if (!q || busy) return;
+      userInteractedRef.current = true;
       setInput("");
       setBusy(true);
+      // Once the recipient continues the conversation it's no longer
+      // "the shared view"; drop the banner + scrub the hash so an
+      // accidental refresh doesn't reload the old transcript over the
+      // new one.
+      if (viewingShared) {
+        setViewingShared(false);
+        clearShareHash();
+      }
       // The reader just submitted — show their message + the streaming
       // answer regardless of where they were scrolled, then follow the
       // stream from there.
@@ -156,13 +214,84 @@ export function ChatSurface() {
   };
 
   const reset = () => {
+    userInteractedRef.current = true;
     abortRef.current?.abort();
     abortRef.current = null;
     setMessages([]);
     setBusy(false);
+    if (viewingShared) {
+      setViewingShared(false);
+      clearShareHash();
+    }
   };
 
+  // Build a shareable URL with the current conversation encoded into the
+  // hash and copy it to the clipboard. The encoded blob never leaves the
+  // browser; the recipient's browser decompresses it locally.
+  //
+  // We only serialize complete user+bot pairs. If the latest bot reply is
+  // still streaming or errored, dropping just the dangling bot would
+  // leave a question with no answer for the recipient — so we drop the
+  // trailing user turn too. The Share button is also hidden while
+  // `busy`, but a settle could happen between predicate and click.
+  const onShare = useCallback(async () => {
+    const shareable: ShareMessage[] = [];
+    for (let i = 0; i < messages.length; i++) {
+      const m = messages[i];
+      if (m.role === "user") {
+        const next = messages[i + 1];
+        if (
+          next &&
+          next.role === "bot" &&
+          !next.streaming &&
+          !next.error &&
+          next.text.length > 0
+        ) {
+          shareable.push({ role: "user", text: m.text });
+          shareable.push({ role: "bot", text: next.text, sources: next.sources });
+          i++;
+        }
+      }
+    }
+    if (shareable.length === 0) return;
+    try {
+      const token = await encodeShare(shareable);
+      const url = buildShareUrl(token);
+      let copied = await copyToClipboard(url);
+      if (!copied) {
+        // Last resort — surface the URL through a prompt so the user
+        // can still grab it on browsers without clipboard permission.
+        // `window.prompt` returns null when the user cancels — don't
+        // report that as a successful copy.
+        const result = window.prompt("Copy this share link:", url);
+        copied = result !== null;
+      }
+      setShareState(copied ? "ok" : "fail");
+    } catch {
+      setShareState("fail");
+    }
+    window.setTimeout(() => setShareState("idle"), 2200);
+  }, [messages]);
+
   const hasMessages = messages.length > 0;
+  // Hidden while a stream is in flight — otherwise a click during a
+  // follow-up's stream would serialize the dangling user turn (because
+  // its bot reply is still `streaming`). Predicate matches `onShare`'s
+  // pair-only filter: at least one complete user→bot adjacency.
+  const canShare =
+    !busy &&
+    messages.some((m, i) => {
+      const next = messages[i + 1];
+      return (
+        m.role === "user" &&
+        next?.role === "bot" &&
+        !next.streaming &&
+        !next.error &&
+        next.text.length > 0
+      );
+    });
+  const shareLabel =
+    shareState === "ok" ? "Link copied" : shareState === "fail" ? "Share failed" : "Share";
 
   return (
     <section className={"ask-chat" + (hasMessages ? " ask-chat--active" : "")}>
@@ -174,6 +303,19 @@ export function ChatSurface() {
           <span className="dot"></span> RAG · Online
         </span>
         <span className="ask-chat__head-actions">
+          {canShare && (
+            <button
+              onClick={onShare}
+              title="Copy a shareable link to this conversation"
+              aria-label="Copy share link"
+              className={
+                "ask-chat__head-share" +
+                (shareState === "ok" ? " is-ok" : shareState === "fail" ? " is-fail" : "")
+              }
+            >
+              {shareLabel}
+            </button>
+          )}
           {hasMessages && (
             <button onClick={reset} title="New conversation" aria-label="Reset">
               ↺
@@ -181,6 +323,14 @@ export function ChatSurface() {
           )}
         </span>
       </header>
+      {viewingShared && (
+        <div className="ask-chat__shared-banner" role="status">
+          <span>Viewing a shared conversation.</span>
+          <button type="button" onClick={reset} className="ask-chat__shared-banner-cta">
+            Start a new one
+          </button>
+        </div>
+      )}
 
       {!hasMessages && (
         <div className="ask-chat__empty">

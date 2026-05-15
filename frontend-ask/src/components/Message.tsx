@@ -1,8 +1,10 @@
+import { useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Highlight, themes } from "prism-react-renderer";
 import { SourcesList } from "./SourcesList";
 import type { StreamSource } from "../lib/stream";
+import { copyToClipboard } from "../lib/share";
 
 // Languages the LLM emits as `noir` / `nr` should render with Rust
 // highlighting since Noir's syntax is Rust-derived and Prism doesn't
@@ -60,10 +62,16 @@ export function MessageView({ msg }: { msg: ChatMessage }) {
     );
   }
 
+  const canCopy = !msg.streaming && !msg.error && msg.text.length > 0;
   return (
     <div className="msg msg--bot">
       <div className="msg__role">
         <span className="dot"></span>Ask Aztec
+        {canCopy && (
+          <span className="msg__role-actions">
+            <CopyMarkdownButton text={msg.text} />
+          </span>
+        )}
       </div>
       <div className="msg__body">
         {msg.streaming && !msg.text && !msg.error ? (
@@ -85,6 +93,32 @@ export function MessageView({ msg }: { msg: ChatMessage }) {
         )}
       </div>
     </div>
+  );
+}
+
+// Copies the raw markdown text of the bot reply to the clipboard.
+// Markdown-formatted text is what the user asked for — copying the
+// rendered DOM would strip backticks/headers/lists. Clipboard fallback
+// behavior lives in `copyToClipboard` (share.ts) and is shared with
+// the share-link button so both surfaces behave identically.
+function CopyMarkdownButton({ text }: { text: string }) {
+  const [state, setState] = useState<"idle" | "ok" | "fail">("idle");
+  const onClick = async () => {
+    const ok = await copyToClipboard(text);
+    setState(ok ? "ok" : "fail");
+    window.setTimeout(() => setState("idle"), 1800);
+  };
+  const label = state === "ok" ? "Copied" : state === "fail" ? "Copy failed" : "Copy";
+  return (
+    <button
+      type="button"
+      className={"msg__copy" + (state === "ok" ? " is-ok" : state === "fail" ? " is-fail" : "")}
+      onClick={onClick}
+      aria-label="Copy raw markdown of the response"
+      title="Copy raw markdown (preserves formatting)"
+    >
+      {label}
+    </button>
   );
 }
 

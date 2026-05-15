@@ -279,6 +279,53 @@ body {
 }
 .ask-chat__head-actions button:hover { background: var(--parchment-shade-1); color: var(--parchment); }
 
+/* "Share" carries a text label, so override the square 28x28 sizing
+   from .ask-chat__head-actions button above. Still mono/uppercase to
+   match the rest of the chat-head chrome. */
+.ask-chat__head-actions button.ask-chat__head-share {
+  width: auto;
+  padding: 0 10px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+.ask-chat__head-actions button.ask-chat__head-share.is-ok {
+  background: var(--chartreuse-tint-2);
+  color: var(--ink);
+}
+.ask-chat__head-actions button.ask-chat__head-share.is-fail {
+  background: var(--vermillion-tint-2, var(--parchment-tint-1));
+  color: var(--ink);
+}
+
+/* Banner shown when the surface is replaying a `#share=...` URL so
+   the recipient knows what they're looking at and how to start fresh. */
+.ask-chat__shared-banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 20px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--fg2);
+  background: var(--chartreuse-tint-2);
+  border-bottom: 1px solid var(--ink);
+}
+.ask-chat__shared-banner-cta {
+  font: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  color: var(--ink);
+  background: transparent;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+  text-decoration: underline;
+}
+
 /* ---------- Empty state ---------- */
 .ask-chat__empty {
   padding: 36px 28px 0;
@@ -382,6 +429,39 @@ body {
   width: 5px; height: 5px; border-radius: 999px; background: var(--ink);
 }
 .msg--bot .msg__role .dot { background: var(--chartreuse-shade-1); }
+
+.msg__role-actions {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.msg__copy {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  padding: 2px 8px;
+  background: transparent;
+  border: 1px solid var(--ink-tint-1);
+  color: var(--fg2);
+  cursor: pointer;
+  line-height: 1.4;
+}
+.msg__copy:hover {
+  background: var(--ink);
+  color: var(--parchment);
+  border-color: var(--ink);
+}
+.msg__copy.is-ok {
+  background: var(--chartreuse-tint-2);
+  color: var(--ink);
+  border-color: var(--ink);
+}
+.msg__copy.is-fail {
+  color: var(--vermillion-shade-1, var(--ink));
+  border-color: var(--vermillion-shade-1, var(--ink-tint-1));
+}
 
 .msg__body {
   font-family: var(--font-sans);
