@@ -44,12 +44,13 @@ export function ChatSurface() {
     if (el) el.scrollTop = el.scrollHeight;
   }, [messages]);
 
-  // Auto-grow textarea up to a sensible cap.
+  // Auto-grow textarea to fit content. CSS `max-height` caps it at 10 lines;
+  // past that, overflow-y kicks in and the user scrolls through their message.
   useEffect(() => {
     const ta = taRef.current;
     if (!ta) return;
     ta.style.height = "auto";
-    ta.style.height = Math.min(200, ta.scrollHeight) + "px";
+    ta.style.height = ta.scrollHeight + "px";
   }, [input]);
 
   // Cancel any in-flight stream on unmount.

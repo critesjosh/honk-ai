@@ -604,6 +604,7 @@ body {
 }
 .ask-chat__input textarea {
   flex: 1;
+  min-width: 0;
   border: 0;
   outline: 0;
   resize: none;
@@ -615,7 +616,11 @@ body {
   letter-spacing: -0.01em;
   color: var(--fg1);
   padding: 6px 4px;
-  max-height: 200px;
+  box-sizing: border-box;
+  /* Grow up to 10 lines (10 × 1.5em line-height + 12px vertical padding), then scroll. */
+  max-height: calc(10 * 1.5em + 12px);
+  overflow-y: auto;
+  overflow-wrap: anywhere;
 }
 .ask-chat__input textarea::placeholder { color: var(--ink-tint-2); }
 .ask-chat__input-meta {
