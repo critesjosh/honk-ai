@@ -136,6 +136,19 @@ services:
       - MCP_PROVISIONING_KEY=${MCP_PROVISIONING_KEY}
       - NOIR_GUILD_IDS=${NOIR_GUILD_IDS:-}
       - NOIR_GUILD_ID=${NOIR_GUILD_ID:-0}
+      # Per-guild daily USD spend cap (PR #133). bot.py reads these via
+      # os.getenv — compose must pass them through explicitly or the
+      # cap silently no-ops. All have sensible defaults in code so
+      # leaving them unset in .env is safe.
+      - DISCORD_GUILD_DAILY_USD_CAPS=${DISCORD_GUILD_DAILY_USD_CAPS:-}
+      - DISCORD_USD_PER_PROMPT_MTOK=${DISCORD_USD_PER_PROMPT_MTOK:-}
+      - DISCORD_USD_PER_COMPLETION_MTOK=${DISCORD_USD_PER_COMPLETION_MTOK:-}
+      - DISCORD_PRE_CALL_RESERVE_USD=${DISCORD_PRE_CALL_RESERVE_USD:-}
+      # Thread-context + rate-limit knobs (existing bot.py settings
+      # that were previously un-tunable without a compose edit).
+      - DISCORD_THREAD_CONTEXT_LIMIT=${DISCORD_THREAD_CONTEXT_LIMIT:-}
+      - DISCORD_THREAD_CONTEXT_MAX_CHARS=${DISCORD_THREAD_CONTEXT_MAX_CHARS:-}
+      - DISCORD_SHARED_429_COOLDOWN_SECONDS=${DISCORD_SHARED_429_COOLDOWN_SECONDS:-}
     depends_on:
       - backend
 
