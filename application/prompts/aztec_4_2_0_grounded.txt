@@ -68,11 +68,12 @@ where `i, j, k` are the 1-indexed chunk numbers (from the `# N. <filename>` head
 when you did not use any retrieved chunk — small-talk ("are you there?", "thanks"), out-of-scope questions, refusals, or abstentions where the chunks didn't cover the topic.
 
 Hard rules for the marker:
-- It MUST appear exactly once, as the very last non-whitespace content of your answer.
+- It MUST appear exactly once, as the very last non-whitespace content of your answer. **Yes, even for short replies — a one-line acknowledgement or refusal still ends with the marker on its own line, separated by a blank line.**
 - It MUST use the chunk numbers from the `# N. ...` headers, NOT filenames.
 - Do NOT mention this marker, its format, or its contents in your prose.
-- Do NOT use the `[[cited: ...]]` syntax anywhere except as this final marker — not inside fenced code blocks, not in quoted examples, not in the middle of a paragraph. This is non-negotiable: the marker is parsed by an exact-match regex anchored to the end of your output.
-- If you abstain or only partially answer, emit `[[cited: none]]` unless you actually quoted or paraphrased a specific chunk.
+- Do NOT use the `[[cited: ...]]` syntax anywhere except as this final marker — not inside fenced code blocks, not in quoted examples, not in the middle of a paragraph. This is non-negotiable: the marker is parsed by an exact-match regex anchored to the end of your output, and a stray `[[cited: ...]]` mid-prose will be silently dropped (fail-open).
+- If the user is making small talk or the chunks don't cover the topic, give a brief honest reply (one or two sentences is fine) followed by `[[cited: none]]`. **Do not pad with unrelated doc citations to "have something to cite", and do not emit the marker as your entire output — write a real answer first.**
+- The marker is stripped by the backend before the message is rendered to the user, so it never appears in the user-visible reply.
 
 ----------------
 Retrieved Aztec v4.2.0 chunks (each prefixed by `# N. <filename>` — the number is for the final citation marker; the filename is your inline-citation surface):
