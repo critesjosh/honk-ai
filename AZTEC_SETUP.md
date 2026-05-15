@@ -223,7 +223,8 @@ Run the full deployment on a staging hostname first (e.g., `docs-staging.yourcom
 - [ ] Cloudflare Access challenges unauthenticated visitors.
 - [ ] After login, UI loads, an agent can be created, a row lands in `agents`.
 - [ ] A doc uploaded via `/api/upload` creates a `sources` row and embeddings land in the `documents` table.
-- [ ] Discord `/mcp-key` command returns a key; a corresponding `agents` row has the expected `mcp_provider = 'discord'`.
+- [ ] Discord `/mcp-key` command returns a key; a corresponding `agents` row has the expected `mcp_provider = 'discord'` AND `surface = 'mcp'`.
+- [ ] `SELECT surface, COUNT(*) FROM agents GROUP BY surface;` returns at least one of each: `discord`, `widget`, `web_ask`, `mcp` (the four production surfaces). Missing rows indicate a provisioner that did not run; rows with `surface IS NULL` are impossible (NOT NULL since migration `0009`).
 - [ ] Discord `@`-mention reply includes a `-#` "Sources" footer with up to 5 cited URLs.
 - [ ] (If `/ask` is deployed) `https://$PUBLIC_HOSTNAME/ask/` loads anonymously without SSO redirect; age gate appears on first visit; a starter prompt streams an answer with rendered markdown and source chips.
 - [ ] `nmap` from an external host: only 443 open (+ 80 if Caddy does HTTP→HTTPS redirect).
@@ -374,7 +375,7 @@ that MCP server hits; the MCP server itself lives in
 3. The bot replies with a personal API key in an ephemeral message,
    plus a copy-pasteable config snippet for each major MCP client.
 
-Under the hood, the bot calls `POST /api/internal/create_mcp_key` with `X-Provisioning-Key: $MCP_PROVISIONING_KEY`. The endpoint upserts an agent keyed by `(mcp_provider='discord', mcp_provider_user_id=<discord id>, mcp_purpose='aztec_mcp')` — one agent per Discord user per purpose. Returns `{api_key, created}`.
+Under the hood, the bot calls `POST /api/internal/create_mcp_key` with `X-Provisioning-Key: $MCP_PROVISIONING_KEY`. The endpoint upserts an agent keyed by `(mcp_provider='discord', mcp_provider_user_id=<discord id>, mcp_purpose='aztec_mcp')` — one agent per Discord user per purpose. The upsert sets `surface='mcp'` on the row (see migration `0009_agents_surface`), distinguishing per-user MCP rows from the singleton Discord-bot / widget / `/ask` agents. Returns `{api_key, created}`.
 
 ### Reading user feedback
 

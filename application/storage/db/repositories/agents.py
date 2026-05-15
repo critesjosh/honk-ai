@@ -32,8 +32,17 @@ class AgentsRepository:
             return None
         return val
 
-    def create(self, user_id: str, name: str, status: str, **kwargs) -> dict:
-        values: dict = {"user_id": user_id, "name": name, "status": status}
+    def create(self, user_id: str, name: str, status: str, *, surface: str, **kwargs) -> dict:
+        # ``surface`` is required (NOT NULL in the schema and CHECK-
+        # constrained to a fixed enum — see migration 0009). Keyword-only
+        # so it can never be confused with ``status`` or quietly swallowed
+        # by ``**kwargs``; callers must spell it out.
+        values: dict = {
+            "user_id": user_id,
+            "name": name,
+            "status": status,
+            "surface": surface,
+        }
 
         _ALLOWED = {
             "description", "agent_type", "key", "retriever",
@@ -130,6 +139,7 @@ class AgentsRepository:
         key: str,
         source_id: Optional[str],
         extra_source_ids: list[str],
+        surface: str = "mcp",
         chunks: int = 2,
         retriever: str = "classic",
         agent_type: str = "classic",
@@ -170,6 +180,7 @@ class AgentsRepository:
             "mcp_provider": mcp_provider,
             "mcp_provider_user_id": mcp_provider_user_id,
             "mcp_purpose": mcp_purpose,
+            "surface": surface,
         }
         if source_id is not None:
             values["source_id"] = str(source_id)
@@ -185,6 +196,7 @@ class AgentsRepository:
                 "extra_source_ids": stmt.excluded.extra_source_ids,
                 "chunks": stmt.excluded.chunks,
                 "retriever": stmt.excluded.retriever,
+                "surface": stmt.excluded.surface,
                 "updated_at": func.now(),
             },
         ).returning(agents_table)

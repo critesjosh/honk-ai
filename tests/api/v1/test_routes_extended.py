@@ -195,7 +195,7 @@ class TestLookupAgentHappy:
         from application.api.v1.routes import _lookup_agent
         from application.storage.db.repositories.agents import AgentsRepository
 
-        AgentsRepository(pg_conn).create("u1", "Test", "published", key="k-ok")
+        AgentsRepository(pg_conn).create("u1", "Test", "published", surface="web_ask", key="k-ok")
 
         with _patch_v1_db(pg_conn):
             got = _lookup_agent("k-ok")
@@ -238,8 +238,8 @@ class TestListModelsPgConn:
 
         app = _build_app()
         repo = AgentsRepository(pg_conn)
-        repo.create("u-m", "A1", "published", key="models-key")
-        repo.create("u-m", "A2", "published", key="models-key-2")
+        repo.create("u-m", "A1", "published", surface="web_ask", key="models-key")
+        repo.create("u-m", "A2", "published", surface="web_ask", key="models-key-2")
 
         with _patch_v1_db(pg_conn):
             with app.test_client() as c:

@@ -209,6 +209,7 @@ agents_table = Table(
     Column("mcp_provider", Text),
     Column("mcp_provider_user_id", Text),
     Column("mcp_purpose", Text),
+    Column("surface", Text, nullable=False),
 )
 
 attachments_table = Table(

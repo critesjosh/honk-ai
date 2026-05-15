@@ -107,12 +107,12 @@ def main() -> int:
                     " default_model_id, tools,"
                     " limited_request_mode, request_limit,"
                     " limited_token_mode, token_limit,"
-                    " allow_system_prompt_override"
+                    " allow_system_prompt_override, surface"
                     ") VALUES ("
                     " :uid, :name, :desc, 'classic', 'published', :key,"
                     " CAST(:src AS uuid), CAST(:extras AS uuid[]), :chunks,"
                     " 'classic', CAST(:pid AS uuid), :model, '[]'::jsonb,"
-                    " true, :rl, true, :tl, false"
+                    " true, :rl, true, :tl, false, 'web_ask'"
                     ") RETURNING id"
                 ),
                 {
@@ -148,6 +148,7 @@ def main() -> int:
                 " limited_request_mode = true, request_limit = :rl,"
                 " limited_token_mode = true, token_limit = :tl,"
                 " allow_system_prompt_override = false,"
+                " surface = 'web_ask',"
                 " updated_at = now()"
                 " WHERE id = :id"
             ),

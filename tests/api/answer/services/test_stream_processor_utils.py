@@ -329,7 +329,8 @@ class TestGetAgentKey:
         from application.storage.db.repositories.agents import AgentsRepository
 
         agent = AgentsRepository(pg_conn).create(
-            "owner", "a", "published", key="the-key",
+            "owner", "a", "published",
+            surface="web_ask", key="the-key",
         )
         sp = StreamProcessor({}, {"sub": "owner"})
         with _patch_db(pg_conn):
@@ -344,7 +345,8 @@ class TestGetAgentKey:
         from application.storage.db.repositories.agents import AgentsRepository
 
         agent = AgentsRepository(pg_conn).create(
-            "owner", "a", "published", key="k", shared=False,
+            "owner", "a", "published",
+            surface="web_ask", key="k", shared=False,
         )
         sp = StreamProcessor({}, {"sub": "not-owner"})
         with _patch_db(pg_conn), pytest.raises(Exception):

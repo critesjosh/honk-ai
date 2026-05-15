@@ -49,6 +49,7 @@ class TestToolExecutorGetTools:
             user_id="alice",
             name="a",
             status="active",
+            surface="web_ask",
             key="test_key",
             tools=[str(tool["id"])],
         )

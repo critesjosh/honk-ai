@@ -508,7 +508,8 @@ class TestSearchResourcePgConn:
         from application.storage.db.repositories.agents import AgentsRepository
 
         AgentsRepository(pg_conn).create(
-            "u", "a", "published", key="no-src-key",
+            "u", "a", "published",
+            surface="web_ask", key="no-src-key",
         )
         with _patch_search_db(pg_conn), flask_app.app_context():
             with flask_app.test_request_context(
@@ -526,6 +527,7 @@ class TestSearchResourcePgConn:
         src = SourcesRepository(pg_conn).create("src", user_id="u")
         AgentsRepository(pg_conn).create(
             "u", "a", "published",
+            surface="web_ask",
             key="search-key",
             source_id=str(src["id"]),
         )
@@ -559,6 +561,7 @@ class TestSearchResourcePgConn:
         src2 = SourcesRepository(pg_conn).create("s2", user_id="u")
         AgentsRepository(pg_conn).create(
             "u", "a", "published",
+            surface="web_ask",
             key="extra-key",
             extra_source_ids=[str(src1["id"]), str(src2["id"])],
         )
@@ -590,6 +593,7 @@ class TestSearchResourcePgConn:
         src = SourcesRepository(pg_conn).create("src", user_id="u")
         AgentsRepository(pg_conn).create(
             "u", "a", "published",
+            surface="web_ask",
             key="err-key",
             source_id=str(src["id"]),
         )
@@ -621,6 +625,7 @@ class TestGetSourcesFromApiKeyPg:
         src = SourcesRepository(pg_conn).create("s", user_id="u")
         AgentsRepository(pg_conn).create(
             "u", "a", "published",
+            surface="web_ask",
             key="sources-key",
             extra_source_ids=[str(src["id"])],
         )
@@ -636,6 +641,7 @@ class TestGetSourcesFromApiKeyPg:
         src = SourcesRepository(pg_conn).create("s", user_id="u")
         AgentsRepository(pg_conn).create(
             "u", "a", "published",
+            surface="web_ask",
             key="single-key",
             source_id=str(src["id"]),
         )
@@ -661,6 +667,7 @@ class TestGetSourcesFromApiKeyPg:
         extra2 = SourcesRepository(pg_conn).create("e2", user_id="u")
         AgentsRepository(pg_conn).create(
             "u", "a", "published",
+            surface="web_ask",
             key="combined-key",
             source_id=str(primary["id"]),
             extra_source_ids=[str(extra1["id"]), str(extra2["id"])],
@@ -681,6 +688,7 @@ class TestGetSourcesFromApiKeyPg:
         primary = SourcesRepository(pg_conn).create("primary", user_id="u")
         AgentsRepository(pg_conn).create(
             "u", "a", "published",
+            surface="web_ask",
             key="dup-key",
             source_id=str(primary["id"]),
             extra_source_ids=[str(primary["id"])],
@@ -744,6 +752,7 @@ class TestSearchUserLogs:
         src = SourcesRepository(pg_conn).create("src", user_id="discord_p_v1:abc")
         agent = AgentsRepository(pg_conn).create(
             "discord_p_v1:abc", "Aztec MCP", "published",
+            surface="web_ask",
             key="log-success-key",
             source_id=str(src["id"]),
         )
@@ -803,6 +812,7 @@ class TestSearchUserLogs:
         src = SourcesRepository(pg_conn).create("src", user_id="u-leak")
         AgentsRepository(pg_conn).create(
             "u-leak", "Aztec MCP", "published",
+            surface="web_ask",
             key="should-not-be-in-row",
             source_id=str(src["id"]),
         )
@@ -852,6 +862,7 @@ class TestSearchUserLogs:
         bearer = "echo-bearer-key-xyz123"
         AgentsRepository(pg_conn).create(
             "u-echo", "Aztec MCP", "published",
+            surface="web_ask",
             key=bearer,
             source_id=str(src["id"]),
         )
@@ -915,6 +926,7 @@ class TestSearchUserLogs:
         src = SourcesRepository(pg_conn).create("src", user_id="u-typed")
         AgentsRepository(pg_conn).create(
             "u-typed", "Aztec MCP", "published",
+            surface="web_ask",
             key="typed-key",
             source_id=str(src["id"]),
         )
@@ -947,6 +959,7 @@ class TestSearchUserLogs:
 
         AgentsRepository(pg_conn).create(
             "discord_p_v1:def", "Aztec MCP", "published",
+            surface="web_ask",
             key="log-empty-key",
         )
 
@@ -1009,6 +1022,7 @@ class TestSearchUserLogs:
         src = SourcesRepository(pg_conn).create("src", user_id="u-err")
         AgentsRepository(pg_conn).create(
             "u-err", "a", "published",
+            surface="web_ask",
             key="log-err-key",
             source_id=str(src["id"]),
         )
@@ -1038,6 +1052,7 @@ class TestSearchUserLogs:
         src = SourcesRepository(pg_conn).create("src", user_id="u-swallow")
         AgentsRepository(pg_conn).create(
             "u-swallow", "a", "published",
+            surface="web_ask",
             key="log-swallow-key",
             source_id=str(src["id"]),
         )

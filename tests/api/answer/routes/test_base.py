@@ -569,7 +569,8 @@ class TestCheckUsagePgConn:
         from application.storage.db.repositories.agents import AgentsRepository
 
         AgentsRepository(pg_conn).create(
-            "owner", "a", "published", key="k1",
+            "owner", "a", "published",
+            surface="web_ask", key="k1",
             limited_token_mode=False, limited_request_mode=False,
         )
         with _patch_base_db(pg_conn), flask_app.app_context():
@@ -582,7 +583,8 @@ class TestCheckUsagePgConn:
         from application.storage.db.repositories.agents import AgentsRepository
 
         AgentsRepository(pg_conn).create(
-            "owner", "a", "published", key="k2",
+            "owner", "a", "published",
+            surface="web_ask", key="k2",
             limited_token_mode=True, token_limit=10000,
         )
         with _patch_base_db(pg_conn), flask_app.app_context():
@@ -598,7 +600,8 @@ class TestCheckUsagePgConn:
         )
 
         AgentsRepository(pg_conn).create(
-            "owner", "a", "published", key="k3",
+            "owner", "a", "published",
+            surface="web_ask", key="k3",
             limited_token_mode=True, token_limit=100,
         )
         # Seed token usage exceeding the limit
@@ -620,7 +623,8 @@ class TestCheckUsagePgConn:
         )
 
         AgentsRepository(pg_conn).create(
-            "owner", "a", "published", key="k4",
+            "owner", "a", "published",
+            surface="web_ask", key="k4",
             limited_request_mode=True, request_limit=1,
         )
         # Two request entries exceed limit=1
@@ -643,7 +647,8 @@ class TestCheckUsagePgConn:
         # string 'True' by mutating the row directly.
         from sqlalchemy import text
         AgentsRepository(pg_conn).create(
-            "owner", "a", "published", key="k5",
+            "owner", "a", "published",
+            surface="web_ask", key="k5",
         )
         pg_conn.execute(
             text(

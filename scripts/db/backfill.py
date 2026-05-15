@@ -1017,6 +1017,33 @@ def _rename_faiss_indexes(
     return stats
 
 
+_AGENT_SURFACE_BY_NAME_USER: dict[tuple[str, str], str] = {
+    ("Aztec 4.2.0", "local"): "discord",
+    ("docs.aztec.network", "local"): "widget",
+    ("Ask Aztec — public web", "public-web"): "web_ask",
+}
+
+
+def _derive_agent_surface(doc: dict[str, Any], user_id: str) -> str | None:
+    """Map a Mongo agent doc to the ``agents.surface`` enum.
+
+    Mirrors the CASE in migration ``0009_agents_surface``. Returns
+    ``None`` if no rule matches — the caller should skip the row rather
+    than INSERT with a sentinel, since this fork's surface taxonomy is
+    intentionally narrow (Discord / widget / public-web / MCP / eval)
+    and upstream-shaped user-created agents do not belong in our PG.
+    """
+    if doc.get("mcp_provider"):
+        return "mcp"
+    name = doc.get("name", "")
+    by_pair = _AGENT_SURFACE_BY_NAME_USER.get((name, user_id))
+    if by_pair is not None:
+        return by_pair
+    if user_id == "eval-variant":
+        return "eval"
+    return None
+
+
 def _backfill_agents(
     *, conn: Connection, mongo_db: Any, batch_size: int, dry_run: bool,
 ) -> dict:
@@ -1038,7 +1065,7 @@ def _backfill_agents(
             shared, shared_token, shared_metadata,
             incoming_webhook_token,
             created_at, updated_at, last_used_at,
-            legacy_mongo_id
+            legacy_mongo_id, surface
         ) VALUES (
             :user_id, :name, :status, :key, :image, :description, :agent_type,
             CAST(:source_id AS uuid), CAST(:extra_source_ids AS uuid[]),
@@ -1052,7 +1079,7 @@ def _backfill_agents(
             COALESCE(:created_at, now()),
             COALESCE(:updated_at, now()),
             :last_used_at,
-            :legacy_mongo_id
+            :legacy_mongo_id, :surface
         )
         ON CONFLICT (legacy_mongo_id) WHERE legacy_mongo_id IS NOT NULL
         DO UPDATE SET
@@ -1081,7 +1108,8 @@ def _backfill_agents(
             shared_token = EXCLUDED.shared_token,
             shared_metadata = EXCLUDED.shared_metadata,
             updated_at = EXCLUDED.updated_at,
-            last_used_at = EXCLUDED.last_used_at
+            last_used_at = EXCLUDED.last_used_at,
+            surface = EXCLUDED.surface
         """
     )
     cursor = mongo_db["agents"].find({}, no_cursor_timeout=True).batch_size(batch_size)
@@ -1110,6 +1138,22 @@ def _backfill_agents(
             workflow_pg = (
                 workflows_id_map.get(str(workflow_oid)) if workflow_oid else None
             )
+
+            surface = _derive_agent_surface(doc, user_id)
+            if surface is None:
+                # Legacy / upstream-shaped agent that does not fit this
+                # fork's surface taxonomy. Skip rather than INSERT with a
+                # sentinel — the CHECK constraint on agents.surface would
+                # reject anything outside the enum anyway.
+                logger.warning(
+                    "backfill_agents: skipping agent %s (user_id=%r name=%r) — "
+                    "no surface taxonomy match",
+                    doc.get("_id"),
+                    user_id,
+                    doc.get("name"),
+                )
+                skipped += 1
+                continue
 
             batch.append({
                 "user_id": user_id,
@@ -1157,6 +1201,7 @@ def _backfill_agents(
                 "updated_at": doc.get("updatedAt") or doc.get("updated_at"),
                 "last_used_at": doc.get("lastUsedAt") or doc.get("last_used_at"),
                 "legacy_mongo_id": str(doc["_id"]),
+                "surface": surface,
             })
             if len(batch) >= batch_size:
                 if not dry_run:

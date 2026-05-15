@@ -52,13 +52,23 @@ removed. See [`CLAUDE.md`](./CLAUDE.md) for the architectural diff and
   `0005_pseudonymize_user_ids`) — Discord user IDs are HMAC-SHA256'd with a
   server-side `USER_ID_PEPPER` before being stored. `user_id` columns hold
   `discord_p_v1:<32hex>`; `agents.mcp_provider_user_id` holds the bare
-  32-char hex; `agents.name` is the constant `"Aztec MCP"` (Discord
-  display names never reach the DB). `USER_ID_PEPPER` is **required at
-  boot and unrotatable** — generate once via `openssl rand -hex 32` and
-  treat as you would `ENCRYPTION_SECRET_KEY`. `/api/internal/forget_discord_user`
+  32-char hex; `agents.name` is the constant `"Aztec MCP"` for Discord-bound
+  MCP rows (Discord display names never reach the DB).
+  `USER_ID_PEPPER` is **required at boot and unrotatable** — generate once
+  via `openssl rand -hex 32` and treat as you would
+  `ENCRYPTION_SECRET_KEY`. `/api/internal/forget_discord_user`
   + the Discord `/forget-me` slash command satisfy GDPR right-to-erasure
   by computing the same pseudonym and deleting all matching rows.
   Post-deploy verification: `scripts/db/verify_pseudonymization.sql`.
+- **`agents.surface` taxonomy** (migration `0009_agents_surface`) — explicit
+  surface-attribution column, NOT NULL, CHECK-constrained to
+  `('discord','widget','web_ask','mcp','eval')`. `agents.name` is a display
+  label; `agents.surface` is the structural axis for per-surface
+  analytics, dashboards, and rate limits. Three of the four prod agent
+  names do NOT match their deployment surface (`Aztec 4.2.0` is the
+  Discord bot, `docs.aztec.network` is the widget only by coincidence) —
+  join reports on `surface`, not `name`. See `CLAUDE.md` for the full
+  mapping table.
 - **Discord bot** (`extensions/discord/`) — containerized and bundled into
   the production compose. Implements the `/mcp-key` slash command and
   chat passthrough triggered by @-mention, inline reply to a previous bot

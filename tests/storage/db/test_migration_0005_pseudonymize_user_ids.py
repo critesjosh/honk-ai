@@ -87,22 +87,53 @@ def _seed_discord_user(
     # agents — Discord MCP agent with the raw ID in mcp_provider_user_id
     # and a username embedded in name so we can verify both got
     # scrubbed.
-    agent_id = conn.execute(
+    #
+    # ``surface`` is only present once migration ``0009_agents_surface``
+    # has run. ``test_alembic_upgrade_through_0005_runs`` seeds rows at
+    # alembic revision 0004 (before this column exists), so we
+    # introspect ``information_schema`` and emit the matching INSERT
+    # shape. All other callers run with alembic at HEAD and get the
+    # ``surface='mcp'`` column.
+    has_surface = conn.execute(
         text(
-            "INSERT INTO agents "
-            "(user_id, name, status, mcp_provider, mcp_provider_user_id, "
-            " mcp_purpose, key, retriever, agent_type) "
-            "VALUES (:uid, :name, 'published', 'discord', :pid, "
-            "        'aztec_mcp', :key, 'classic', 'classic') "
-            "RETURNING id"
-        ),
-        {
-            "uid": raw_user_id,
-            "name": f"Aztec MCP - alice-{bare_id}",
-            "pid": bare_id,
-            "key": f"key-{bare_id}",
-        },
-    ).scalar()
+            "SELECT 1 FROM information_schema.columns "
+            "WHERE table_name = 'agents' AND column_name = 'surface'"
+        )
+    ).scalar() is not None
+    if has_surface:
+        agent_id = conn.execute(
+            text(
+                "INSERT INTO agents "
+                "(user_id, name, status, mcp_provider, mcp_provider_user_id, "
+                " mcp_purpose, key, retriever, agent_type, surface) "
+                "VALUES (:uid, :name, 'published', 'discord', :pid, "
+                "        'aztec_mcp', :key, 'classic', 'classic', 'mcp') "
+                "RETURNING id"
+            ),
+            {
+                "uid": raw_user_id,
+                "name": f"Aztec MCP - alice-{bare_id}",
+                "pid": bare_id,
+                "key": f"key-{bare_id}",
+            },
+        ).scalar()
+    else:
+        agent_id = conn.execute(
+            text(
+                "INSERT INTO agents "
+                "(user_id, name, status, mcp_provider, mcp_provider_user_id, "
+                " mcp_purpose, key, retriever, agent_type) "
+                "VALUES (:uid, :name, 'published', 'discord', :pid, "
+                "        'aztec_mcp', :key, 'classic', 'classic') "
+                "RETURNING id"
+            ),
+            {
+                "uid": raw_user_id,
+                "name": f"Aztec MCP - alice-{bare_id}",
+                "pid": bare_id,
+                "key": f"key-{bare_id}",
+            },
+        ).scalar()
 
     # conversations + conversation_messages
     conv_id = conn.execute(
@@ -421,8 +452,8 @@ class TestPseudonymizeMigrationLayerA:
         # sweep must not touch this row.
         pg_conn.execute(
             text(
-                "INSERT INTO agents (user_id, name, status) "
-                "VALUES ('local', 'Aztec MCP - keep me', 'published')"
+                "INSERT INTO agents (user_id, name, status, surface) "
+                "VALUES ('local', 'Aztec MCP - keep me', 'published', 'discord')"
             )
         )
         with _pepper_env(monkeypatch, _PEPPER):

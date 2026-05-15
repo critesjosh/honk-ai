@@ -227,8 +227,8 @@ class TestAgentPrefsRemediation:
 
         row = pg_conn.execute(
             text(
-                "INSERT INTO agents (user_id, name, status, legacy_mongo_id) "
-                "VALUES (:u, 'test', 'draft', :lid) RETURNING id"
+                "INSERT INTO agents (user_id, name, status, legacy_mongo_id, surface) "
+                "VALUES (:u, 'test', 'draft', :lid, 'web_ask') RETURNING id"
             ),
             {"u": user_id, "lid": legacy_mongo_id},
         ).fetchone()

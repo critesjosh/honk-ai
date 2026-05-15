@@ -25,8 +25,11 @@ Two workflows live here:
   plus a multi-turn follow-up that exercises the rephrase path. Filter
   with `--bucket {identifier,concept,example,all}`.
 - `provision_test_agent.py` — upserts a throwaway agent + prompt row under
-  `user_id = 'eval-variant'`. Lets you point the harness at a candidate
-  prompt / source list / model without editing the live agent.
+  `user_id = 'eval-variant'` with `surface = 'eval'` (the
+  `agents.surface` taxonomy keeps these out of per-surface prod
+  analytics — see `CLAUDE.md` for the column). Lets you point the
+  harness at a candidate prompt / source list / model without editing
+  the live agent.
 - `compare.py` — pure-stdlib host script. Reads two snapshot JSONs and
   emits a Markdown diff (pass/fail flips, latency, cited URLs, unified
   diff of the answer text).

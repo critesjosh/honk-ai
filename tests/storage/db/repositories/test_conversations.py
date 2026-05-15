@@ -30,7 +30,7 @@ class TestCreate:
         from application.storage.db.repositories.agents import AgentsRepository
 
         agent_repo = AgentsRepository(pg_conn)
-        agent = agent_repo.create("user-1", "a", "active")
+        agent = agent_repo.create("user-1", "a", "active", surface="web_ask",)
         repo = _repo(pg_conn)
         doc = repo.create(
             "user-1", "Chat",
@@ -326,7 +326,8 @@ class TestResolveAgentRef:
         agent_repo = AgentsRepository(pg_conn)
         legacy_oid = "507f1f77bcf86cd799439099"
         agent = agent_repo.create(
-            "user-1", "a", "active", legacy_mongo_id=legacy_oid,
+            "user-1", "a", "active",
+            surface="web_ask", legacy_mongo_id=legacy_oid,
         )
         repo = _repo(pg_conn)
         conv = repo.create("user-1", "chat", agent_id=legacy_oid)
@@ -336,7 +337,7 @@ class TestResolveAgentRef:
         from application.storage.db.repositories.agents import AgentsRepository
 
         agent_repo = AgentsRepository(pg_conn)
-        agent = agent_repo.create("user-1", "a", "active")
+        agent = agent_repo.create("user-1", "a", "active", surface="web_ask",)
         repo = _repo(pg_conn)
         conv = repo.create("user-1", "chat", agent_id=agent["id"])
         assert str(conv["agent_id"]) == agent["id"]
@@ -363,7 +364,8 @@ class TestResolveAttachmentRefs:
         )
 
         att = AttachmentsRepository(pg_conn).create(
-            "user-1", "a.txt", "/tmp/a.txt", legacy_mongo_id=legacy,
+            "user-1", "a.txt", "/tmp/a.txt",
+            legacy_mongo_id=legacy,
         )
         return att["id"]
 

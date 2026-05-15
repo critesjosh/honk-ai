@@ -251,13 +251,14 @@ def create_mcp_key():
                 # Constant — the username used to be embedded here
                 # (``"Aztec MCP - alice"``) but that re-introduced the
                 # PII we're pseudonymizing away. Operators can pivot on
-                # ``id`` / ``last_used_at`` / a prefix of
+                # ``surface``, ``id``, ``last_used_at``, or a prefix of
                 # ``mcp_provider_user_id`` in psql instead.
                 name="Aztec MCP",
                 description="Aztec knowledge base access via MCP",
                 key=str(uuid.uuid4()),
                 source_id=primary,
                 extra_source_ids=extras,
+                surface="mcp",
             )
     except Exception:
         logger.exception("Failed to upsert MCP key")

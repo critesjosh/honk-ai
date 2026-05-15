@@ -58,7 +58,7 @@ pseudonym) and `metadata->>'agent_id'`.
 
 `metadata` keys for `endpoint='api_search'` rows:
 - `action` — constant `"api_search"`
-- `agent_id` — UUID string of the agent whose key authenticated the call
+- `agent_id` — UUID string of the agent whose key authenticated the call. Join `agents.id` ↔ `agent_id` and group by `agents.surface` (NOT `agents.name`) for per-surface analytics — the names predate the structural surface column and don't match the deployment axis. The `docsgpt_mcp_ro` role has SELECT on `surface` as of migration `0009`.
 - `question` — the query text (clipped to 10k chars)
 - `chunks_requested` — the clamped `chunks` parameter
 - `result_count` — number of results returned (0 if the agent has no sources)

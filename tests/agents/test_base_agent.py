@@ -290,6 +290,7 @@ class TestBaseAgentTools:
             user_id="alice",
             name="my-agent",
             status="active",
+            surface="web_ask",
             key="api_key_123",
             tools=[tool_id],
         )
