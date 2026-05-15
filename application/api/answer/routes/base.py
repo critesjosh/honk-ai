@@ -3,7 +3,9 @@ import hashlib
 import json
 import logging
 import queue
+import re
 import threading
+from dataclasses import dataclass, field
 from typing import Any, Dict, Generator, Iterable, List, Optional, Tuple
 
 from flask import jsonify, make_response, Response
@@ -215,6 +217,184 @@ def _aztec_source_url(source_path: str) -> str:
             return f"{_AZTEC_GITHUB_BASE}/{repo_prefix}{rest}"
 
     return source_path
+
+
+# ---- Citation marker (Aztec fork) ---------------------------------------
+# The Aztec grounded prompts (aztec_4_2_0_grounded.txt and the Discord
+# variant) instruct the LLM to end every answer with a machine-only
+# ``[[cited: i, j, k]]`` (or ``[[cited: none]]``) marker referencing the
+# 1-indexed chunk numbers in the ``{summaries}`` block. This filter
+# parses that marker, strips it from both the streamed answer and the
+# persisted ``response_full``, and emits a ``{type: "source"}`` SSE
+# frame containing only the cited subset of retrieved docs (or omits
+# the frame entirely on ``[[cited: none]]``). Fail-open: if the marker
+# is missing or malformed, all retrieved docs are emitted as before, so
+# a stale-prompt deploy keeps working.
+
+# Regex anchored to end-of-string. ``\Z`` rejects mid-prose markers so
+# a model that accidentally writes ``[[cited: ...]]`` in a code block
+# won't be misparsed as the real marker.
+_CITATION_MARKER_RE = re.compile(
+    r"\s*\[\[\s*cited\s*:\s*([^\]\n]*)\]\]\s*\Z",
+    re.IGNORECASE,
+)
+
+# Tail buffer size for streaming-answer-aware strip. Theoretical worst
+# case at 12 sources, 3-char indices, max whitespace ≈ 60 chars; 128
+# gives generous slack without delaying long answers materially. The
+# trade-off is that very short answers (< 128 chars) are fully buffered
+# and arrive after end-of-stream — acceptable for chitchat, which is
+# the case this whole feature targets.
+_CITATION_MARKER_MAX_LEN = 128
+
+
+@dataclass
+class CitationMarkerParse:
+    """Outcome of scanning a streamed answer tail for the trailing
+    ``[[cited: ...]]`` marker.
+
+    * ``matched``: regex matched a structurally-correct marker at the
+      end of ``tail``. ``False`` means no marker present → caller
+      fail-opens (emit all sources, don't strip anything).
+    * ``stripped_tail``: ``tail`` with the matched marker and
+      surrounding whitespace removed. Equal to ``tail`` when
+      ``matched=False``.
+    * ``cited_indices``: 1-indexed source positions the LLM cited.
+      ``None`` when matched but malformed (non-empty payload that
+      parsed to zero usable integers, e.g. ``[[cited: banana]]``) —
+      caller still strips the leaked marker text but fails open on
+      source filtering. ``[]`` only for the explicit
+      ``[[cited: none]]`` form (or the literal empty
+      ``[[cited: ]]``), meaning the LLM deliberately attributed
+      nothing. Otherwise a deduplicated, order-preserving list.
+    * ``invalid_indices``: integers the LLM cited that fall outside
+      ``[1, source_count]``. Logged as a warning.
+    """
+
+    matched: bool
+    stripped_tail: str
+    cited_indices: Optional[List[int]] = None
+    invalid_indices: List[int] = field(default_factory=list)
+
+
+def _parse_citation_marker(
+    tail: str, source_count: int
+) -> CitationMarkerParse:
+    """Try to strip the trailing ``[[cited: ...]]`` marker from
+    ``tail`` and return a parse result the caller can act on.
+
+    See :class:`CitationMarkerParse` for the full state matrix. The
+    strip is conservative: only the matched marker span (and its
+    leading whitespace) is removed; everything before that span is
+    returned verbatim.
+    """
+    match = _CITATION_MARKER_RE.search(tail)
+    if not match:
+        return CitationMarkerParse(matched=False, stripped_tail=tail)
+
+    # The regex is anchored to ``\Z`` so the matched span is
+    # definitively the terminal marker. Safe to strip regardless of
+    # whether the payload parses cleanly — that keeps the
+    # "machine-only marker never leaks to the user" contract intact
+    # even on a garbled emit from the model.
+    stripped = tail[: match.start()].rstrip("\n")
+    raw = match.group(1).strip()
+    if not raw or raw.lower() == "none":
+        return CitationMarkerParse(
+            matched=True, stripped_tail=stripped, cited_indices=[]
+        )
+
+    parsed: List[int] = []
+    invalid: List[int] = []
+    malformed_tokens = False
+    seen: set = set()
+    for token in raw.split(","):
+        t = token.strip()
+        if not t:
+            continue
+        try:
+            n = int(t)
+        except ValueError:
+            # Non-integer token (e.g. ``banana``, ``1 2``). Flag the
+            # marker as malformed; the strip still happens, but the
+            # caller fails open on source filtering rather than
+            # silently dropping every source.
+            malformed_tokens = True
+            continue
+        if n in seen:
+            continue
+        seen.add(n)
+        if 1 <= n <= source_count:
+            parsed.append(n)
+        else:
+            invalid.append(n)
+    if malformed_tokens and not parsed and not invalid:
+        return CitationMarkerParse(
+            matched=True, stripped_tail=stripped, cited_indices=None
+        )
+    return CitationMarkerParse(
+        matched=True,
+        stripped_tail=stripped,
+        cited_indices=parsed,
+        invalid_indices=invalid,
+    )
+
+
+def _filter_sources_by_indices(
+    source_log_docs: List[Dict[str, Any]],
+    cited_indices: List[int],
+) -> List[Dict[str, Any]]:
+    """Pick docs from the pre-dedup, pre-cap retrieval list by
+    1-indexed position, preserving the LLM's citation order. The 1-index
+    matches the ``# N. <filename>`` headers built in
+    ``stream_processor.pre_fetch_docs`` and
+    ``workflow_engine._get_source_template_data``.
+    """
+    if not source_log_docs:
+        return []
+    out: List[Dict[str, Any]] = []
+    n = len(source_log_docs)
+    for idx in cited_indices:
+        if 1 <= idx <= n:
+            out.append(source_log_docs[idx - 1])
+    return out
+
+
+def _build_source_frame(
+    source_log_docs: List[Dict[str, Any]],
+) -> Optional[str]:
+    """Render the truncated/rewritten/deduped/capped source list as a
+    ready-to-yield SSE frame, or ``None`` when no sources survive
+    transformation.
+
+    This is the same shape that used to live inline in
+    ``complete_stream`` — extracted so the citation filter can apply
+    the rewrite *after* index-based filtering against the raw retrieval
+    list (avoiding the index-vs-truncated mismatch flagged by Codex).
+    """
+    if not source_log_docs:
+        return None
+    truncated_sources: List[Dict[str, Any]] = []
+    seen_urls: set = set()
+    for source in source_log_docs:
+        if len(truncated_sources) >= _MAX_SOURCES_EMITTED:
+            break
+        truncated_source = source.copy()
+        if "text" in truncated_source:
+            truncated_source["text"] = (
+                truncated_source["text"][:100].strip() + "..."
+            )
+        raw_path = truncated_source.get("source")
+        if raw_path:
+            public_url = _aztec_source_url(raw_path)
+            if public_url in seen_urls:
+                continue
+            seen_urls.add(public_url)
+            truncated_source["source"] = public_url
+        truncated_sources.append(truncated_source)
+    if not truncated_sources:
+        return None
+    return json.dumps({"type": "source", "source": truncated_sources})
 
 
 def _iter_with_heartbeat(
@@ -497,6 +677,137 @@ class BaseAnswerResource:
         )
         response_full, thought, source_log_docs, tool_calls = "", "", [], []
         inband_error_payload: Optional[str] = None
+        # Aztec citation-marker plumbing — see _parse_citation_marker.
+        # ``pending_tail`` holds the trailing portion of the streamed
+        # answer so we can scan for ``[[cited: ...]]`` at end-of-stream
+        # without it leaking to the client.
+        pending_tail: str = ""
+        # Set to True once we've found-and-stripped a marker. ClassicAgent
+        # yields terminal ``sources`` then ``tool_calls`` frames AFTER the
+        # answer streams, so the first call to ``_flush_pending_tail`` (on
+        # the tool_calls branch) is what actually parses the marker.
+        # Without this flag we'd either double-strip on the post-loop
+        # parse OR (worse) emit the marker verbatim ahead of the
+        # tool_calls frame.
+        marker_parsed: bool = False
+        citation_filter_meta: Optional[Dict[str, Any]] = None
+
+        def _try_parse_marker_from_tail(force: bool = False) -> None:
+            """Look for the trailing citation marker in ``pending_tail``.
+            On match: strip it from ``pending_tail`` and from
+            ``response_full``, filter ``source_log_docs`` to the cited
+            subset, populate the audit metadata. No-op for structured
+            agents, paused-continuation flows, or when the marker has
+            already been parsed.
+
+            Called before every flush of ``pending_tail`` (so a
+            terminal ``tool_calls`` / ``thought`` frame from
+            ClassicAgent — yielded AFTER the marker-bearing answer —
+            doesn't leak the marker to the client) AND once at
+            end-of-stream with ``force=True``.
+
+            Defers parsing until the source frame has arrived: if a
+            non-answer frame fires BEFORE ``sources`` (some workflow
+            agents emit ``thought`` mid-stream), parsing against
+            ``source_count=0`` would mark every valid citation as
+            invalid. Skipping until sources arrive lets the
+            end-of-stream pass do the right thing. ``force=True``
+            overrides this at end-of-stream (last-chance parse even
+            if no sources were yielded — e.g. an empty-corpus run).
+            """
+            nonlocal pending_tail, response_full, source_log_docs
+            nonlocal citation_filter_meta, marker_parsed
+            if marker_parsed or is_structured or paused:
+                return
+            if not force and not source_log_docs:
+                # Wait for the source frame to arrive — otherwise
+                # we'd compute ``source_count=0`` and rule every
+                # citation invalid. End-of-stream flush passes
+                # ``force=True`` to handle the empty-corpus case.
+                return
+            parse = _parse_citation_marker(pending_tail, len(source_log_docs))
+            if not parse.matched:
+                return
+            marker_parsed = True
+            pending_tail = parse.stripped_tail
+            full_marker = _CITATION_MARKER_RE.search(response_full)
+            if full_marker:
+                response_full = response_full[: full_marker.start()].rstrip(
+                    "\n"
+                )
+            if parse.invalid_indices:
+                logger.warning(
+                    "llm.cited_invalid_index agent_id=%s indices=%s "
+                    "available=%d",
+                    agent_id,
+                    parse.invalid_indices,
+                    len(source_log_docs),
+                )
+            if parse.cited_indices is None:
+                # Marker matched but payload was garbage (e.g.
+                # ``[[cited: banana]]``). Fail open on source
+                # filtering — but the marker has already been
+                # stripped above so it doesn't leak to the user.
+                logger.warning(
+                    "llm.cited_malformed agent_id=%s available=%d",
+                    agent_id,
+                    len(source_log_docs),
+                )
+                citation_filter_meta = {
+                    "marker_present": True,
+                    "marker_malformed": True,
+                    "cited_indices": [],
+                    "invalid_indices": [],
+                    "filtered_count": len(source_log_docs),
+                }
+                return
+            if parse.cited_indices:
+                source_log_docs = _filter_sources_by_indices(
+                    source_log_docs, parse.cited_indices
+                )
+            else:
+                source_log_docs = []
+            citation_filter_meta = {
+                "marker_present": True,
+                "cited_indices": list(parse.cited_indices),
+                "invalid_indices": parse.invalid_indices,
+                "filtered_count": len(source_log_docs),
+            }
+
+        def _emit_answer_delta(delta: str) -> Optional[str]:
+            """Append ``delta`` to ``pending_tail`` and return any
+            leading portion that's safely past the marker window so the
+            caller can yield it as an answer SSE frame. Returns ``None``
+            when the entire delta fits inside the marker window.
+            """
+            nonlocal pending_tail
+            pending_tail += delta
+            if len(pending_tail) <= _CITATION_MARKER_MAX_LEN:
+                return None
+            split_at = len(pending_tail) - _CITATION_MARKER_MAX_LEN
+            to_emit = pending_tail[:split_at]
+            pending_tail = pending_tail[split_at:]
+            return to_emit
+
+        def _flush_pending_tail(force_parse: bool = False) -> Optional[str]:
+            """Yield-side helper — try to parse-and-strip the citation
+            marker (if any), then empty ``pending_tail`` and return the
+            full SSE frame for the buffered text, or ``None`` if empty.
+            Used before any non-``answer`` SSE frame so the relative
+            event order is preserved AND any trailing marker is
+            consumed before it would leak to the client.
+            ``force_parse=True`` is used at end-of-stream so the marker
+            is parsed even if the source frame never arrived (e.g.
+            empty-corpus run, isNoneDoc).
+            """
+            nonlocal pending_tail
+            _try_parse_marker_from_tail(force=force_parse)
+            if not pending_tail:
+                return None
+            frame_data = json.dumps({"type": "answer", "answer": pending_tail})
+            pending_tail = ""
+            return f"data: {frame_data}\n\n"
+
         try:
             is_structured = False
             schema_info = None
@@ -527,58 +838,57 @@ class BaseAnswerResource:
                 elif "answer" in line:
                     response_full += str(line["answer"])
                     if line.get("structured"):
+                        # Structured agents don't use the citation
+                        # marker (the answer is a JSON object, not
+                        # prose). Bypass the tail buffer entirely.
                         is_structured = True
                         schema_info = line.get("schema")
                         structured_chunks.append(line["answer"])
                     else:
-                        data = json.dumps({"type": "answer", "answer": line["answer"]})
-                        yield f"data: {data}\n\n"
+                        emit = _emit_answer_delta(str(line["answer"]))
+                        if emit:
+                            data = json.dumps({"type": "answer", "answer": emit})
+                            yield f"data: {data}\n\n"
                 elif "sources" in line:
-                    truncated_sources = []
-                    seen_urls: set = set()
+                    # Stash the raw pre-dedup/pre-cap retrieval list;
+                    # filtering + transform happens at end-of-stream so
+                    # the LLM's 1-indexed citation marker resolves
+                    # against the SAME list the prompt was built from.
                     source_log_docs = line["sources"]
-                    for source in line["sources"]:
-                        if len(truncated_sources) >= _MAX_SOURCES_EMITTED:
-                            break
-                        truncated_source = source.copy()
-                        if "text" in truncated_source:
-                            truncated_source["text"] = (
-                                truncated_source["text"][:100].strip() + "..."
-                            )
-                        raw_path = truncated_source.get("source")
-                        if raw_path:
-                            public_url = _aztec_source_url(raw_path)
-                            if public_url in seen_urls:
-                                continue
-                            seen_urls.add(public_url)
-                            truncated_source["source"] = public_url
-                        truncated_sources.append(truncated_source)
-                    if truncated_sources:
-                        data = json.dumps(
-                            {"type": "source", "source": truncated_sources}
-                        )
-                        yield f"data: {data}\n\n"
                 elif "tool_calls" in line:
+                    flush = _flush_pending_tail()
+                    if flush:
+                        yield flush
                     tool_calls = line["tool_calls"]
                     data = json.dumps({"type": "tool_calls", "tool_calls": tool_calls})
                     yield f"data: {data}\n\n"
                 elif "thought" in line:
+                    flush = _flush_pending_tail()
+                    if flush:
+                        yield flush
                     thought += line["thought"]
                     data = json.dumps({"type": "thought", "thought": line["thought"]})
                     yield f"data: {data}\n\n"
                 elif "type" in line:
                     if line.get("type") == "tool_calls_pending":
                         # Save continuation state and end the stream
+                        flush = _flush_pending_tail()
+                        if flush:
+                            yield flush
                         paused = True
                         data = json.dumps(line)
                         yield f"data: {data}\n\n"
                     elif line.get("type") == "error":
                         # An in-band error from agent.gen (workflow node,
                         # LLM call, tool exec) is a request failure even
-                        # though the outer generator did not raise. Emit
-                        # the sanitized error frame here and stash the
-                        # payload so the success tail downstream switches
-                        # to error-shaped logging/persistence.
+                        # though the outer generator did not raise. Flush
+                        # any buffered answer text BEFORE the error frame
+                        # so the user gets every answer byte we received
+                        # (the marker hadn't arrived yet, so the buffered
+                        # tail is plain answer text).
+                        flush = _flush_pending_tail()
+                        if flush:
+                            yield flush
                         sanitized_inband = sanitize_api_error(
                             line.get("error", "An error occurred")
                         )
@@ -589,6 +899,9 @@ class BaseAnswerResource:
                         yield f"data: {data}\n\n"
                         break
                     else:
+                        flush = _flush_pending_tail()
+                        if flush:
+                            yield flush
                         data = json.dumps(line)
                         yield f"data: {data}\n\n"
             if inband_error_payload is not None:
@@ -645,6 +958,46 @@ class BaseAnswerResource:
                         exc_info=True,
                     )
                 return
+            # ---- Aztec citation-marker tail flush + source emit -----
+            # ``_flush_pending_tail`` internally calls
+            # ``_try_parse_marker_from_tail`` which parses + strips the
+            # ``[[cited: ...]]`` marker from ``pending_tail`` and
+            # ``response_full`` and filters ``source_log_docs`` to the
+            # cited subset. If a terminal ``tool_calls`` / ``thought``
+            # frame from ClassicAgent already triggered the parse
+            # mid-loop, ``marker_parsed`` is True and this is a no-op
+            # second pass — just flushes whatever's left (usually
+            # nothing) and emits the source frame from the filtered
+            # list. Structured / paused paths bypass marker logic.
+            # ``force_parse=True`` handles the empty-corpus case where
+            # no source frame was yielded but a short answer + marker
+            # is in the buffer.
+            tail_frame = _flush_pending_tail(force_parse=True)
+            if tail_frame:
+                yield tail_frame
+
+            if not is_structured and not paused and not marker_parsed:
+                if source_log_docs:
+                    logger.info(
+                        "llm.cited_missing agent_id=%s available=%d",
+                        agent_id,
+                        len(source_log_docs),
+                    )
+                citation_filter_meta = {
+                    "marker_present": False,
+                    "cited_indices": [],
+                    "invalid_indices": [],
+                    "filtered_count": len(source_log_docs),
+                }
+
+            # Emit the (possibly filtered) source frame BEFORE any
+            # structured_answer / id / usage / end frame so v1
+            # translator's [DONE] sentinel and the widget/Discord
+            # ordering assumptions still hold.
+            deferred_source_frame = _build_source_frame(source_log_docs)
+            if deferred_source_frame:
+                yield f"data: {deferred_source_frame}\n\n"
+
             if is_structured and structured_chunks:
                 structured_data = {
                     "type": "structured_answer",
@@ -654,6 +1007,13 @@ class BaseAnswerResource:
                 }
                 data = json.dumps(structured_data)
                 yield f"data: {data}\n\n"
+
+            if citation_filter_meta is not None:
+                # Assign rather than ``setdefault`` so an agent that
+                # also yields its own ``{"metadata": {...}}`` event
+                # can't preempt the audit key. The marker-driven
+                # filter is authoritative for this row.
+                query_metadata["citation_filter"] = citation_filter_meta
 
             # ---- Paused: save continuation state and end stream early ----
             if paused:
@@ -894,8 +1254,17 @@ class BaseAnswerResource:
                 duration_ms,
                 question_hash,
             )
-            # Save partial response
-
+            # Save partial response. Defensively strip the citation
+            # marker from response_full — most aborts hit mid-stream
+            # before the marker arrives so the regex won't match, but
+            # if the LLM finished AND the client disconnected during
+            # the final SSE flush, the marker is in ``response_full``
+            # and we don't want it persisted to conversation_messages.
+            partial_marker = _CITATION_MARKER_RE.search(response_full or "")
+            if partial_marker:
+                response_full = response_full[: partial_marker.start()].rstrip(
+                    "\n"
+                )
             if should_save_conversation and response_full:
                 try:
                     if isNoneDoc:

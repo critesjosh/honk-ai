@@ -450,3 +450,27 @@ when a real-world failure surfaces a gap.
 - **`low-diversity`** (stream mode) — fewer distinct sources cited than
   required. Often a sign of the FIFO starvation regression returning;
   re-run retriever mode to localize.
+
+## Citation marker note
+
+The Aztec grounded prompts now require the model to end every answer
+with a machine-only `[[cited: i, j, k]]` (or `[[cited: none]]`) marker
+referencing the 1-indexed chunk numbers in `{summaries}`. The backend
+strips that marker before SSE delivery, and the eval harness sees
+already-stripped answer text — so existing assertions (banned
+identifiers, apiref-first, etc.) keep working unchanged. What changes
+is the **source frame**: the backend filters it to only the chunks the
+LLM actually cited.
+
+- For real doc queries (the existing buckets), the source frame should
+  remain non-empty. A regression that produces `[[cited: none]]` on a
+  question the prompt should have answered surfaces as a `low-diversity`
+  / `missing` style failure depending on the assertion.
+- For chitchat / out-of-scope queries (no goldens for this in the
+  current corpus), the source frame is expected to be **absent** —
+  Honk AI and the widget both render nothing for absent sources, which
+  is the user-visible win this filter exists for.
+
+Adding a small set of negative chitchat goldens (e.g. "are you there?",
+"thanks!") tagged `chitchat` is a future-work item — useful once we want
+to gate prompt changes on "no sources emitted for chitchat".

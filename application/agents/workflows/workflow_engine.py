@@ -441,6 +441,18 @@ class WorkflowEngine:
         if not isinstance(docs, list) or len(docs) == 0:
             return None, None
 
+        # Mirror the numbered chunk header used by the classic
+        # pre-fetch path (see stream_processor.pre_fetch_docs). The
+        # number is consumed by the Aztec citation marker filter in
+        # api/answer/routes/base.py; workflow agents that adopt the
+        # Aztec grounded prompts get the same plumbing for free.
+        #
+        # Return the SAME filtered list we numbered. Skipped entries
+        # (non-dicts, non-string text) are dropped from both the
+        # rendered chunk text AND the returned ``docs`` list so the
+        # 1-indexed citation marker can't drift against
+        # ``source_log_docs`` downstream.
+        filtered_docs: List[Dict[str, Any]] = []
         docs_together_parts: List[str] = []
         for doc in docs:
             if not isinstance(doc, dict):
@@ -448,15 +460,18 @@ class WorkflowEngine:
             text = doc.get("text")
             if not isinstance(text, str):
                 continue
-
+            filtered_docs.append(doc)
+            idx = len(filtered_docs)
             filename = doc.get("filename") or doc.get("title") or doc.get("source")
             if isinstance(filename, str) and filename.strip():
-                docs_together_parts.append(f"{filename}\n{text}")
+                docs_together_parts.append(f"# {idx}. {filename}\n{text}")
             else:
-                docs_together_parts.append(text)
+                docs_together_parts.append(f"# {idx}.\n{text}")
 
         docs_together = "\n\n".join(docs_together_parts) if docs_together_parts else None
-        return docs, docs_together
+        if not filtered_docs:
+            return None, None
+        return filtered_docs, docs_together
 
     def _retrieve_node_sources(self, node_config: AgentNodeConfig) -> None:
         """Retrieve documents from the node's sources for template resolution."""

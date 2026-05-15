@@ -117,6 +117,13 @@ class TestCompleteStreamMethod:
     pass
 
     def test_streams_answer_chunks(self, mock_mongo_db, flask_app):
+        """Answer text reaches the client in full. Frame chunking is an
+        implementation detail — the Aztec citation-marker tail buffer
+        (see ``_CITATION_MARKER_MAX_LEN`` in base.py) may coalesce short
+        answers into a single emit so the trailing ``[[cited: ...]]``
+        marker never leaks. What matters is that the bytes arrive
+        verbatim and in order.
+        """
         from application.api.answer.routes.base import BaseAnswerResource
 
         with flask_app.app_context():
@@ -144,9 +151,10 @@ class TestCompleteStreamMethod:
             )
 
             answer_chunks = [s for s in stream if '"type": "answer"' in s]
-            assert len(answer_chunks) == 2
-            assert '"answer": "Hello "' in answer_chunks[0]
-            assert '"answer": "world!"' in answer_chunks[1]
+            joined = "".join(answer_chunks)
+            assert "Hello " in joined
+            assert "world!" in joined
+            assert joined.index("Hello ") < joined.index("world!")
 
     def test_streams_sources(self, mock_mongo_db, flask_app):
         from application.api.answer.routes.base import BaseAnswerResource

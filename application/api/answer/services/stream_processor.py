@@ -693,14 +693,21 @@ class StreamProcessor:
                 return None, None
             self.retrieved_docs = docs
 
+            # Number each chunk header so the LLM can cite by 1-indexed
+            # position in the final ``[[cited: i, j]]`` machine marker
+            # (see application/api/answer/routes/base.py for the parser
+            # and application/prompts/aztec_*.txt for the prompt rules).
+            # Order here is the retrieval order — pgvector distance,
+            # global-rerank — and is preserved through emission so the
+            # filter at the SSE boundary maps the same indices.
             docs_with_filenames = []
-            for doc in docs:
+            for idx, doc in enumerate(docs, start=1):
                 filename = doc.get("filename") or doc.get("title") or doc.get("source")
                 if filename:
-                    chunk_header = str(filename)
+                    chunk_header = f"# {idx}. {filename}"
                     docs_with_filenames.append(f"{chunk_header}\n{doc['text']}")
                 else:
-                    docs_with_filenames.append(doc["text"])
+                    docs_with_filenames.append(f"# {idx}.\n{doc['text']}")
             docs_together = "\n\n".join(docs_with_filenames)
 
             logger.info(f"Pre-fetch docs_together size: {len(docs_together)} chars")

@@ -504,7 +504,9 @@ class TestGetSourceTemplateData:
         agent.retrieved_docs = [{"text": "content only"}]
         engine = WorkflowEngine(graph, agent)
         docs, together = engine._get_source_template_data()
-        assert together == "content only"
+        # Chunks are numbered for the Aztec citation marker even when
+        # no filename is available — see workflow_engine.py.
+        assert together == "# 1.\ncontent only"
 
     @pytest.mark.unit
     def test_skips_non_dict_docs(self):
@@ -513,7 +515,11 @@ class TestGetSourceTemplateData:
         agent.retrieved_docs = ["not a dict", {"text": "ok"}]
         engine = WorkflowEngine(graph, agent)
         docs, together = engine._get_source_template_data()
-        assert together == "ok"
+        # The non-dict is skipped, so the surviving doc is chunk #1.
+        assert together == "# 1.\nok"
+        # ``docs`` is the FILTERED list (only valid dicts), so 1-indexed
+        # citation markers don't drift against ``source_log_docs``.
+        assert docs == [{"text": "ok"}]
 
     @pytest.mark.unit
     def test_skips_non_string_text(self):
