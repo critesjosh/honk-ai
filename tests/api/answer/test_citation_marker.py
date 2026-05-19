@@ -27,8 +27,11 @@ from typing import Iterable, List
 from unittest.mock import MagicMock
 
 from application.api.answer.routes.base import (
+    _AMBIGUOUS_BASENAME_THRESHOLD,
     _build_source_frame,
     _CITATION_MARKER_MAX_LEN,
+    _extract_cited_filenames,
+    _filename_fallback,
     _filter_sources_by_indices,
     _parse_citation_marker,
 )
@@ -526,3 +529,391 @@ class TestCompleteStreamCitationFilter:
         # (12 sources, 3-digit indices, generous whitespace).
         worst_case = "[[cited: " + ", ".join(str(n) for n in range(1, 13)) + "]]"
         assert len(worst_case) < _CITATION_MARKER_MAX_LEN
+
+
+# ---- filename fallback (no-marker path) -----------------------------
+
+
+class TestExtractCitedFilenames:
+    def test_empty(self):
+        assert _extract_cited_filenames("") == set()
+        assert _extract_cited_filenames(None) == set()  # type: ignore[arg-type]
+
+    def test_backtick_quoted(self):
+        out = _extract_cited_filenames("see `foo.md` for details")
+        assert "foo.md" in out
+
+    def test_parens(self):
+        out = _extract_cited_filenames("the layout (bar.nr) shows...")
+        assert "bar.nr" in out
+
+    def test_markdown_link(self):
+        out = _extract_cited_filenames("see [the doc](docs/baz.md) for more")
+        # Path-form preserved verbatim; basename is NOT auto-added —
+        # see ``_extract_cited_filenames`` docstring for the rationale.
+        assert "docs/baz.md" in out
+        assert "baz.md" not in out
+
+    def test_source_trailing_line(self):
+        out = _extract_cited_filenames(
+            "...answer ends here.\n\nSource: `indexed_merkle_tree.mdx`, `bn254.nr`"
+        )
+        assert "indexed_merkle_tree.mdx" in out
+        assert "bn254.nr" in out
+
+    def test_italic_and_bold(self):
+        out = _extract_cited_filenames("see *italic.md* and **bold.nr** here")
+        assert "italic.md" in out
+        assert "bold.nr" in out
+
+    def test_case_insensitive(self):
+        out = _extract_cited_filenames("see `FOO.MD` for details")
+        assert "foo.md" in out
+
+    def test_unknown_extension_not_matched(self):
+        out = _extract_cited_filenames("see `app.exe` and `image.png` here")
+        assert "app.exe" not in out
+        assert "image.png" not in out
+
+    def test_dotted_identifier_with_known_ext_is_matched(self):
+        """``aztec.js`` is technically a package name but has the ``.js``
+        ext we index, so we DO extract it. The intersection-with-retrieved
+        gate is what neutralises it when no chunk has filename ``aztec.js``
+        — this matches today's marker behaviour, where an out-of-range
+        index is silently dropped.
+        """
+        out = _extract_cited_filenames("the `aztec.js` SDK gives you ...")
+        assert "aztec.js" in out
+
+
+class TestFilenameFallbackMatcher:
+    def test_no_response_returns_none(self):
+        res = _filename_fallback("", [{"filename": "foo.md"}])
+        assert res.kept is None
+
+    def test_no_docs_returns_none(self):
+        res = _filename_fallback("see `foo.md`", [])
+        assert res.kept is None
+
+    def test_no_filenames_named_returns_none(self):
+        res = _filename_fallback(
+            "answer with no filename references at all",
+            [{"filename": "foo.md"}],
+        )
+        assert res.kept is None
+
+    def test_filename_match_preserves_retrieval_order(self):
+        docs = [
+            {"filename": "a.md"},
+            {"filename": "b.md"},
+            {"filename": "c.md"},
+        ]
+        res = _filename_fallback("cites `c.md`, then `a.md`", docs)
+        assert res.kept is not None
+        # Retrieval order, NOT mention order.
+        assert [d["filename"] for d in res.kept] == ["a.md", "c.md"]
+        assert sorted(res.matched_aliases) == ["a.md", "c.md"]
+
+    def test_unmatched_filenames_dropped(self):
+        docs = [{"filename": "foo.md"}, {"filename": "bar.md"}]
+        res = _filename_fallback("cite `foo.md` and `not_retrieved.md`", docs)
+        assert res.kept is not None
+        assert [d["filename"] for d in res.kept] == ["foo.md"]
+        assert res.matched_aliases == ["foo.md"]
+
+    def test_title_alias_matches(self):
+        docs = [{"title": "glossary.md", "source": "https://example/glossary"}]
+        res = _filename_fallback("see `glossary.md` for terms", docs)
+        assert res.kept is not None
+        assert len(res.kept) == 1
+
+    def test_source_basename_alias_matches(self):
+        docs = [{"source": "version-v4.2.0/docs/notes.md"}]
+        res = _filename_fallback("`notes.md` describes the model", docs)
+        assert res.kept is not None
+        assert len(res.kept) == 1
+
+    def test_path_suffix_matches_specific_doc(self):
+        """A path-suffix mention picks out the specific doc even when
+        basenames collide. The matched_aliases set records the
+        path-form alias.
+        """
+        docs = [
+            {"filename": "docs/aztec-nr/index.md"},
+            {"filename": "docs/aztec-js/index.md"},
+            # An unrelated doc with a distinct filename so the test
+            # doesn't depend on what happens when the response also
+            # mentions the bare basename.
+            {"filename": "glossary.md"},
+        ]
+        res = _filename_fallback("see [link](aztec-nr/index.md)", docs)
+        assert res.kept is not None
+        # Only the aztec-nr/index.md doc matches the path-suffix token.
+        assert [d["filename"] for d in res.kept] == ["docs/aztec-nr/index.md"]
+        assert "aztec-nr/index.md" in res.matched_aliases
+
+    def test_basename_ambiguity_below_threshold_not_flagged(self):
+        docs = [
+            {"filename": "a/index.md"},
+            {"filename": "b/index.md"},
+        ]
+        res = _filename_fallback("see `index.md`", docs)
+        assert res.kept is not None
+        assert len(res.kept) == 2
+        # 2 < _AMBIGUOUS_BASENAME_THRESHOLD (3) → not flagged.
+        assert res.ambiguous_basename_count == 0
+
+    def test_basename_ambiguity_at_threshold_flagged(self):
+        docs = [
+            {"filename": "a/index.md"},
+            {"filename": "b/index.md"},
+            {"filename": "c/index.md"},
+        ]
+        assert _AMBIGUOUS_BASENAME_THRESHOLD == 3
+        res = _filename_fallback("see `index.md`", docs)
+        assert res.kept is not None
+        assert len(res.kept) == 3
+        assert res.ambiguous_basename_count == 1
+
+    def test_path_and_bare_basename_in_same_response(self):
+        """When the LLM mentions BOTH ``aztec-nr/index.md`` (specific)
+        AND a separate bare ``index.md`` (broad), each token resolves
+        independently: the path mention picks the specific doc; the
+        bare basename matches all docs with that basename.
+        """
+        docs = [
+            {"filename": "docs/aztec-nr/index.md"},
+            {"filename": "docs/aztec-js/index.md"},
+            {"filename": "glossary.md"},
+        ]
+        res = _filename_fallback(
+            "see `aztec-nr/index.md` and also `index.md` more generally",
+            docs,
+        )
+        assert res.kept is not None
+        # Both index.md docs match the bare ``index.md`` token; the
+        # explicit path mention is also captured in matched_aliases.
+        kept_names = [d["filename"] for d in res.kept]
+        assert "docs/aztec-nr/index.md" in kept_names
+        assert "docs/aztec-js/index.md" in kept_names
+        assert "glossary.md" not in kept_names
+        assert "aztec-nr/index.md" in res.matched_aliases
+        assert "index.md" in res.matched_aliases
+
+    def test_single_doc_with_duplicate_aliases_not_flagged_ambiguous(self):
+        """A single doc can expose the same basename via multiple alias
+        keys (``filename``, ``title``, basename-of-``source``). The
+        ambiguity counter must count distinct docs, not alias hits.
+        """
+        docs = [
+            {
+                "filename": "index.md",
+                "title": "index.md",
+                "source": "docs/section/index.md",
+            }
+        ]
+        res = _filename_fallback("see `index.md`", docs)
+        assert res.kept is not None
+        assert len(res.kept) == 1
+        # Single doc → not ambiguous, even though 3 alias keys collide.
+        assert res.ambiguous_basename_count == 0
+
+
+class TestFilenameFallbackIntegration:
+    """End-to-end behaviour through ``complete_stream`` when the marker
+    is missing or malformed. Asserts source frame contents (the
+    user-visible contract); the ``strategy`` audit field is only
+    written into ``conversation_messages.message_metadata`` when
+    ``should_save_conversation=True``, which these tests run without —
+    consistent with the existing ``TestCompleteStreamCitationFilter``
+    pattern.
+    """
+
+    def _run(
+        self,
+        mock_mongo_db,
+        flask_app,
+        agent: MagicMock,
+    ) -> List[dict]:
+        from application.api.answer.routes.base import BaseAnswerResource
+
+        with flask_app.app_context():
+            resource = BaseAnswerResource()
+            stream = list(
+                resource.complete_stream(
+                    question="Q",
+                    agent=agent,
+                    conversation_id=None,
+                    user_api_key=None,
+                    decoded_token={"sub": "user1"},
+                    should_save_conversation=False,
+                )
+            )
+        return _stream_to_frames(stream)
+
+    def test_marker_absent_with_inline_filenames(self, mock_mongo_db, flask_app):
+        """No marker, but the model named retrieved filenames inline.
+        Fallback filters to those files.
+        """
+        agent = _agent_yielding(
+            [
+                {
+                    "sources": [
+                        {"title": "doc1", "filename": "foo.md"},
+                        {"title": "doc2", "filename": "bar.md"},
+                        {"title": "doc3", "filename": "baz.md"},
+                    ]
+                },
+                {"answer": "As shown in `foo.md` and (`baz.md`), the answer is..."},
+            ]
+        )
+        frames = self._run(mock_mongo_db, flask_app, agent)
+        source_frames = [f for f in frames if f.get("type") == "source"]
+        assert len(source_frames) == 1
+        emitted = [s["title"] for s in source_frames[0]["source"]]
+        assert emitted == ["doc1", "doc3"]
+
+    def test_marker_absent_no_filenames_fails_open(
+        self, mock_mongo_db, flask_app
+    ):
+        """No marker AND no inline filename references — fall open as
+        today.
+        """
+        agent = _agent_yielding(
+            [
+                {
+                    "sources": [
+                        {"title": "doc1", "filename": "foo.md"},
+                        {"title": "doc2", "filename": "bar.md"},
+                    ]
+                },
+                {"answer": "Pure prose answer with no filename refs."},
+            ]
+        )
+        frames = self._run(mock_mongo_db, flask_app, agent)
+        source_frames = [f for f in frames if f.get("type") == "source"]
+        assert len(source_frames) == 1
+        assert len(source_frames[0]["source"]) == 2  # both retrieved
+
+    def test_filename_earlier_than_tail_buffer(self, mock_mongo_db, flask_app):
+        """Filenames mentioned in the FIRST half of a long answer must
+        still trigger the fallback — proves the fallback inspects
+        ``response_full`` and not just ``pending_tail`` (128 chars).
+        """
+        # 8x the marker buffer so the filename mention is well past
+        # anything pending_tail could ever hold.
+        long_filler = "x" * (_CITATION_MARKER_MAX_LEN * 8)
+        agent = _agent_yielding(
+            [
+                {
+                    "sources": [
+                        {"title": "doc1", "filename": "foo.md"},
+                        {"title": "doc2", "filename": "bar.md"},
+                    ]
+                },
+                # Filename in the HEAD; prose then drones on past the
+                # tail buffer; no marker at the end.
+                {"answer": "Per `foo.md` above, " + long_filler + " end of answer."},
+            ]
+        )
+        frames = self._run(mock_mongo_db, flask_app, agent)
+        source_frames = [f for f in frames if f.get("type") == "source"]
+        assert len(source_frames) == 1
+        emitted = [s["title"] for s in source_frames[0]["source"]]
+        assert emitted == ["doc1"]
+
+    def test_marker_none_with_inline_filenames_still_omits_source_frame(
+        self, mock_mongo_db, flask_app
+    ):
+        """Explicit ``[[cited: none]]`` means the model deliberately
+        attributed nothing — even if filenames appear in prose, fallback
+        must NOT fire and the source frame is suppressed.
+        """
+        agent = _agent_yielding(
+            [
+                {
+                    "sources": [
+                        {"title": "doc1", "filename": "foo.md"},
+                        {"title": "doc2", "filename": "bar.md"},
+                    ]
+                },
+                {
+                    "answer": (
+                        "Side note: `foo.md` is unrelated.\n\n[[cited: none]]"
+                    )
+                },
+            ]
+        )
+        frames = self._run(mock_mongo_db, flask_app, agent)
+        source_frames = [f for f in frames if f.get("type") == "source"]
+        assert source_frames == []
+        # Marker still stripped from the wire.
+        answer_text = "".join(
+            f["answer"] for f in frames if f.get("type") == "answer"
+        )
+        assert "[[cited:" not in answer_text
+
+    def test_marker_malformed_falls_back_to_filenames(
+        self, mock_mongo_db, flask_app
+    ):
+        """Marker present but garbage payload (``[[cited: banana]]``).
+        The marker is stripped from the wire (unchanged behaviour), AND
+        the fallback runs on the stripped response to recover a useful
+        subset.
+        """
+        agent = _agent_yielding(
+            [
+                {
+                    "sources": [
+                        {"title": "doc1", "filename": "foo.md"},
+                        {"title": "doc2", "filename": "bar.md"},
+                        {"title": "doc3", "filename": "baz.md"},
+                    ]
+                },
+                {
+                    "answer": (
+                        "From `bar.md` the rule is X.\n\n[[cited: banana]]"
+                    )
+                },
+            ]
+        )
+        frames = self._run(mock_mongo_db, flask_app, agent)
+        source_frames = [f for f in frames if f.get("type") == "source"]
+        assert len(source_frames) == 1
+        emitted = [s["title"] for s in source_frames[0]["source"]]
+        assert emitted == ["doc2"]
+        # Marker text doesn't leak.
+        answer_text = "".join(
+            f["answer"] for f in frames if f.get("type") == "answer"
+        )
+        assert "[[cited:" not in answer_text
+        assert "banana" not in answer_text
+
+    def test_inline_code_block_filename_still_matches(
+        self, mock_mongo_db, flask_app
+    ):
+        """An inline code-fence mention of a retrieved filename triggers
+        the fallback. The conservative-recall trade is acceptable: this
+        matches the shape of today's marker-emitted citation where the
+        model cites a chunk it only references briefly.
+        """
+        agent = _agent_yielding(
+            [
+                {
+                    "sources": [
+                        {"title": "doc1", "filename": "foo.md"},
+                        {"title": "doc2", "filename": "bar.md"},
+                    ]
+                },
+                {
+                    "answer": (
+                        "```python\n# foo.md describes the layout\n"
+                        "print('hello')\n```\nDone."
+                    )
+                },
+            ]
+        )
+        frames = self._run(mock_mongo_db, flask_app, agent)
+        source_frames = [f for f in frames if f.get("type") == "source"]
+        assert len(source_frames) == 1
+        assert [s["title"] for s in source_frames[0]["source"]] == ["doc1"]

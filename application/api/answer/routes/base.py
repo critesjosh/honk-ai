@@ -360,6 +360,175 @@ def _filter_sources_by_indices(
     return out
 
 
+# ---- Filename fallback (Aztec fork) -------------------------------------
+# When the LLM doesn't emit the trailing ``[[cited: ...]]`` marker — common
+# in long multi-turn deep-technical conversations with qwen3.6-flash, where
+# the model substitutes ``Source: foo.md`` / ``[#10](foo.md)`` / inline
+# `` `foo.md` `` patterns from its training priors — recover the citation
+# signal by extracting filename tokens from the response and matching them
+# against the retrieved chunks. Strict-improvement over the
+# previously-unconditional fail-open: the marker-present path is unchanged.
+
+# Restricted to extensions present in the Aztec corpus (see
+# ``scripts/ingest/corpora.py``). Dotted package-like names that
+# happen to end in an indexed extension (e.g. ``aztec.js``) WILL match
+# the regex; the alias-intersection in ``_filename_fallback`` is what
+# neutralises them when no retrieved doc has that filename. This
+# matches the existing marker behaviour where an out-of-range cited
+# index is silently dropped.
+_FILENAME_RX = re.compile(
+    r"\b[\w][\w./\-]*\.(?:md|mdx|nr|ts|tsx|sol|json|txt|yml|yaml|toml|sh|js|rs)\b",
+    re.IGNORECASE,
+)
+
+# A basename match with this many or more candidate docs is considered
+# "ambiguous" — surfaced in the audit row so operators can spot recurring
+# patterns and decide whether to tighten matching. ``index.md`` is the
+# canonical offender (every Docusaurus section has one).
+_AMBIGUOUS_BASENAME_THRESHOLD = 3
+
+
+@dataclass
+class FilenameFallbackResult:
+    """Outcome of the filename-extraction fallback.
+
+    * ``kept``: docs from ``source_log_docs`` whose aliases matched the
+      filenames the LLM named, in retrieval (global-rerank) order.
+      ``None`` when no match could be made — caller fails open.
+    * ``matched_aliases``: canonical aliases (lowercased) that produced a
+      match. Audit/log signal.
+    * ``ambiguous_basename_count``: count of basenames in
+      ``matched_aliases`` that matched ``_AMBIGUOUS_BASENAME_THRESHOLD``
+      or more docs.
+    """
+
+    kept: Optional[List[Dict[str, Any]]]
+    matched_aliases: List[str] = field(default_factory=list)
+    ambiguous_basename_count: int = 0
+
+
+def _extract_cited_filenames(response: str) -> set:
+    """Return the set of filename-like tokens the LLM named in its
+    response, lowercased. Path-form (``docs/foo.md``) and bare-basename
+    (``foo.md``) tokens are both returned verbatim. Callers that need
+    the distinction (the fallback matcher does, to avoid pulling in
+    unrelated basename-collision docs) should partition the set on
+    presence of ``/``.
+
+    Returning a single flat set keeps the public surface simple for
+    tests/observability while letting downstream consumers decide how
+    to use the tokens.
+    """
+    if not response:
+        return set()
+    return {token.lower() for token in _FILENAME_RX.findall(response)}
+
+
+def _doc_aliases(doc: Dict[str, Any]) -> Tuple[List[str], List[str]]:
+    """Return (path_aliases, basename_aliases) for a retrieved doc,
+    lowercased. ``path_aliases`` are full path-like forms (e.g.
+    ``docs/aztec-nr/index.md``); ``basename_aliases`` are leaf names
+    (e.g. ``index.md``). The prompt's chunk header is
+    ``filename OR title OR source`` (see
+    ``stream_processor.pre_fetch_docs``), so all three fields are
+    candidate citation surfaces.
+    """
+    paths: List[str] = []
+    bases: List[str] = []
+    for key in ("filename", "title", "source"):
+        raw = doc.get(key)
+        if not isinstance(raw, str) or not raw:
+            continue
+        lo = raw.lower()
+        # ``source`` is often a corpus path (``version-v4.2.0/.../foo.md``)
+        # before URL rewriting; treat it like a path alias.
+        if "/" in lo:
+            paths.append(lo)
+            base = lo.rsplit("/", 1)[-1]
+            if base:
+                bases.append(base)
+        else:
+            bases.append(lo)
+    return paths, bases
+
+
+def _filename_fallback(
+    response_full: str,
+    source_log_docs: List[Dict[str, Any]],
+) -> FilenameFallbackResult:
+    """Try to recover a cited subset of ``source_log_docs`` from the
+    filenames the LLM named inline in ``response_full``. Returns
+    ``kept=None`` when no match could be made — callers fall open in
+    that case (today's behaviour on a marker-less reply).
+    """
+    if not response_full or not source_log_docs:
+        return FilenameFallbackResult(kept=None)
+    named = _extract_cited_filenames(response_full)
+    if not named:
+        return FilenameFallbackResult(kept=None)
+
+    path_tokens = {t for t in named if "/" in t}
+    basename_tokens = {t for t in named if "/" not in t}
+
+    # Build a basename → set-of-doc-indices map for ambiguity detection
+    # and for the basename-fallback pass. Uses a set per basename so a
+    # single doc that exposes the same basename via multiple aliases
+    # (e.g. ``filename="index.md"`` AND ``title="index.md"``) only
+    # contributes once toward the ``_AMBIGUOUS_BASENAME_THRESHOLD``.
+    basename_to_indices: Dict[str, set] = {}
+    doc_aliases: List[Tuple[List[str], List[str]]] = []
+    for idx, doc in enumerate(source_log_docs):
+        paths, bases = _doc_aliases(doc)
+        doc_aliases.append((paths, bases))
+        for b in bases:
+            basename_to_indices.setdefault(b, set()).add(idx)
+
+    matched_doc_indices: set = set()
+    matched_aliases: set = set()
+    ambiguous: set = set()
+
+    # Pass 1: path-suffix match. Prefer specificity — if the LLM wrote
+    # ``aztec-nr/index.md`` and we have a doc with that path suffix,
+    # match it directly. No shadowing of bare-basename mentions: the
+    # extractor returns the literal tokens the model emitted, so a
+    # bare ``index.md`` in ``basename_tokens`` is something the model
+    # actually wrote (not a derived form) and must still resolve.
+    for token in path_tokens:
+        for idx, (paths, _bases) in enumerate(doc_aliases):
+            for p in paths:
+                if p == token or p.endswith("/" + token):
+                    matched_doc_indices.add(idx)
+                    matched_aliases.add(token)
+                    break
+
+    # Pass 2: basename match for bare-basename mentions. Counts as
+    # ambiguous when the basename appears on
+    # ``_AMBIGUOUS_BASENAME_THRESHOLD`` distinct docs or more — still
+    # keeps all candidates but flags it for operator awareness.
+    for token in basename_tokens:
+        candidates = basename_to_indices.get(token)
+        if not candidates:
+            continue
+        matched_aliases.add(token)
+        if len(candidates) >= _AMBIGUOUS_BASENAME_THRESHOLD:
+            ambiguous.add(token)
+        for idx in candidates:
+            matched_doc_indices.add(idx)
+
+    if not matched_doc_indices:
+        return FilenameFallbackResult(kept=None)
+
+    kept = [
+        source_log_docs[i]
+        for i in sorted(matched_doc_indices)  # retrieval order
+    ]
+    return FilenameFallbackResult(
+        kept=kept,
+        matched_aliases=sorted(matched_aliases),
+        ambiguous_basename_count=len(ambiguous),
+    )
+
+
 def _build_source_frame(
     source_log_docs: List[Dict[str, Any]],
 ) -> Optional[str]:
@@ -745,30 +914,59 @@ class BaseAnswerResource:
                 )
             if parse.cited_indices is None:
                 # Marker matched but payload was garbage (e.g.
-                # ``[[cited: banana]]``). Fail open on source
-                # filtering — but the marker has already been
-                # stripped above so it doesn't leak to the user.
+                # ``[[cited: banana]]``). The marker has been stripped
+                # from response_full above, so it doesn't leak to the
+                # user. Try the filename fallback against the stripped
+                # response before falling open.
                 logger.warning(
                     "llm.cited_malformed agent_id=%s available=%d",
                     agent_id,
                     len(source_log_docs),
                 )
-                citation_filter_meta = {
-                    "marker_present": True,
-                    "marker_malformed": True,
-                    "cited_indices": [],
-                    "invalid_indices": [],
-                    "filtered_count": len(source_log_docs),
-                }
+                fallback = _filename_fallback(response_full, source_log_docs)
+                if fallback.kept is not None:
+                    source_log_docs = fallback.kept
+                    citation_filter_meta = {
+                        "marker_present": True,
+                        "marker_malformed": True,
+                        "strategy": "filename_fallback",
+                        "matched_aliases": fallback.matched_aliases,
+                        "ambiguous_basename_count": fallback.ambiguous_basename_count,
+                        "cited_indices": [],
+                        "invalid_indices": [],
+                        "filtered_count": len(source_log_docs),
+                    }
+                    logger.info(
+                        "llm.cited_via_filenames agent_id=%s matched=%d "
+                        "filtered=%d (post-malformed)",
+                        agent_id,
+                        len(fallback.matched_aliases),
+                        len(source_log_docs),
+                    )
+                else:
+                    citation_filter_meta = {
+                        "marker_present": True,
+                        "marker_malformed": True,
+                        "strategy": "fail_open",
+                        "cited_indices": [],
+                        "invalid_indices": [],
+                        "filtered_count": len(source_log_docs),
+                    }
                 return
             if parse.cited_indices:
                 source_log_docs = _filter_sources_by_indices(
                     source_log_docs, parse.cited_indices
                 )
+                strategy = "marker"
             else:
+                # Empty payload: ``[[cited: none]]`` or ``[[cited: ]]``.
+                # Model deliberately attributed nothing — do NOT fall
+                # through to filename extraction.
                 source_log_docs = []
+                strategy = "marker_none"
             citation_filter_meta = {
                 "marker_present": True,
+                "strategy": strategy,
                 "cited_indices": list(parse.cited_indices),
                 "invalid_indices": parse.invalid_indices,
                 "filtered_count": len(source_log_docs),
@@ -977,18 +1175,46 @@ class BaseAnswerResource:
                 yield tail_frame
 
             if not is_structured and not paused and not marker_parsed:
-                if source_log_docs:
+                # No trailing marker. Try to recover the citation
+                # signal from inline filename references in the answer
+                # (qwen3.6-flash often uses ``Source: foo.md`` /
+                # ``[#10](foo.md)`` / ``(`foo.md`)`` instead of emitting
+                # the marker). Operate on response_full so filenames
+                # mentioned earlier in long answers — past the 128-char
+                # pending_tail window — are still visible.
+                fallback = _filename_fallback(response_full, source_log_docs)
+                if fallback.kept is not None:
+                    source_log_docs = fallback.kept
+                    citation_filter_meta = {
+                        "marker_present": False,
+                        "strategy": "filename_fallback",
+                        "matched_aliases": fallback.matched_aliases,
+                        "ambiguous_basename_count": fallback.ambiguous_basename_count,
+                        "cited_indices": [],
+                        "invalid_indices": [],
+                        "filtered_count": len(source_log_docs),
+                    }
                     logger.info(
-                        "llm.cited_missing agent_id=%s available=%d",
+                        "llm.cited_via_filenames agent_id=%s matched=%d "
+                        "filtered=%d",
                         agent_id,
+                        len(fallback.matched_aliases),
                         len(source_log_docs),
                     )
-                citation_filter_meta = {
-                    "marker_present": False,
-                    "cited_indices": [],
-                    "invalid_indices": [],
-                    "filtered_count": len(source_log_docs),
-                }
+                else:
+                    if source_log_docs:
+                        logger.info(
+                            "llm.cited_missing agent_id=%s available=%d",
+                            agent_id,
+                            len(source_log_docs),
+                        )
+                    citation_filter_meta = {
+                        "marker_present": False,
+                        "strategy": "fail_open",
+                        "cited_indices": [],
+                        "invalid_indices": [],
+                        "filtered_count": len(source_log_docs),
+                    }
 
             # Emit the (possibly filtered) source frame BEFORE any
             # structured_answer / id / usage / end frame so v1
