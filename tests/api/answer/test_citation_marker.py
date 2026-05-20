@@ -202,8 +202,8 @@ class TestBuildSourceFrame:
         # second collapses out — global rerank can surface the same
         # rendered URL from differently-named chunks.
         sources = [
-            {"title": "a", "source": "version-v4.2.0/docs/foo.md"},
-            {"title": "b", "source": "version-v4.2.0/docs/foo.mdx"},
+            {"title": "a", "source": "version-v4.3.0/docs/foo.md"},
+            {"title": "b", "source": "version-v4.3.0/docs/foo.mdx"},
         ]
         frame = _build_source_frame(sources)
         assert frame is not None
@@ -628,7 +628,7 @@ class TestFilenameFallbackMatcher:
         assert len(res.kept) == 1
 
     def test_source_basename_alias_matches(self):
-        docs = [{"source": "version-v4.2.0/docs/notes.md"}]
+        docs = [{"source": "version-v4.3.0/docs/notes.md"}]
         res = _filename_fallback("`notes.md` describes the model", docs)
         assert res.kept is not None
         assert len(res.kept) == 1

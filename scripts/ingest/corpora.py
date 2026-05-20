@@ -97,8 +97,24 @@ class Corpus:
     # Short slug used for the zip filename and as a CLI argument.
     slug: str
     # Where the source files live, relative to one of the supported
-    # source roots.
-    source_root: str  # "aztec-packages" | "noir"
+    # source roots. Three roots exist because the corpora are pinned at
+    # *different* upstream commits per release:
+    #   - ``aztec-packages``       → the aztec-packages release tag
+    #     (e.g. ``v4.3.0``). Used for code corpora (aztec.js, CLI, e2e,
+    #     L1, examples, circuits, aztec-nr apiref) and the
+    #     auto-generated TypeScript API reference.
+    #   - ``aztec-packages-docs``  → a snapshot commit on aztec-packages'
+    #     ``next`` branch where the new ``version-vX.Y.Z/`` Docusaurus
+    #     folder lives. The docs version snapshot is taken from a
+    #     moving branch, so the literal release tag does NOT contain
+    #     the matching ``version-vX.Y.Z/`` folder — see comment block
+    #     in ``application/api/answer/routes/base.py`` for the long
+    #     story. Used for the three rendered-docs corpora (developer
+    #     docs / network docs / site-root networks page).
+    #   - ``noir``                 → the noir-lang/noir commit pinned
+    #     by aztec-packages' ``noir/noir-repo`` submodule at the
+    #     release tag. Used for noir docs + noir stdlib apiref.
+    source_root: str  # "aztec-packages" | "aztec-packages-docs" | "noir"
     # One or more source trees that contribute to this corpus.
     trees: Tuple[SourceTree, ...]
     # Extensions to copy into the zip. Use lower-case.
@@ -132,22 +148,34 @@ class Corpus:
 CORPORA: Tuple[Corpus, ...] = (
     # ---- Markdown / docs corpora (passthrough) -------------------------
     Corpus(
-        name="Aztec Developer Docs v4.2.0",
+        name="Aztec Developer Docs v4.3.0",
         slug="aztec_developer_docs",
-        source_root="aztec-packages",
+        # NB: source_root="aztec-packages-docs", not "aztec-packages".
+        # version-v4.3.0/ only exists on the ``next`` branch — see the
+        # docstring on ``source_root`` for the full story.
+        source_root="aztec-packages-docs",
         trees=(
             SourceTree(
-                "docs/developer_versioned_docs/version-v4.2.0",
-                "version-v4.2.0/docs",
+                "docs/developer_versioned_docs/version-v4.3.0",
+                # ``zip_prefix`` is the top-level dir each file lands
+                # under in the zip. The source tree already has
+                # ``docs/`` as a subfolder alongside top-level files
+                # (``overview.md``, ``ai_tooling.md``, …); prefix with
+                # ``version-v4.3.0`` alone so files preserve their
+                # relative path and metadata.source ends up like
+                # ``version-v4.3.0/docs/aztec-js/foo.md`` (single
+                # ``docs/``, what the URL rewriter expects), not
+                # ``version-v4.3.0/docs/docs/aztec-js/foo.md``.
+                "version-v4.3.0",
                 exclude_paths=(
                     # Migration notes accumulate every renamed identifier
                     # in both old and new spellings, so they dominate
                     # identifier-shaped queries despite never being the
-                    # canonical answer. 285 chunks at v4.2.0 — biggest
-                    # single source of off-target citations in the
-                    # widget. If we ever need migration content again,
-                    # carve it into a separate corpus that's only
-                    # included for migration-shaped queries.
+                    # canonical answer. Biggest single source of
+                    # off-target citations in the widget at v4.2.0
+                    # (~285 chunks). If we ever need migration content
+                    # again, carve it into a separate corpus that's
+                    # only included for migration-shaped queries.
                     "docs/resources/migration_notes.*",
                 ),
             ),
@@ -156,13 +184,18 @@ CORPORA: Tuple[Corpus, ...] = (
         transform="passthrough",
     ),
     Corpus(
-        name="Aztec Network Docs v4.2.0",
+        name="Aztec Network Docs v4.3.0",
         slug="aztec_network_docs",
-        source_root="aztec-packages",
+        source_root="aztec-packages-docs",
         trees=(
             SourceTree(
-                "docs/network_versioned_docs/version-v4.2.0",
-                "version-v4.2.0/operators",
+                "docs/network_versioned_docs/version-v4.3.0",
+                # Same single-prefix structure as the developer tree:
+                # the source has ``operators/`` and ``reference/`` as
+                # siblings, so a prefix of ``version-v4.3.0/operators``
+                # would both duplicate (``…/operators/operators/…``)
+                # and misroute ``reference/*`` under ``operators/``.
+                "version-v4.3.0",
                 # Same logic as migration_notes above — release notes
                 # mention every renamed config / flag / RPC method
                 # but aren't the canonical reference for any of them.
@@ -176,8 +209,14 @@ CORPORA: Tuple[Corpus, ...] = (
         transform="passthrough",
     ),
     Corpus(
-        name="Aztec TypeScript API v4.2.0",
+        name="Aztec TypeScript API v4.3.0",
         slug="aztec_typescript_api",
+        # TS API stays on the release tag: the v4.3.0 tag still ships
+        # the auto-generated reference under ``testnet/``; the
+        # ``mainnet/`` rename only landed on ``next`` after the tag was
+        # cut. Re-source-rooting this to ``aztec-packages-docs`` (and
+        # switching to ``mainnet/``) would mean the GitHub blob links
+        # in source citations 404, since the tag has no ``mainnet/``.
         source_root="aztec-packages",
         trees=(SourceTree("docs/static/typescript-api/testnet", "typescript-api"),),
         include_extensions=(".md", ".txt"),
@@ -186,14 +225,14 @@ CORPORA: Tuple[Corpus, ...] = (
               "the rendered output, not the .ts source",
     ),
     Corpus(
-        name="Noir Language Docs v4.2.0",
+        name="Noir Language Docs v4.3.0",
         slug="noir_language_docs",
         source_root="noir",
         trees=(SourceTree("docs/docs", "noir-docs"),),
         include_extensions=(".md", ".mdx"),
         transform="passthrough",
         notes="from noir-lang/noir at the commit pinned by aztec-packages "
-              "v4.2.0 (see CLAUDE.md for the canonical commit hash)",
+              "v4.3.0 (see CLAUDE.md for the canonical commit hash)",
     ),
     Corpus(
         # Site-root unversioned pages in aztec-packages that the
@@ -206,9 +245,14 @@ CORPORA: Tuple[Corpus, ...] = (
         # testnet column; without this corpus the bot has no way to
         # produce the testnet GSE address and tends to serve the
         # mainnet one for testnet questions.
-        name="Aztec Site Networks Page v4.2.0",
+        name="Aztec Site Networks Page v4.3.0",
         slug="aztec_site_networks",
-        source_root="aztec-packages",
+        # Site-root pages live alongside the versioned docs in
+        # ``docs/docs/`` — and ``networks.md`` was updated in the same
+        # PR (#23375) that cut version-v4.3.0/. Sourcing from
+        # aztec-packages-docs ensures we pick up the updated address
+        # table; the v4.3.0 tag still has the older copy.
+        source_root="aztec-packages-docs",
         trees=(
             SourceTree(
                 "docs/docs",
@@ -224,7 +268,7 @@ CORPORA: Tuple[Corpus, ...] = (
     ),
     # ---- Apiref corpora (noir_apiref transform) ------------------------
     Corpus(
-        name="Aztec.nr Framework v4.2.0 (apiref)",
+        name="Aztec.nr Framework v4.3.0 (apiref)",
         slug="aztec_nr_apiref",
         source_root="aztec-packages",
         trees=(SourceTree("noir-projects/aztec-nr", "aztec-nr"),),
@@ -233,7 +277,7 @@ CORPORA: Tuple[Corpus, ...] = (
         notes="public-surface only: doc comments + signatures",
     ),
     Corpus(
-        name="Noir stdlib v4.2.0 (apiref)",
+        name="Noir stdlib v4.3.0 (apiref)",
         slug="noir_stdlib_apiref",
         source_root="noir",
         trees=(SourceTree("noir_stdlib/src", "noir-stdlib"),),
@@ -243,7 +287,7 @@ CORPORA: Tuple[Corpus, ...] = (
     ),
     # ---- Body-bearing code corpora (rename_code_to_txt) ----------------
     Corpus(
-        name="Aztec Example Contracts v4.2.0",
+        name="Aztec Example Contracts v4.3.0",
         slug="aztec_example_contracts",
         source_root="aztec-packages",
         trees=(SourceTree("noir-projects/noir-contracts/contracts", "noir-contracts"),),
@@ -252,7 +296,7 @@ CORPORA: Tuple[Corpus, ...] = (
         notes="kept body-bearing: examples are the implementation",
     ),
     Corpus(
-        name="Aztec Protocol Circuits v4.2.0",
+        name="Aztec Protocol Circuits v4.3.0",
         slug="aztec_protocol_circuits",
         source_root="aztec-packages",
         trees=(SourceTree("noir-projects/noir-protocol-circuits", "noir-protocol-circuits"),),
@@ -260,7 +304,7 @@ CORPORA: Tuple[Corpus, ...] = (
         transform="rename_code_to_txt",
     ),
     Corpus(
-        name="aztec.js SDK v4.2.0",
+        name="aztec.js SDK v4.3.0",
         slug="aztec_js_sdk",
         source_root="aztec-packages",
         trees=(SourceTree("yarn-project/aztec.js/src", "aztec.js"),),
@@ -268,7 +312,7 @@ CORPORA: Tuple[Corpus, ...] = (
         transform="rename_code_to_txt",
     ),
     Corpus(
-        name="Aztec CLI v4.2.0",
+        name="Aztec CLI v4.3.0",
         slug="aztec_cli",
         source_root="aztec-packages",
         # CLI ships as two yarn packages with separate zip prefixes
@@ -283,7 +327,7 @@ CORPORA: Tuple[Corpus, ...] = (
         notes="bundles both cli/ and cli-wallet/ packages with distinct prefixes",
     ),
     Corpus(
-        name="Aztec E2E Tests v4.2.0",
+        name="Aztec E2E Tests v4.3.0",
         slug="aztec_e2e_tests",
         source_root="aztec-packages",
         trees=(SourceTree("yarn-project/end-to-end/src", "end-to-end"),),
@@ -291,7 +335,7 @@ CORPORA: Tuple[Corpus, ...] = (
         transform="rename_code_to_txt",
     ),
     Corpus(
-        name="Aztec L1 Contracts v4.2.0",
+        name="Aztec L1 Contracts v4.3.0",
         slug="aztec_l1_contracts",
         source_root="aztec-packages",
         trees=(SourceTree("l1-contracts", "l1-contracts"),),

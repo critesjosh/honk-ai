@@ -35,6 +35,7 @@ logger = logging.getLogger(__name__)
 
 def _post_upload(
     base_url: str, token: Optional[str], user: str, name: str, zip_path: Path,
+    host_header: Optional[str] = None,
 ) -> str:
     """POST a zip and return the Celery task_id."""
     import requests
@@ -42,6 +43,8 @@ def _post_upload(
     headers = {}
     if token:
         headers["Authorization"] = f"Bearer {token}"
+    if host_header:
+        headers["Host"] = host_header
 
     with open(zip_path, "rb") as f:
         files = {"file": (zip_path.name, f, "application/zip")}
@@ -63,7 +66,7 @@ def _post_upload(
 
 def _poll_task(
     base_url: str, token: Optional[str], task_id: str, poll_s: float = 5.0,
-    timeout_s: float = 7200.0,
+    timeout_s: float = 7200.0, host_header: Optional[str] = None,
 ) -> dict:
     """Poll the task-status endpoint until it terminates. Returns the
     final status dict."""
@@ -72,6 +75,8 @@ def _poll_task(
     headers = {}
     if token:
         headers["Authorization"] = f"Bearer {token}"
+    if host_header:
+        headers["Host"] = host_header
 
     deadline = time.time() + timeout_s
     last_status = None
@@ -96,6 +101,7 @@ def _poll_task(
 
 def _resolve_source_id(
     base_url: str, token: Optional[str], name: str, user: str,
+    host_header: Optional[str] = None,
 ) -> Optional[str]:
     """Look up the source UUID for a freshly-uploaded corpus.
 
@@ -108,6 +114,8 @@ def _resolve_source_id(
     headers = {}
     if token:
         headers["Authorization"] = f"Bearer {token}"
+    if host_header:
+        headers["Host"] = host_header
     try:
         r = requests.get(
             f"{base_url.rstrip('/')}/api/sources",
@@ -135,10 +143,11 @@ def upload_corpus(
     name: str,
     zip_path: Path,
     rel_prefix: str,
+    host_header: Optional[str] = None,
 ) -> dict:
     logger.info("Uploading %s → %s (%d bytes)", corpus_slug, name, zip_path.stat().st_size)
-    task_id = _post_upload(base_url, token, user, name, zip_path)
-    final = _poll_task(base_url, token, task_id)
+    task_id = _post_upload(base_url, token, user, name, zip_path, host_header=host_header)
+    final = _poll_task(base_url, token, task_id, host_header=host_header)
     status = (final.get("status") or final.get("state") or "?").upper()
     if status != "SUCCESS":
         return {
@@ -149,7 +158,7 @@ def upload_corpus(
             "error": final,
             "source_id": None,
         }
-    source_id = _resolve_source_id(base_url, token, name, user)
+    source_id = _resolve_source_id(base_url, token, name, user, host_header=host_header)
     return {
         "slug": corpus_slug,
         "name": name,
@@ -168,6 +177,13 @@ def main(argv: Optional[List[str]] = None) -> int:
                         help="Output dir from scripts.ingest.build")
     parser.add_argument("--base-url", required=True,
                         help="Backend base URL (e.g. http://localhost:7091)")
+    parser.add_argument("--host-header", default=None,
+                        help="Override the Host header sent on every request. "
+                             "Required when --base-url is the loopback Caddy "
+                             "port (127.0.0.1:5080) because the prod Caddyfile "
+                             "matches on $PUBLIC_HOSTNAME — without this, "
+                             "Caddy falls through to the default vhost and "
+                             "returns 200 with an empty body.")
     parser.add_argument("--user", default="local",
                         help="User identifier passed to /api/upload (default: local)")
     parser.add_argument("--token", default=None,
@@ -218,6 +234,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                 name=c["name"],
                 zip_path=zip_path,
                 rel_prefix=c["rel_prefix"],
+                host_header=args.host_header,
             )
         except Exception as exc:  # noqa: BLE001
             logger.exception("upload failed for %s", c["slug"])

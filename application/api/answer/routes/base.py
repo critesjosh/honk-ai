@@ -45,7 +45,7 @@ _MAX_SOURCES_EMITTED = 10
 # Corpus paths stored in `metadata.source` are relative to the ingest zip.
 # Map them to public URLs:
 #   - Developer Docs (rendered) → docs.aztec.network
-#   - Everything else (code, non-developer-docs markdown) → GitHub at v4.2.0
+#   - Everything else (code, non-developer-docs markdown) → GitHub at v4.3.0
 # Widget renders `source.source` as the <a href>, so we rewrite that field
 # in-place before emitting.
 _AZTEC_DOCS_BASE = "https://docs.aztec.network/developers/docs"
@@ -60,31 +60,34 @@ _AZTEC_OPERATE_BASE = "https://docs.aztec.network/operate"
 # ``aztec_site_networks`` corpus (zip prefix ``aztec-site/``).
 _AZTEC_SITE_BASE = "https://docs.aztec.network"
 _AZTEC_GITHUB_BASE = (
-    "https://github.com/AztecProtocol/aztec-packages/blob/v4.2.0"
+    "https://github.com/AztecProtocol/aztec-packages/blob/v4.3.0"
 )
 # Rendered Noir language docs — point at the canonical site rather than
 # the GitHub source. Stripping the markdown extension matches the
 # Docusaurus URL scheme; trailing /index segments are also stripped.
 _NOIR_DOCS_BASE = "https://noir-lang.org/docs"
-# Noir is a separate repo; aztec-packages v4.2.0 pins it at this commit via
+# Noir is a separate repo; aztec-packages v4.3.0 pins it at this commit via
 # the noir/noir-repo submodule. Used for noir-stdlib apiref source files
 # (those are real .nr source code, not rendered docs). Update this commit
 # when bumping Aztec versions.
 _NOIR_GITHUB_BASE = (
-    "https://github.com/noir-lang/noir/blob/842974fcf034b0a652631e69fc24f92f9ddd1d37"
+    "https://github.com/noir-lang/noir/blob/1d9727a6e0a9df75a71bb9c87daacbe30659ba09"
 )
 
 # Corpus prefix → GitHub repo prefix. First match wins, so put the more
 # specific prefixes before their catch-alls.
 #
-# Note on what is NOT here: `version-v4.2.0/` and `version-v4.2.0/operators/`
-# used to fall through to GitHub at `docs/developer_versioned_docs/version-v4.2.0/`
-# and `docs/network_versioned_docs/version-v4.2.0/operators/`, but those
-# folders don't exist at the literal v4.2.0 tag (the tag has them under
-# `version-v4.1.0-rc.2`, since the docs version snapshot is taken from a
-# moving branch). All such markdown content is rendered on docs.aztec.network
-# anyway, so we route it there directly via the dedicated rules in
-# `_aztec_source_url` — never via GitHub.
+# Note on what is NOT here: `version-v4.3.0/` and `version-v4.3.0/operators/`
+# used to fall through to GitHub at `docs/developer_versioned_docs/version-v4.3.0/`
+# and `docs/network_versioned_docs/version-v4.3.0/operators/`, but those
+# folders don't exist at the literal v4.3.0 tag — the tag was cut from a
+# release branch before PR #23375 merged into ``next``, so at the tag
+# the latest snapshot is ``version-v4.2.0-aztecnr-rc.2`` (dev) /
+# ``version-v4.1.2`` (network). The docs version snapshot is taken from
+# a moving branch; we ingest from ``next``-branch commits (see Option B
+# in ``PLAN-v4.3.0-bump.md``). All such markdown content is rendered on
+# docs.aztec.network anyway, so we route it there directly via the
+# dedicated rules in `_aztec_source_url` — never via GitHub.
 _SOURCE_TO_REPO_PREFIX: List[Tuple[str, str]] = [
     ("end-to-end/",               "yarn-project/end-to-end/src/"),
     ("cli/",                      "yarn-project/cli/src/"),
@@ -94,9 +97,10 @@ _SOURCE_TO_REPO_PREFIX: List[Tuple[str, str]] = [
     ("noir-contracts/",           "noir-projects/noir-contracts/contracts/"),
     ("noir-protocol-circuits/",   "noir-projects/noir-protocol-circuits/"),
     ("l1-contracts/",             "l1-contracts/"),
-    # Auto-generated TypeScript API reference. At the v4.2.0 tag these docs
-    # live under docs/static/typescript-api/testnet/ (the folder was renamed
-    # to mainnet/ on a later release).
+    # Auto-generated TypeScript API reference. The v4.3.0 tag still has
+    # this under ``docs/static/typescript-api/testnet/`` — the rename to
+    # ``mainnet/`` only landed on ``next`` after the tag was cut, so
+    # sticking with ``testnet/`` keeps the URLs reachable at the tag.
     ("typescript-api/",           "docs/static/typescript-api/testnet/"),
 ]
 
@@ -131,13 +135,13 @@ def _aztec_source_url(source_path: str) -> str:
       * Network / operator docs                       → docs.aztec.network/operate/operators/<rest>
       * Unversioned site-root pages (networks.md)    → docs.aztec.network/<rest>
       * Noir language docs + stdlib                   → github.com/noir-lang/noir at pinned commit
-      * Aztec source code (TS / Sol / Noir)           → github.com/AztecProtocol/aztec-packages at v4.2.0
+      * Aztec source code (TS / Sol / Noir)           → github.com/AztecProtocol/aztec-packages at v4.3.0
     """
     if not source_path or not isinstance(source_path, str):
         return source_path
 
     # Network / operator docs — rendered at /operate/operators/<rest> on
-    # the site. The corpus path is `version-v4.2.0/operators/<rest>` per
+    # the site. The corpus path is `version-v4.3.0/operators/<rest>` per
     # the way the network docs are ingested.
     #
     # ``apply_slug_override`` swaps the final path segment when the
@@ -145,28 +149,38 @@ def _aztec_source_url(source_path: str) -> str:
     # ``registering-sequencer.md`` declares ``id: registering_sequencer``
     # so the site serves it at ``.../registering_sequencer``, not the
     # filename slug).
-    if source_path.startswith("version-v4.2.0/operators/"):
+    if source_path.startswith("version-v4.3.0/operators/"):
         source_no_ext = _strip_doc_ext(source_path)
-        rest = source_path[len("version-v4.2.0/"):]  # keep "operators/<rest>"
+        rest = source_path[len("version-v4.3.0/"):]  # keep "operators/<rest>"
         rest = _strip_index_suffix(_strip_doc_ext(rest))
         rest = apply_slug_override(rest, source_no_ext)
         return f"{_AZTEC_OPERATE_BASE}/{rest}".rstrip("/")
 
     # Rendered Aztec developer docs — files under `docs/` subfolder.
-    if source_path.startswith("version-v4.2.0/docs/"):
+    if source_path.startswith("version-v4.3.0/docs/"):
         source_no_ext = _strip_doc_ext(source_path)
-        rest = source_path[len("version-v4.2.0/docs/"):]
+        rest = source_path[len("version-v4.3.0/docs/"):]
         rest = _strip_index_suffix(_strip_doc_ext(rest))
         rest = apply_slug_override(rest, source_no_ext)
         return f"{_AZTEC_DOCS_BASE}/{rest}".rstrip("/")
 
     # Top-level developer docs (overview, ai_tooling, getting_started_*)
-    # — these live directly under `version-v4.2.0/<file>.md` in the
+    # — these live directly under `version-v4.3.0/<file>.md` in the
     # corpus and are rendered at /developers/<filename> on the site, NOT
     # under /developers/docs/.
-    if source_path.startswith("version-v4.2.0/"):
+    #
+    # Gap: the *network* corpus also has a top-level ``reference/``
+    # sibling to ``operators/`` (at v4.3.0 it contains only
+    # ``changelog/*`` which we filter out via ``exclude_paths``), so no
+    # chunks reach the rewriter from there in the current corpus shape.
+    # If a future network release puts non-changelog content under
+    # ``reference/``, this catch-all would misroute it to
+    # ``/developers/reference/<rest>``. Add a dedicated
+    # ``version-vX.Y.Z/reference/`` → ``/operate/reference/`` case
+    # before this block if/when that happens.
+    if source_path.startswith("version-v4.3.0/"):
         source_no_ext = _strip_doc_ext(source_path)
-        rest = source_path[len("version-v4.2.0/"):]
+        rest = source_path[len("version-v4.3.0/"):]
         rest = _strip_index_suffix(_strip_doc_ext(rest))
         rest = apply_slug_override(rest, source_no_ext)
         return f"{_AZTEC_DEV_TOP_BASE}/{rest}".rstrip("/")
@@ -198,7 +212,7 @@ def _aztec_source_url(source_path: str) -> str:
                 break
         return f"{_NOIR_GITHUB_BASE}/noir_stdlib/src/{rest}"
 
-    # Code / non-developer-docs → GitHub blob at v4.2.0
+    # Code / non-developer-docs → GitHub blob at v4.3.0
     for corpus_prefix, repo_prefix in _SOURCE_TO_REPO_PREFIX:
         if source_path.startswith(corpus_prefix):
             rest = source_path[len(corpus_prefix):]
@@ -220,7 +234,7 @@ def _aztec_source_url(source_path: str) -> str:
 
 
 # ---- Citation marker (Aztec fork) ---------------------------------------
-# The Aztec grounded prompts (aztec_4_2_0_grounded.txt and the Discord
+# The Aztec grounded prompts (aztec_4_3_0_grounded.txt and the Discord
 # variant) instruct the LLM to end every answer with a machine-only
 # ``[[cited: i, j, k]]`` (or ``[[cited: none]]``) marker referencing the
 # 1-indexed chunk numbers in the ``{summaries}`` block. This filter
@@ -440,7 +454,7 @@ def _doc_aliases(doc: Dict[str, Any]) -> Tuple[List[str], List[str]]:
         if not isinstance(raw, str) or not raw:
             continue
         lo = raw.lower()
-        # ``source`` is often a corpus path (``version-v4.2.0/.../foo.md``)
+        # ``source`` is often a corpus path (``version-v4.3.0/.../foo.md``)
         # before URL rewriting; treat it like a path alias.
         if "/" in lo:
             paths.append(lo)

@@ -3,10 +3,31 @@
 Usage::
 
     python -m scripts.ingest.build \
-        --aztec-pkg /tmp/aztec-v4.2.0 \
-        --noir      /tmp/noir-v4.2.0 \
-        --out       /tmp/aztec-corpora-build \
+        --aztec-pkg      /tmp/aztec-v4.3.0 \
+        --aztec-pkg-docs /tmp/aztec-v4.3.0-docs \
+        --noir           /tmp/noir-v4.3.0 \
+        --out            /tmp/aztec-corpora-build \
         [--corpus aztec_nr_apiref]   # optional: limit to one corpus
+
+Three source roots are accepted (Option B per ``PLAN-v4.3.0-bump.md``)
+because the corpora are pinned at different upstream commits:
+
+  * ``--aztec-pkg``      → aztec-packages at the release tag
+                           (``v4.3.0``). Used for code corpora + the
+                           auto-generated TypeScript API reference.
+  * ``--aztec-pkg-docs`` → aztec-packages at a ``next``-branch snapshot
+                           commit that contains the new
+                           ``version-vX.Y.Z/`` Docusaurus folder. The
+                           docs version snapshot is taken from a
+                           moving branch so the literal release tag
+                           does NOT have it.
+  * ``--noir``           → noir-lang/noir at the commit pinned by
+                           aztec-packages' ``noir/noir-repo`` submodule
+                           at the release tag.
+
+A flag is required only if one of the selected corpora actually needs
+that root — single-corpus builds (``--corpus aztec_nr_apiref``) can
+omit unrelated flags.
 
 For each corpus this writes:
   ``<out>/zips/<slug>.zip``         the upload-ready zip
@@ -51,12 +72,20 @@ _IGNORED_DIR_NAMES = {
 }
 
 
+_SOURCE_ROOT_TO_FLAG = {
+    "aztec-packages": "--aztec-pkg",
+    "aztec-packages-docs": "--aztec-pkg-docs",
+    "noir": "--noir",
+}
+
+
 def _resolve_source_dir(corpus: Corpus, tree: SourceTree, roots: dict) -> Path:
     root = roots.get(corpus.source_root)
     if root is None:
+        flag = _SOURCE_ROOT_TO_FLAG.get(corpus.source_root, "<unknown>")
         raise SystemExit(
             f"corpus {corpus.slug!r}: missing root for {corpus.source_root!r}; "
-            "pass --aztec-pkg / --noir on the CLI"
+            f"pass {flag} on the CLI"
         )
     full = Path(root) / tree.path
     if not full.is_dir():
@@ -234,8 +263,15 @@ def build_corpus(
         zip_path = out_dir / "zips" / f"{corpus.slug}.zip"
         zip_files = _zip_directory(staging, zip_path)
 
+    # asdict() ships only declared fields; rel_prefix is a @property on
+    # Corpus, so inject it explicitly. upload.py reads it from the
+    # manifest to send the right ``rel_prefix`` form-field with each
+    # upload (the backend uses it as the parser ``input_dir`` so
+    # metadata.source ends up zip-relative).
+    corpus_dict = asdict(corpus)
+    corpus_dict["rel_prefix"] = corpus.rel_prefix
     manifest = {
-        "corpus": asdict(corpus),
+        "corpus": corpus_dict,
         "source_dirs": [str(d) for d in src_dirs],
         "zip_path": str(zip_path),
         "zip_files": zip_files,
@@ -259,16 +295,26 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument(
         "--aztec-pkg",
         required=False,
-        help="Path to a checkout of aztec-packages at the desired tag "
-             "(e.g. /tmp/aztec-v4.2.0). Required for any corpus whose "
-             "source_root is 'aztec-packages'.",
+        help="Path to a checkout of aztec-packages at the desired release "
+             "tag (e.g. /tmp/aztec-v4.3.0). Required for any corpus whose "
+             "source_root is 'aztec-packages' (code corpora + the "
+             "auto-generated TypeScript API reference).",
+    )
+    parser.add_argument(
+        "--aztec-pkg-docs",
+        required=False,
+        help="Path to a checkout of aztec-packages at the ``next``-branch "
+             "commit containing the new ``version-vX.Y.Z/`` docs folder "
+             "(e.g. /tmp/aztec-v4.3.0-docs). Required for the rendered-"
+             "docs corpora (developer / network / site-networks).",
     )
     parser.add_argument(
         "--noir",
         required=False,
         help="Path to a checkout of noir-lang/noir at the commit pinned "
-             "by the aztec-packages release. Required for any corpus "
-             "whose source_root is 'noir'.",
+             "by the aztec-packages release (via the noir/noir-repo "
+             "submodule). Required for any corpus whose source_root is "
+             "'noir'.",
     )
     parser.add_argument(
         "--out",
@@ -293,6 +339,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     roots = {}
     if args.aztec_pkg:
         roots["aztec-packages"] = Path(args.aztec_pkg).resolve()
+    if args.aztec_pkg_docs:
+        roots["aztec-packages-docs"] = Path(args.aztec_pkg_docs).resolve()
     if args.noir:
         roots["noir"] = Path(args.noir).resolve()
 

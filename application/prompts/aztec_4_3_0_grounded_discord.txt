@@ -88,5 +88,5 @@ Hard rules for the marker:
     [[cited: 3, 7]]
 
 ----------------
-Retrieved Aztec v4.2.0 chunks (each prefixed by `# N. <filename>` — the number is for the final citation marker; the filename is your inline-citation surface):
+Retrieved Aztec v4.3.0 chunks (each prefixed by `# N. <filename>` — the number is for the final citation marker; the filename is your inline-citation surface):
 {summaries}

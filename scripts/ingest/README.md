@@ -2,7 +2,7 @@
 
 This directory holds the tooling for (re-)ingesting the 13 corpora that
 make up the Aztec DocsGPT knowledge base. It exists so that bumping to
-a new aztec-packages release (e.g. `v4.2.0` → `v4.3.0`) is a small
+a new aztec-packages release (e.g. `v4.3.0` → `v4.3.0`) is a small
 number of commands instead of a folkloric afternoon of `zip` calls and
 SQL guesses.
 
@@ -21,10 +21,17 @@ SQL guesses.
 13 corpora total, all built from two upstream git repos pinned at
 specific revisions per Aztec release:
 
-  * `aztec-packages` at the release tag (`v4.2.0` etc.)
-  * `noir-lang/noir` at the commit pinned by aztec-packages' `noir/`
-    submodule (run `git -C aztec-packages submodule status noir` to
-    find this commit). At v4.2.0 it's `842974fcf...`.
+  * `aztec-packages` at the release tag (`v4.3.0` etc.) — used for code corpora.
+  * `aztec-packages` at a `next`-branch snapshot commit that contains
+    `version-vNEW/` — used for the three rendered-docs corpora. The
+    docs version snapshot is taken from a moving branch; the literal
+    release tag does NOT contain `version-vNEW/`. For v4.3.0 the
+    snapshot is `3f7cbc05e9a522ca81f5416278e99633dc47ee91` (PR
+    #23375's merge commit on `next`).
+  * `noir-lang/noir` at the commit pinned by aztec-packages'
+    `noir/noir-repo` submodule (run `git -C aztec-packages submodule
+    status noir/noir-repo` to find this commit). At v4.3.0 it's
+    `1d9727a6e0a9df75a71bb9c87daacbe30659ba09`.
 
 Run `python -m scripts.ingest.list` (TODO) or read `corpora.py` for the
 full table. The most important distinction is between:
@@ -53,7 +60,7 @@ never the canonical answer.
 Currently active exclusions:
 
   * **Aztec Developer Docs** — `docs/resources/migration_notes.*`
-    (was 285 of ~1000 chunks at v4.2.0)
+    (was 285 of ~1000 chunks at v4.3.0)
   * **Aztec Network Docs** — `operators/reference/changelog/*` and
     `reference/changelog/*` (~60 chunks of release notes)
 
@@ -73,17 +80,21 @@ the wanted slice is far smaller than the source tree. Currently:
 Outline; details below.
 
 ```bash
-# 1. Get clean checkouts of both source trees at the new pin.
-git -C ../aztec-packages worktree add --detach /tmp/aztec-vNEW vNEW
-NOIR_PIN=$(git -C ../aztec-packages submodule status noir | awk '{print $1}' | tr -d -)
+# 1. Get clean checkouts of all THREE source trees (see "Option B" in
+#    PLAN-v4.3.0-bump.md). The docs version snapshot is taken from a
+#    moving branch, so the release tag does NOT contain version-vNEW/.
+git -C ../aztec-packages worktree add --detach /tmp/aztec-vNEW      vNEW
+git -C ../aztec-packages worktree add --detach /tmp/aztec-vNEW-docs <next-snapshot-sha>
+NOIR_PIN=$(git -C ../aztec-packages -C /tmp/aztec-vNEW submodule status noir/noir-repo | awk '{print $1}' | tr -d -)
 git clone https://github.com/noir-lang/noir /tmp/noir-vNEW
 git -C /tmp/noir-vNEW checkout "$NOIR_PIN"
 
 # 2. Build all 13 zips. Idempotent; rerunnable.
 python -m scripts.ingest.build \
-    --aztec-pkg /tmp/aztec-vNEW \
-    --noir      /tmp/noir-vNEW \
-    --out       /tmp/aztec-corpora-build
+    --aztec-pkg      /tmp/aztec-vNEW \
+    --aztec-pkg-docs /tmp/aztec-vNEW-docs \
+    --noir           /tmp/noir-vNEW \
+    --out            /tmp/aztec-corpora-build
 
 # 3. Review the build manifests — especially the apiref ones.
 cat /tmp/aztec-corpora-build/manifests/aztec_nr_apiref.json | jq
@@ -92,9 +103,12 @@ cat /tmp/aztec-corpora-build/manifests/aztec_nr_apiref.json | jq
 
 # 4. Upload each zip and capture the source UUIDs. This kicks off
 #    Celery embeddings — costs scale with new chunk count.
+#    NB: prod compose only publishes Caddy on 127.0.0.1:5080 — use
+#    that base URL when running against the hub compose. The dev
+#    compose still exposes backend directly on 127.0.0.1:7091.
 python -m scripts.ingest.upload \
     --build-dir /tmp/aztec-corpora-build \
-    --base-url  http://localhost:7091 \
+    --base-url  http://127.0.0.1:5080 \
     --user      local \
     --token     "$INTERNAL_KEY" \
     --out       /tmp/aztec-corpora-build/upload_manifest.json
@@ -108,9 +122,14 @@ python -m scripts.ingest.swap_sources \
 psql "$POSTGRES_URI" -f /tmp/swap.sql
 
 # 6. Update AZTEC_SOURCE_IDS in .env (the swap_sources output prints
-#    the canonical-order block to copy). Then:
+#    the canonical-order block to copy) and bump AZTEC_CORPUS_VERSION.
+#    Then rebuild + force-recreate. ``discord-bot`` is included because
+#    the agent display-name and citation footer may have changed across
+#    a version bump.
 docker compose -f deployment/docker-compose-hub.yaml --env-file .env \
-    up -d --force-recreate backend worker
+    build backend worker discord-bot
+docker compose -f deployment/docker-compose-hub.yaml --env-file .env \
+    up -d --force-recreate backend worker discord-bot
 
 # 7. Run the eval to confirm no regressions.
 docker compose -f deployment/docker-compose-hub.yaml exec backend \
@@ -119,10 +138,12 @@ docker compose -f deployment/docker-compose-hub.yaml exec backend \
     python scripts/eval/eval_retrieval.py --mode stream \
         --api-key "$PROD_AGENT_KEY"
 
-# 8. (Optional cleanup) DELETE old `sources` rows from the previous
-#    version once you're confident the new ones work, so the documents
-#    table doesn't grow unboundedly. The old corpora are still
-#    addressable by UUID if you need to roll back.
+# 8. Cleanup — deferred ≥72h. Once you've seen healthy traffic on all
+#    four surfaces (widget, /ask, Discord, MCP) since the swap, drop the
+#    old version. The old corpora stay addressable by UUID until the
+#    DELETE; rolling back during the 72h window is restoring the
+#    agents-pre-vNEW.tsv snapshot and reverting .env.
+psql "$POSTGRES_URI" -c "DELETE FROM sources WHERE name LIKE '% vOLD%';"
 ```
 
 ## Apiref-only swap (smaller blast radius)
@@ -132,15 +153,15 @@ If you only want to swap the apiref corpora (e.g. iterating on the
 
 ```bash
 python -m scripts.ingest.build \
-    --aztec-pkg /tmp/aztec-v4.2.0 \
-    --noir      /tmp/noir-v4.2.0 \
+    --aztec-pkg /tmp/aztec-v4.3.0 \
+    --noir      /tmp/noir-v4.3.0 \
     --out       /tmp/aztec-corpora-build \
     --corpus    aztec_nr_apiref \
     --corpus    noir_stdlib_apiref
 
 python -m scripts.ingest.upload \
     --build-dir /tmp/aztec-corpora-build \
-    --base-url  http://localhost:7091 \
+    --base-url  http://127.0.0.1:5080 \
     --user      local \
     --token     "$INTERNAL_KEY" \
     --out       /tmp/aztec-corpora-build/upload_manifest.json \
@@ -170,7 +191,7 @@ existing array first.
   "corpora": [
     {
       "corpus": { "name": ..., "slug": ..., "rel_prefix": ..., ... },
-      "source_dirs": ["/tmp/aztec-v4.2.0/noir-projects/aztec-nr"],
+      "source_dirs": ["/tmp/aztec-v4.3.0/noir-projects/aztec-nr"],
       "zip_path": "/tmp/.../zips/aztec_nr_apiref.zip",
       "zip_files": 223,
       "transform_stats": {
@@ -192,7 +213,7 @@ existing array first.
 [
   {
     "slug": "aztec_nr_apiref",
-    "name": "Aztec.nr Framework v4.2.0 (apiref)",
+    "name": "Aztec.nr Framework v4.3.0 (apiref)",
     "task_id": "...",
     "status": "SUCCESS",
     "source_id": "8c9d...",

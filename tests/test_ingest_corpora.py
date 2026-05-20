@@ -33,7 +33,7 @@ def test_networks_corpus_in_canonical_list():
 def test_networks_corpus_targets_only_networks_md():
     c = get_corpus("aztec_site_networks")
     assert c.transform == "passthrough"
-    assert c.source_root == "aztec-packages"
+    assert c.source_root == "aztec-packages-docs"
     assert len(c.trees) == 1
     tree = c.trees[0]
     assert tree.path == "docs/docs"
@@ -42,7 +42,7 @@ def test_networks_corpus_targets_only_networks_md():
 
 
 def test_walk_files_include_paths_allowlist(tmp_path: Path):
-    # Layout that mirrors aztec-packages docs/docs/ at v4.2.0:
+    # Layout that mirrors aztec-packages docs/docs/ at v4.3.0:
     # networks.md, index.mdx, aztec_connect_sunset.mdx
     (tmp_path / "networks.md").write_text("# Networks\n")
     (tmp_path / "index.mdx").write_text("# Index\n")

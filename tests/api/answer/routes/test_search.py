@@ -257,7 +257,7 @@ class TestSearchGlobal:
         # returned source-1's result first.
         pairs = [
             (_make_doc("best match",
-                      {"source": "version-v4.2.0/docs/foo.md", "title": "Best"}), 0.10),
+                      {"source": "version-v4.3.0/docs/foo.md", "title": "Best"}), 0.10),
             (_make_doc("worse match",
                       {"source": "aztec-nr/aztec/src/lib.nr.md", "title": "Worse"}), 0.50),
         ]
@@ -302,11 +302,11 @@ class TestSearchGlobal:
         dup_text = "Duplicate content " * 20
         pairs = [
             (_make_doc(dup_text,
-                      {"source": "version-v4.2.0/docs/x.md", "filename": "x.md"}), 0.1),
+                      {"source": "version-v4.3.0/docs/x.md", "filename": "x.md"}), 0.1),
             (_make_doc(dup_text,
-                      {"source": "version-v4.2.0/docs/x.md", "filename": "x.md"}), 0.2),
+                      {"source": "version-v4.3.0/docs/x.md", "filename": "x.md"}), 0.2),
             (_make_doc("Unique content here",
-                      {"source": "version-v4.2.0/docs/y.md", "filename": "y.md"}), 0.3),
+                      {"source": "version-v4.3.0/docs/y.md", "filename": "y.md"}), 0.3),
         ]
         vs = self._patched_vs(pairs)
 
@@ -326,7 +326,7 @@ class TestSearchGlobal:
 
         pairs = [
             (_make_doc("hello",
-                      {"source": "version-v4.2.0/docs/getting_started.md",
+                      {"source": "version-v4.3.0/docs/getting_started.md",
                        "filename": "getting_started.md"}), 0.1),
         ]
         vs = self._patched_vs(pairs)
@@ -384,7 +384,7 @@ class TestSearchGlobal:
         assert "poseidon" in results[0]["text"]
 
     def test_url_rewrite_aztec_nr_apiref(self, flask_app):
-        """aztec-nr apiref paths get rewritten to GitHub at v4.2.0,
+        """aztec-nr apiref paths get rewritten to GitHub at v4.3.0,
         with the .nr.md extension hack stripped."""
         from application.api.answer.routes.search import SearchResource
 
@@ -432,7 +432,7 @@ class TestSearchGlobal:
 
         pairs = [
             (_make_doc(f"content {i}",
-                      {"source": f"version-v4.2.0/docs/f{i}.md",
+                      {"source": f"version-v4.3.0/docs/f{i}.md",
                        "filename": f"f{i}.md"}), 0.1 + i * 0.01)
             for i in range(20)
         ]
@@ -536,7 +536,7 @@ class TestSearchResourcePgConn:
         fake_vs._embedding.embed_query.return_value = [0.0] * 8
         fake_vs.search_by_vector_with_score.return_value = [
             (_make_doc("answer text",
-                      {"source": "version-v4.2.0/docs/x.md", "title": "Doc"}), 0.1),
+                      {"source": "version-v4.3.0/docs/x.md", "title": "Doc"}), 0.1),
         ]
 
         with _patch_search_db(pg_conn), patch(
@@ -569,7 +569,7 @@ class TestSearchResourcePgConn:
         fake_vs = MagicMock()
         fake_vs._embedding.embed_query.return_value = [0.0] * 8
         fake_vs.search_by_vector_with_score.return_value = [
-            (_make_doc("one", {"source": "version-v4.2.0/docs/x.md", "title": "A"}), 0.1),
+            (_make_doc("one", {"source": "version-v4.3.0/docs/x.md", "title": "A"}), 0.1),
         ]
         with _patch_search_db(pg_conn), patch(
             "application.api.answer.routes.search.VectorCreator.create_vectorstore",
@@ -760,7 +760,7 @@ class TestSearchUserLogs:
         vs = self._fake_vs([
             (_make_doc(
                 "hit body",
-                {"source": "version-v4.2.0/docs/foo.md", "title": "Foo"},
+                {"source": "version-v4.3.0/docs/foo.md", "title": "Foo"},
             ), 0.1),
         ])
 
@@ -818,7 +818,7 @@ class TestSearchUserLogs:
         )
 
         vs = self._fake_vs([
-            (_make_doc("body", {"source": "version-v4.2.0/docs/x.md"}), 0.1),
+            (_make_doc("body", {"source": "version-v4.3.0/docs/x.md"}), 0.1),
         ])
 
         with _patch_search_db(pg_conn), patch(
@@ -868,7 +868,7 @@ class TestSearchUserLogs:
         )
 
         vs = self._fake_vs([
-            (_make_doc("body", {"source": "version-v4.2.0/docs/x.md"}), 0.1),
+            (_make_doc("body", {"source": "version-v4.3.0/docs/x.md"}), 0.1),
         ])
 
         # Question contains the bearer three times in different
@@ -932,7 +932,7 @@ class TestSearchUserLogs:
         )
 
         vs = self._fake_vs([
-            (_make_doc("body", {"source": "version-v4.2.0/docs/x.md"}), 0.1),
+            (_make_doc("body", {"source": "version-v4.3.0/docs/x.md"}), 0.1),
         ])
 
         with _patch_search_db(pg_conn), patch(
@@ -1058,7 +1058,7 @@ class TestSearchUserLogs:
         )
 
         vs = self._fake_vs([
-            (_make_doc("body", {"source": "version-v4.2.0/docs/x.md"}), 0.1),
+            (_make_doc("body", {"source": "version-v4.3.0/docs/x.md"}), 0.1),
         ])
 
         # Patch ``db_session`` (the symbol used by ``_log_request``)

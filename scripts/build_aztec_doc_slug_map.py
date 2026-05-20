@@ -10,8 +10,8 @@ rewriter 404s on the live site. ``aztec_doc_slugs.py`` records every
 such override; this script regenerates that file after a corpus bump.
 
 Walks two trees under the supplied ``aztec-packages`` checkout:
-    docs/network_versioned_docs/version-v4.2.0/
-    docs/developer_versioned_docs/version-v4.2.0/
+    docs/network_versioned_docs/version-v4.3.0/
+    docs/developer_versioned_docs/version-v4.3.0/
 
 For each ``.md`` / ``.mdx`` file:
   1. Skip if filename is ``index`` (Docusaurus serves index files at
@@ -36,8 +36,8 @@ import sys
 from pathlib import Path
 
 _DOC_ROOTS = (
-    ("network_versioned_docs/version-v4.2.0", "version-v4.2.0"),
-    ("developer_versioned_docs/version-v4.2.0", "version-v4.2.0"),
+    ("network_versioned_docs/version-v4.3.0", "version-v4.3.0"),
+    ("developer_versioned_docs/version-v4.3.0", "version-v4.3.0"),
 )
 
 _FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n", re.DOTALL)
@@ -99,7 +99,7 @@ emits ``.../registering-sequencer`` which 404s — the live site serves
 the page at ``.../registering_sequencer`` because the file declares
 ``id: registering_sequencer``.
 
-This module is the authoritative map of those overrides for the v4.2.0
+This module is the authoritative map of those overrides for the v4.3.0
 corpus. Keys are corpus-relative source paths *without* the ``.md`` /
 ``.mdx`` extension. Values are the URL slug Docusaurus actually serves.
 
@@ -114,7 +114,7 @@ To regenerate after a corpus bump: ``python3 scripts/build_aztec_doc_slug_map.py
 
 from __future__ import annotations
 
-# Generated from aztec-packages @ v4.2.0 (network_versioned_docs +
+# Generated from aztec-packages @ v4.3.0 (network_versioned_docs +
 # developer_versioned_docs). Only non-index files where ``id:`` differs
 # from the filename basename are listed.
 AZTEC_DOC_SLUG_OVERRIDES: dict[str, str] = {
@@ -131,7 +131,7 @@ def apply_slug_override(rest: str, source_path_no_ext: str) -> str:
     has been stripped (e.g. ``operators/setup/registering-sequencer``
     when emitting under ``/operate/``). ``source_path_no_ext`` is the
     full corpus-relative path with the extension stripped (e.g.
-    ``version-v4.2.0/operators/setup/registering-sequencer``) — that
+    ``version-v4.3.0/operators/setup/registering-sequencer``) — that
     is the key into ``AZTEC_DOC_SLUG_OVERRIDES``.
 
     Defensive: index files are served at the parent path regardless of
@@ -156,7 +156,9 @@ def main() -> None:
         "--aztec-pkg",
         required=True,
         type=Path,
-        help="Path to an aztec-packages checkout (tag v4.2.0 or a worktree of it)",
+        help="Path to an aztec-packages checkout (next-branch worktree "
+             "that contains version-v4.3.0/, NOT the release tag — see "
+             "PLAN-v4.3.0-bump.md Option B)",
     )
     args = parser.parse_args()
     overrides = scan_tree(args.aztec_pkg)

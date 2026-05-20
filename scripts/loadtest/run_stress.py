@@ -187,7 +187,7 @@ WIDGET_MODEL_ID = "x-ai/grok-4.1-fast"
 DISCORD_MODEL_ID = "qwen/qwen3.6-flash"
 
 # Canonical Aztec system prompt used by the prod docs.aztec.network agent
-# (verified 2026-04-27: prompts.name = "Aztec 4.2.0 — grounded, Discord-safe",
+# (verified 2026-04-27: prompts.name = "Aztec 4.3.0 — grounded, Discord-safe",
 # ~6010 chars / ~1500 input tokens).
 #
 # CAVEAT: passing "prompt_id" in the request body is IGNORED by the

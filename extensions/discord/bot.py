@@ -532,7 +532,7 @@ async def _signal_breaker_silenced(
 # per 1M tokens as of 2026-05) so estimated_usd over-counts vs actual
 # OpenRouter spend; tripping the cap "early" is the safe failure mode.
 # Override these via env when the bot's resolved model changes (e.g. if
-# the ``Aztec 4.2.0`` agent is repointed to grok-4.1-fast — see
+# the ``Aztec 4.3.0`` agent is repointed to grok-4.1-fast — see
 # application/llm/open_router.py for the registered set).
 _USD_PER_PROMPT_MTOK = _env_float("DISCORD_USD_PER_PROMPT_MTOK", 0.20)
 _USD_PER_COMPLETION_MTOK = _env_float("DISCORD_USD_PER_COMPLETION_MTOK", 1.20)
@@ -1691,7 +1691,7 @@ async def submit_feedback(
     The backend resolves the conversation by ``user_id`` derived from
     the request's auth token. Production runs with ``AUTH_TYPE`` unset
     so anonymous calls resolve to ``user_id="local"``, which matches
-    the bot's chosen agent (the ``Aztec 4.2.0`` agent for Honk AI's
+    the bot's chosen agent (the ``Aztec 4.3.0`` agent for Honk AI's
     @-mention path). If ``AUTH_TYPE`` is ever switched to JWT mode this call
     will start 401-ing — at that point the bot would need to mint a
     short-lived JWT against ``JWT_SECRET_KEY`` (same shared secret the

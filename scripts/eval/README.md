@@ -2,7 +2,7 @@
 
 Regression suite for the RAG retrieval and answer pipeline. Run before merging
 any change that touches `application/retriever/`, `application/vectorstore/`,
-the system prompt (`application/prompts/aztec_4_2_0_grounded.txt`), or the
+the system prompt (`application/prompts/aztec_4_3_0_grounded.txt`), or the
 `AZTEC_SOURCE_IDS` corpus configuration.
 
 Two workflows live here:
@@ -128,7 +128,7 @@ docker compose -f deployment/docker-compose.yaml run --rm \
     -e PYTHONPATH=/app \
     backend python /app/scripts/eval/provision_test_agent.py \
         --name variant-new-prompt \
-        --prompt-file /app/application/prompts/aztec_4_2_0_grounded.txt \
+        --prompt-file /app/application/prompts/aztec_4_3_0_grounded.txt \
         --source-ids-from-env \
         --model qwen/qwen3.6-flash
 ```
@@ -142,7 +142,7 @@ CANDIDATE_KEY=$(docker compose -f deployment/docker-compose.yaml run --rm -T \
     -e PYTHONPATH=/app \
     backend python /app/scripts/eval/provision_test_agent.py \
         --name variant-new-prompt \
-        --prompt-file /app/application/prompts/aztec_4_2_0_grounded.txt \
+        --prompt-file /app/application/prompts/aztec_4_3_0_grounded.txt \
         --source-ids-from-env \
         | jq -r .key)
 ```
@@ -273,7 +273,7 @@ provision with `--prompt-file` pointing at it. Keep
 isolates the prompt as the only variable.
 
 ```bash
-cp application/prompts/aztec_4_2_0_grounded.txt \
+cp application/prompts/aztec_4_3_0_grounded.txt \
     scripts/eval/variants/grounded_terser.txt
 # edit scripts/eval/variants/grounded_terser.txt
 docker compose -f deployment/docker-compose.yaml run --rm \
@@ -417,9 +417,9 @@ Field meanings:
 | `tag` | both | Short identifier shown in PASS/FAIL output. |
 | `query` | both | The user question. |
 | `history` | stream | Optional conversation history (list of `[user, assistant]` pairs) for multi-turn tests. |
-| `expected_source_prefixes` | retriever | Path prefixes that must appear in retrieved docs. Buckets are normalized to one of `noir-docs/`, `noir-stdlib/`, `typescript-api/`, `aztec-nr/`, `aztec.js/`, `cli/`, `cli-wallet/`, `end-to-end/`, `l1-contracts/`, `noir-contracts/`, `noir-protocol-circuits/`, `version-v4.2.0/`. |
+| `expected_source_prefixes` | retriever | Path prefixes that must appear in retrieved docs. Buckets are normalized to one of `noir-docs/`, `noir-stdlib/`, `typescript-api/`, `aztec-nr/`, `aztec.js/`, `cli/`, `cli-wallet/`, `end-to-end/`, `l1-contracts/`, `noir-contracts/`, `noir-protocol-circuits/`, `version-v4.3.0/`. |
 | `min_distinct_sources` | both | Floor on bucket count. Cross-source queries set this ≥ 2. |
-| `banned_identifiers` | stream | Substrings that must NOT appear in the answer. Use to lock down hallucinated APIs (e.g. an old method name that was renamed in v4.2.0). |
+| `banned_identifiers` | stream | Substrings that must NOT appear in the answer. Use to lock down hallucinated APIs (e.g. an old method name that was renamed in v4.3.0). |
 | `max_response_time_s` | stream | Wall-time SLA. Defaults to 15. |
 | `expected_first_prefixes` | stream | Identifier-bucket only. Path prefixes — the first cited source's rewritten URL must contain one of them. Defaults to `("aztec-nr/", "noir-stdlib/")` (`APIREF_PREFIXES`). Override for queries whose canonical apiref isn't a `.nr` file, e.g. TypeScript-API queries set `["typescript-api/", "aztec.js/"]`. Ignored if `expected_apiref_paths` is also set. |
 
@@ -437,7 +437,7 @@ when a real-world failure surfaces a gap.
   probably losing to lexically-similar chunks elsewhere — consider
   rephrasing the test query, not lowering the bar.
 - **`banned: [<id>]`** (stream mode) — the model fabricated an identifier.
-  Either tighten the system prompt (`aztec_4_2_0_grounded.txt`) or, if the
+  Either tighten the system prompt (`aztec_4_3_0_grounded.txt`) or, if the
   banned name is genuinely valid in some context but wrong here, narrow the
   query's banned list.
 - **`slow:<n>s`** (stream mode) — answer exceeded the time budget. Check

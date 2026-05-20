@@ -56,7 +56,7 @@ CLI
 ::
 
     python scripts/ingest/noir_apiref.py \
-        --input  /tmp/aztec-v4.2.0/noir-projects/aztec-nr \
+        --input  /tmp/aztec-v4.3.0/noir-projects/aztec-nr \
         --output /tmp/apiref-out/aztec-nr \
         --manifest /tmp/apiref-out/aztec-nr.manifest.json
 """

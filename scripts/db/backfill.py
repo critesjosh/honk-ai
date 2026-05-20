@@ -1018,7 +1018,7 @@ def _rename_faiss_indexes(
 
 
 _AGENT_SURFACE_BY_NAME_USER: dict[tuple[str, str], str] = {
-    ("Aztec 4.2.0", "local"): "discord",
+    ("Aztec 4.3.0", "local"): "discord",
     ("docs.aztec.network", "local"): "widget",
     ("Ask Aztec — public web", "public-web"): "web_ask",
 }

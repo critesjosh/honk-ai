@@ -8,7 +8,7 @@ emits ``.../registering-sequencer`` which 404s — the live site serves
 the page at ``.../registering_sequencer`` because the file declares
 ``id: registering_sequencer``.
 
-This module is the authoritative map of those overrides for the v4.2.0
+This module is the authoritative map of those overrides for the v4.3.0
 corpus. Keys are corpus-relative source paths *without* the ``.md`` /
 ``.mdx`` extension. Values are the URL slug Docusaurus actually serves.
 
@@ -23,24 +23,24 @@ To regenerate after a corpus bump: ``python3 scripts/build_aztec_doc_slug_map.py
 
 from __future__ import annotations
 
-# Generated from aztec-packages @ v4.2.0 (network_versioned_docs +
+# Generated from aztec-packages @ v4.3.0 (network_versioned_docs +
 # developer_versioned_docs). Only non-index files where ``id:`` differs
 # from the filename basename are listed.
 AZTEC_DOC_SLUG_OVERRIDES: dict[str, str] = {
-    "version-v4.2.0/operators/keystore/creating-keystores": "creating_keystores",
-    "version-v4.2.0/operators/reference/ethereum-rpc-reference": "ethereum_rpc_reference",
-    "version-v4.2.0/operators/reference/node-api-reference": "node_api_reference",
-    "version-v4.2.0/operators/sequencer-management/governance-participation": "creating_and_voting_on_proposals",
-    "version-v4.2.0/operators/sequencer-management/slashing-configuration": "slashing_and_offenses",
-    "version-v4.2.0/operators/setup/bootnode-operation": "bootnode_operation",
-    "version-v4.2.0/operators/setup/building-from-source": "building_from_source",
-    "version-v4.2.0/operators/setup/high-availability": "high_availability_sequencers",
-    "version-v4.2.0/operators/setup/registering-sequencer": "registering_sequencer",
-    "version-v4.2.0/operators/setup/running-a-node": "running_a_node",
-    "version-v4.2.0/operators/setup/running-a-prover": "running_a_prover",
-    "version-v4.2.0/operators/setup/sequencer-setup": "sequencer_management",
-    "version-v4.2.0/operators/setup/staking-provider": "become_a_staking_provider",
-    "version-v4.2.0/operators/setup/syncing-best-practices": "syncing_best_practices",
+    "version-v4.3.0/operators/keystore/creating-keystores": "creating_keystores",
+    "version-v4.3.0/operators/reference/ethereum-rpc-reference": "ethereum_rpc_reference",
+    "version-v4.3.0/operators/reference/node-api-reference": "node_api_reference",
+    "version-v4.3.0/operators/sequencer-management/governance-participation": "creating_and_voting_on_proposals",
+    "version-v4.3.0/operators/sequencer-management/slashing-configuration": "slashing_and_offenses",
+    "version-v4.3.0/operators/setup/bootnode-operation": "bootnode_operation",
+    "version-v4.3.0/operators/setup/building-from-source": "building_from_source",
+    "version-v4.3.0/operators/setup/high-availability": "high_availability_sequencers",
+    "version-v4.3.0/operators/setup/registering-sequencer": "registering_sequencer",
+    "version-v4.3.0/operators/setup/running-a-node": "running_a_node",
+    "version-v4.3.0/operators/setup/running-a-prover": "running_a_prover",
+    "version-v4.3.0/operators/setup/sequencer-setup": "sequencer_management",
+    "version-v4.3.0/operators/setup/staking-provider": "become_a_staking_provider",
+    "version-v4.3.0/operators/setup/syncing-best-practices": "syncing_best_practices",
 }
 
 
@@ -52,7 +52,7 @@ def apply_slug_override(rest: str, source_path_no_ext: str) -> str:
     has been stripped (e.g. ``operators/setup/registering-sequencer``
     when emitting under ``/operate/``). ``source_path_no_ext`` is the
     full corpus-relative path with the extension stripped (e.g.
-    ``version-v4.2.0/operators/setup/registering-sequencer``) — that
+    ``version-v4.3.0/operators/setup/registering-sequencer``) — that
     is the key into ``AZTEC_DOC_SLUG_OVERRIDES``.
 
     Defensive: index files are served at the parent path regardless of

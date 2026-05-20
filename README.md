@@ -2,7 +2,7 @@
 
 RAG-backed knowledge-base assistant for the Aztec Network.
 Live at **[aztec.adjacentpossible.dev](https://aztec.adjacentpossible.dev)**.
-Corpus pinned to [`aztec-packages@v4.2.0`](https://github.com/AztecProtocol/aztec-packages/tree/v4.2.0).
+Corpus pinned to [`aztec-packages@v4.3.0`](https://github.com/AztecProtocol/aztec-packages/tree/v4.3.0).
 
 This repo is a heavily-modified fork of [`arc53/DocsGPT`](https://github.com/arc53/DocsGPT)
 starting from tag `0.17.0`; the upstream admin SPA, OAuth connectors,
@@ -65,7 +65,7 @@ removed. See [`CLAUDE.md`](./CLAUDE.md) for the architectural diff and
   `('discord','widget','web_ask','mcp','eval')`. `agents.name` is a display
   label; `agents.surface` is the structural axis for per-surface
   analytics, dashboards, and rate limits. Three of the four prod agent
-  names do NOT match their deployment surface (`Aztec 4.2.0` is the
+  names do NOT match their deployment surface (`Aztec 4.3.0` is the
   Discord bot, `docs.aztec.network` is the widget only by coincidence) —
   join reports on `surface`, not `name`. See `CLAUDE.md` for the full
   mapping table.
@@ -118,7 +118,7 @@ removed. See [`CLAUDE.md`](./CLAUDE.md) for the architectural diff and
   emitted on `/stream` rewrites each chunk's in-corpus path into a
   clickable public URL: rendered Developer Docs → `docs.aztec.network`,
   everything else (code, non-rendered docs) → GitHub blob at the
-  `v4.2.0` tag. Sources are deduped by rewritten URL and capped at 10
+  `v4.3.0` tag. Sources are deduped by rewritten URL and capped at 10
   per answer.
 - **RAG context cap** (`RAG_MAX_DOC_TOKENS`, default 6k, prod 10k) —
   upstream feeds the model's full context window (~198k tokens) of
@@ -174,7 +174,7 @@ removed. See [`CLAUDE.md`](./CLAUDE.md) for the architectural diff and
 - **`/api/version` endpoint** — public, unauthenticated `GET`/`POST`
   returning `{aztec_corpus_version, source_count}` from the
   `AZTEC_CORPUS_VERSION` setting (`unknown` when unset; production
-  pins it to `v4.2.0`).
+  pins it to `v4.3.0`).
   [`@aztec/mcp-server`](https://github.com/AztecProtocol/mcp-server)
   reads this to gate against version drift between the MCP client and
   the deployed corpus. POST exists because Cloudflare Access gates GET

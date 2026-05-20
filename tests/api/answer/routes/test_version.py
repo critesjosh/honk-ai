@@ -18,12 +18,12 @@ class TestVersionResource:
         from application.api.answer.routes.version import VersionResource
         from application.core.settings import settings
 
-        with flask_app.app_context(), patch.object(settings, "AZTEC_CORPUS_VERSION", "v4.2.0"):
+        with flask_app.app_context(), patch.object(settings, "AZTEC_CORPUS_VERSION", "v4.3.0"):
             with flask_app.test_request_context():
                 result = VersionResource().get()
 
         assert result.status_code == 200
-        assert result.json["aztec_corpus_version"] == "v4.2.0"
+        assert result.json["aztec_corpus_version"] == "v4.3.0"
         assert "source_count" in result.json
         assert isinstance(result.json["source_count"], int)
 
@@ -34,7 +34,7 @@ class TestVersionResource:
         from application.api.answer.routes.version import VersionResource
         from application.core.settings import settings
 
-        with flask_app.app_context(), patch.object(settings, "AZTEC_CORPUS_VERSION", "v4.2.0"):
+        with flask_app.app_context(), patch.object(settings, "AZTEC_CORPUS_VERSION", "v4.3.0"):
             with flask_app.test_request_context():
                 get_result = VersionResource().get()
             with flask_app.test_request_context():
@@ -80,7 +80,7 @@ class TestVersionResource:
         from application.core.settings import settings
 
         with flask_app.app_context(), patch.object(
-            settings, "AZTEC_CORPUS_VERSION", "v4.2.0"
+            settings, "AZTEC_CORPUS_VERSION", "v4.3.0"
         ), patch.object(
             settings,
             "AZTEC_SOURCE_IDS",
@@ -93,5 +93,5 @@ class TestVersionResource:
                 result = VersionResource().get()
 
         assert result.status_code == 200
-        assert result.json["aztec_corpus_version"] == "v4.2.0"
+        assert result.json["aztec_corpus_version"] == "v4.3.0"
         assert result.json["source_count"] == 0
