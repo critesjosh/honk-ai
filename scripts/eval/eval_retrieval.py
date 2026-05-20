@@ -68,18 +68,28 @@ def is_apiref(path: str) -> bool:
 
 
 def _strip_txt(p: str) -> str:
-    """Match retrieved corpus paths to the canonical .nr path used in
-    ``expected_apiref_paths``. Pre-apiref corpora store paths as
-    ``foo.nr.txt``; post-apiref the same logical file is ``foo.nr.md``.
-    Either should match the canonical ``foo.nr`` path in the assertion."""
+    """Normalize retrieved corpus paths to the canonical ``foo.nr`` form
+    used in ``expected_apiref_paths``.
+
+    The ingest pipeline appends a parser-friendly extension to code
+    files, but ``expected_apiref_paths`` (in ``golden_queries.json``) is
+    written against the un-wrapped path:
+
+      * apiref corpora (aztec-nr, noir-stdlib) → ``foo.nr.md``
+      * body-bearing code corpora (examples, circuits, etc.) →
+        ``Token.nr.txt`` / ``foo.ts.txt`` / ``foo.sol.txt``
+
+    Stripping the wrapper extension yields the canonical path the
+    assertion expects. ``.txt`` / ``.md`` standalone (non-apiref code
+    or rendered markdown) is left alone — those aren't apiref paths
+    and the eval never compares them against ``expected_apiref_paths``.
+    """
     if not isinstance(p, str):
         return p
-    for suffix in (".nr.txt", ".nr.md", ".txt", ".md"):
+    # Order matters: .nr.txt and .nr.md must match before bare .txt/.md.
+    for suffix in (".nr.txt", ".nr.md"):
         if p.endswith(suffix):
-            base = p[: -len(suffix)]
-            if base.endswith(".nr"):
-                return base
-            return base + ".nr" if suffix in (".txt", ".md") and ".nr" not in p else base
+            return p[: -len(suffix)] + ".nr"
     return p
 
 
@@ -296,25 +306,41 @@ def run_stream_eval(
         diversity_pass = len(source_titles) >= min_sources
 
         # Bucket-specific: identifier queries must cite the canonical
-        # reference source FIRST. Two ways to express the expectation:
+        # reference source somewhere in the top-3 cited sources. Two ways
+        # to express the expectation:
         #   1. expected_apiref_paths — match a corpus-relative path against
         #      the rewritten URL (e.g. "aztec-nr/aztec/src/hash.nr").
         #   2. expected_first_prefixes — match a corpus prefix against the
         #      rewritten URL. Defaults to APIREF_PREFIXES; override to
         #      ("typescript-api/",) for TS-apiref queries, etc.
-        first_cited_apiref = False
+        #
+        # Why top-3, not top-1: ``retriever`` mode already accepts an
+        # apiref hit anywhere in the retrieved top-3 (line ~145), but
+        # stream mode used to insist the LLM cite the apiref FIRST. That
+        # was unrealistically strict — conversational identifier queries
+        # ("What methods does X expose?") routinely surface a markdown
+        # explainer at position 1 with the apiref at position 2-3, and
+        # that's still a correct answer with a useful citation. Bringing
+        # stream mode in line with retriever mode makes the bar match
+        # the actual user experience.
+        apiref_in_top3_cited = False
         if bucket_name == "identifier" and sources:
-            first_url = sources[0].get("source", "") or ""
+            top3_urls = [
+                (s.get("source", "") or "") for s in sources[:3]
+            ]
             if expected_apiref_paths:
-                first_cited_apiref = any(
-                    p.split("/", 1)[1] in first_url if "/" in p else p in first_url
+                apiref_in_top3_cited = any(
+                    (p.split("/", 1)[1] in url if "/" in p else p in url)
+                    for url in top3_urls
                     for p in expected_apiref_paths
                 )
             else:
-                first_cited_apiref = any(
-                    pfx.rstrip("/") in first_url for pfx in expected_first_prefixes
+                apiref_in_top3_cited = any(
+                    pfx.rstrip("/") in url
+                    for url in top3_urls
+                    for pfx in expected_first_prefixes
                 )
-            bucket_pass = first_cited_apiref
+            bucket_pass = apiref_in_top3_cited
         else:
             bucket_pass = True
 
@@ -336,7 +362,7 @@ def run_stream_eval(
             "time_pass": time_pass,
             "diversity_pass": diversity_pass,
             "bucket_pass": bucket_pass,
-            "first_cited_apiref": first_cited_apiref if bucket_name == "identifier" else None,
+            "apiref_in_top3_cited": apiref_in_top3_cited if bucket_name == "identifier" else None,
         }
         if capture_answers:
             # Full payload for snapshot/compare. Sources are kept in citation
@@ -367,8 +393,8 @@ def run_stream_eval(
             flags.append("empty!")
         if not diversity_pass:
             flags.append(f"low-diversity:{len(source_titles)}<{min_sources}")
-        if bucket_name == "identifier" and not first_cited_apiref:
-            flags.append("no-apiref-first")
+        if bucket_name == "identifier" and not apiref_in_top3_cited:
+            flags.append("no-apiref-in-top3")
         flag_str = f" ({', '.join(flags)})" if flags else ""
         print(
             f"  [{status}] {tag} ({bucket_name}): {elapsed:.1f}s, "

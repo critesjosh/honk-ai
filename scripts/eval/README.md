@@ -458,7 +458,7 @@ with a machine-only `[[cited: i, j, k]]` (or `[[cited: none]]`) marker
 referencing the 1-indexed chunk numbers in `{summaries}`. The backend
 strips that marker before SSE delivery, and the eval harness sees
 already-stripped answer text — so existing assertions (banned
-identifiers, apiref-first, etc.) keep working unchanged. What changes
+identifiers, apiref-in-top-3, etc.) keep working unchanged. What changes
 is the **source frame**: the backend filters it to only the chunks the
 LLM actually cited.
 

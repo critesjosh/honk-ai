@@ -287,8 +287,16 @@ def _render_report(
                     flags.append(
                         f"low-diversity:{src.get('distinct_sources')}"
                     )
-                if src.get("bucket") == "identifier" and src.get("first_cited_apiref") is False:
-                    flags.append("no-apiref-first")
+                # Field renamed first_cited_apiref → apiref_in_top3_cited
+                # when the stream-mode check went from top-1 to top-3.
+                # Accept either spelling so we can still diff snapshots
+                # captured by older harness versions.
+                apiref_hit = src.get(
+                    "apiref_in_top3_cited",
+                    src.get("first_cited_apiref"),
+                )
+                if src.get("bucket") == "identifier" and apiref_hit is False:
+                    flags.append("no-apiref-in-top3")
             if base_flags or cand_flags:
                 lines.append(
                     f"- baseline flags: {', '.join(f'`{f}`' for f in base_flags) or '—'}"
