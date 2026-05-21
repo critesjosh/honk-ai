@@ -206,14 +206,23 @@ class ClassicRAG(BaseRetriever):
             doc_text_with_header = f"{filename}\n{page_content}"
             doc_tokens = num_tokens_from_string(doc_text_with_header)
             if cumulative_tokens + doc_tokens < token_budget:
-                all_docs.append(
-                    {
-                        "title": title,
-                        "text": page_content,
-                        "source": source_path,
-                        "filename": filename,
-                    }
-                )
+                # Propagate ``chunk_type`` (set by the ingest chunker in
+                # ``application/parser/file/bulk.py`` for ``*.nr.md`` /
+                # ``*.ts.md`` / ``*.sol.md`` files) so the chunk-header
+                # builder in ``stream_processor.pre_fetch_docs`` can tag
+                # apiref chunks visibly to the LLM. The prompt then asks
+                # the LLM to cite those chunks when the answer mentions
+                # an identifier they define.
+                doc_dict = {
+                    "title": title,
+                    "text": page_content,
+                    "source": source_path,
+                    "filename": filename,
+                }
+                chunk_type = _md.get("chunk_type") if isinstance(_md, dict) else None
+                if chunk_type:
+                    doc_dict["chunk_type"] = chunk_type
+                all_docs.append(doc_dict)
                 cumulative_tokens += doc_tokens
 
         return all_docs, cumulative_tokens

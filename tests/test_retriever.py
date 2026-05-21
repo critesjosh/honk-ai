@@ -262,6 +262,43 @@ class TestClassicRAGGetData:
 
     @patch("application.retriever.classic_rag.VectorCreator")
     @patch("application.retriever.classic_rag.num_tokens_from_string", return_value=10)
+    def test_propagates_chunk_type_apiref(
+        self, mock_tokens, mock_vc, _patch_llm_creator
+    ):
+        # ``metadata.chunk_type`` is stamped by the ingest chunker on
+        # ``*.nr.md`` apiref output (see application/parser/file/bulk.py).
+        # The pack step must surface it so the chunk-header builder in
+        # ``stream_processor.pre_fetch_docs`` can tag the chunk header
+        # ``[apiref]`` for the LLM.
+        apiref_doc = _mock_doc(
+            "pub fn foo(...)",
+            title="foo.nr",
+            filename="aztec-nr/foo.nr.md",
+            source="aztec-nr/foo.nr.md",
+            chunk_type="apiref",
+        )
+        markdown_doc = _mock_doc(
+            "Markdown explainer prose",
+            title="how_to.md",
+            filename="how_to.md",
+            source="version-v4.3.0/docs/how_to.md",
+        )
+        mock_vc.create_vectorstore.return_value = _mock_global_docsearch(
+            [(apiref_doc, 0.1), (markdown_doc, 0.2)]
+        )
+
+        rag = _make_rag(source={"question": "q", "active_docs": ["vs1"]})
+        docs = rag._get_data()
+
+        assert len(docs) == 2
+        assert docs[0]["chunk_type"] == "apiref"
+        # Non-apiref docs must NOT carry a chunk_type — downstream code
+        # tests truthiness, so a stray empty string would falsely
+        # suppress the tag at the chunk-header step.
+        assert "chunk_type" not in docs[1]
+
+    @patch("application.retriever.classic_rag.VectorCreator")
+    @patch("application.retriever.classic_rag.num_tokens_from_string", return_value=10)
     def test_dict_style_docs(self, mock_tokens, mock_vc, _patch_llm_creator):
         pair = ({"text": "dict content", "metadata": {"title": "Dict Title"}}, 0.1)
         mock_vc.create_vectorstore.return_value = _mock_global_docsearch([pair])

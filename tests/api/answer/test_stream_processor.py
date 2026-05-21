@@ -2157,6 +2157,32 @@ class TestPreFetchDocsFullPaths:
         assert len(docs) == 1
 
     @pytest.mark.unit
+    def test_apiref_chunk_header_gets_tagged(self):
+        """When a doc carries ``chunk_type=apiref`` (set by the ingest
+        chunker on ``*.nr.md`` apiref files), the chunk header must
+        include the ``[apiref]`` marker so the Aztec grounded prompts'
+        "prefer the apiref chunk" rule can fire. Plain doc headers
+        must NOT carry the tag.
+        """
+        sp = self._make_sp()
+        mock_retriever = MagicMock()
+        mock_retriever.search.return_value = [
+            {
+                "text": "pub fn foo(...)",
+                "filename": "foo.nr",
+                "chunk_type": "apiref",
+            },
+            {"text": "explainer prose", "filename": "how_to.md"},
+        ]
+        sp.create_retriever = MagicMock(return_value=mock_retriever)
+
+        docs_together, _docs = sp.pre_fetch_docs("question?")
+        assert docs_together is not None
+        assert "# 1. foo.nr [apiref]" in docs_together
+        assert "# 2. how_to.md\n" in docs_together
+        assert "how_to.md [apiref]" not in docs_together
+
+    @pytest.mark.unit
     def test_docs_without_filename(self):
         """Cover lines 550-551: doc has no filename/title/source."""
         sp = self._make_sp()

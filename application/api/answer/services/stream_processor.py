@@ -703,11 +703,24 @@ class StreamProcessor:
             docs_with_filenames = []
             for idx, doc in enumerate(docs, start=1):
                 filename = doc.get("filename") or doc.get("title") or doc.get("source")
+                # Apiref chunks (``.nr.md`` / ``.ts.md`` / ``.sol.md`` from
+                # the noir-apiref transform — tagged in
+                # ``application/parser/file/bulk.py`` at ingest, surfaced
+                # by ``classic_rag._pack_into_budget``) get an
+                # ``[apiref]`` marker in the chunk header. The grounded
+                # prompts use this to require the LLM to cite an apiref
+                # chunk when the answer mentions a code identifier whose
+                # signature appears in it — without this hint, the LLM
+                # tends to cite a conversational markdown explainer that
+                # mentions the identifier rather than the apiref chunk
+                # that defines it. The tag never reaches the end user;
+                # it's part of the prompt-side ``{summaries}`` only.
+                apiref_tag = " [apiref]" if doc.get("chunk_type") == "apiref" else ""
                 if filename:
-                    chunk_header = f"# {idx}. {filename}"
+                    chunk_header = f"# {idx}. {filename}{apiref_tag}"
                     docs_with_filenames.append(f"{chunk_header}\n{doc['text']}")
                 else:
-                    docs_with_filenames.append(f"# {idx}.\n{doc['text']}")
+                    docs_with_filenames.append(f"# {idx}.{apiref_tag}\n{doc['text']}")
             docs_together = "\n\n".join(docs_with_filenames)
 
             logger.info(f"Pre-fetch docs_together size: {len(docs_together)} chars")

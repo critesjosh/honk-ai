@@ -463,10 +463,16 @@ class WorkflowEngine:
             filtered_docs.append(doc)
             idx = len(filtered_docs)
             filename = doc.get("filename") or doc.get("title") or doc.get("source")
+            # Mirror the apiref-tag behaviour in
+            # ``stream_processor.pre_fetch_docs`` so workflow agents
+            # using the Aztec grounded prompts get the same apiref
+            # citation signal. See the prompt's "Apiref chunks carry
+            # authoritative signatures" rule.
+            apiref_tag = " [apiref]" if doc.get("chunk_type") == "apiref" else ""
             if isinstance(filename, str) and filename.strip():
-                docs_together_parts.append(f"# {idx}. {filename}\n{text}")
+                docs_together_parts.append(f"# {idx}. {filename}{apiref_tag}\n{text}")
             else:
-                docs_together_parts.append(f"# {idx}.\n{text}")
+                docs_together_parts.append(f"# {idx}.{apiref_tag}\n{text}")
 
         docs_together = "\n\n".join(docs_together_parts) if docs_together_parts else None
         if not filtered_docs:
