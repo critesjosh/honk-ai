@@ -34,6 +34,7 @@ from application.api.answer.routes.base import (
     _filename_fallback,
     _filter_sources_by_indices,
     _parse_citation_marker,
+    _scrub_inline_citation_markers,
 )
 
 
@@ -151,6 +152,93 @@ class TestParseCitationMarker:
         )
         assert r.cited_indices == []
         assert r.invalid_indices == [1, 2]
+
+
+# ---- _scrub_inline_citation_markers ---------------------------------
+
+
+class TestScrubInlineCitationMarkers:
+    """Defense-in-depth: strip any ``[[cited: ...]]`` span the model
+    emitted inline (instead of/in addition to the trailing one).
+    Companion to the ``\\Z``-anchored parser — that one is
+    authoritative for source filtering; this scrubber only protects
+    the user-visible bytes from a degenerate emission loop.
+    """
+
+    def test_empty_string_passthrough(self):
+        assert _scrub_inline_citation_markers("") == ""
+
+    def test_no_marker_passthrough(self):
+        text = "ordinary prose with [brackets] and `[[code]]` blocks"
+        assert _scrub_inline_citation_markers(text) == text
+
+    def test_single_inline_marker_stripped(self):
+        # Surrounding whitespace is preserved deliberately — extra
+        # spaces are harmless; fused words would be a worse bug.
+        text = "NoirJS lets you prove client-side [[cited: 6, 9, 11]]\nrest of prose"
+        assert _scrub_inline_citation_markers(text) == (
+            "NoirJS lets you prove client-side \nrest of prose"
+        )
+
+    def test_many_inline_markers_stripped(self):
+        # The 283-marker Discord regression in one shot.
+        text = (
+            "Para one. [[cited: 2]]\nPara two. [[cited: 9]]\n"
+            "Para three. [[cited: 3]]\nPara four. [[cited: 11]]"
+        )
+        scrubbed = _scrub_inline_citation_markers(text)
+        assert "[[cited:" not in scrubbed
+        assert "Para one." in scrubbed
+        assert "Para four." in scrubbed
+
+    def test_marker_at_end_also_stripped(self):
+        # The scrubber is unanchored, so terminal markers fall to it
+        # too. That's fine — the authoritative trailing-marker parse
+        # runs BEFORE this scrubber on response_full in production.
+        assert (
+            _scrub_inline_citation_markers("body\n\n[[cited: 1, 2]]")
+            == "body\n\n"
+        )
+
+    def test_case_insensitive(self):
+        # Surrounding whitespace preserved (see test_single_inline_marker_stripped).
+        assert (
+            _scrub_inline_citation_markers("x [[CITED: 1]] y")
+            == "x  y"
+        )
+
+    def test_marker_none_form(self):
+        assert (
+            _scrub_inline_citation_markers("intro [[cited: none]] outro")
+            == "intro  outro"
+        )
+
+    def test_preserves_newline_structure(self):
+        # Marker on its own line — strip the marker, keep the line
+        # boundaries so prose paragraphs don't fuse.
+        text = "First paragraph.\n\n[[cited: 2]]\n\nSecond paragraph."
+        scrubbed = _scrub_inline_citation_markers(text)
+        assert "[[cited:" not in scrubbed
+        assert "First paragraph." in scrubbed
+        assert "Second paragraph." in scrubbed
+        # Two newlines on each side of the marker line means the line
+        # boundary is preserved on both sides post-strip.
+        assert "First paragraph.\n\n" in scrubbed
+        assert "\n\nSecond paragraph." in scrubbed
+
+    def test_ignores_unclosed_bracket(self):
+        # A literal ``[[cited:`` with no closing brackets is left as
+        # a string (it's just text, not a marker). Same shape as the
+        # underlying regex — ``[^\]\n]*`` won't span newlines.
+        text = "talking about [[cited: tags]] vs other things"
+        # ``[[cited: tags]]`` matches the regex (single-line, closes
+        # with ``]]``) — gets stripped. Surrounding spaces preserved.
+        assert _scrub_inline_citation_markers(text) == "talking about  vs other things"
+
+    def test_truly_unclosed_left_alone(self):
+        text = "look at [[cited: 1, 2\nnext line"
+        # Marker payload can't cross a newline → unclosed → stays as text.
+        assert _scrub_inline_citation_markers(text) == text
 
 
 # ---- _filter_sources_by_indices -------------------------------------
@@ -366,6 +454,237 @@ class TestCompleteStreamCitationFilter:
         assert answer_text.endswith(long_body)
         source_frames = [f for f in frames if f.get("type") == "source"]
         assert [s["title"] for s in source_frames[0]["source"]] == ["b.md"]
+
+    def test_inline_markers_scrubbed_from_streamed_answer(
+        self, mock_mongo_db, flask_app
+    ):
+        """Regression for the 2026-05-22 Discord catastrophe: the model
+        emitted 283 inline ``[[cited: N]]`` spans through a long answer
+        and ended WITHOUT a terminal marker. Every span leaked to the
+        user. The scrubber must remove every inline marker from the
+        bytes the client sees — even on the fail-open / no-trailing-
+        marker path.
+        """
+        long_body = (
+            "Para one explaining NoirJS. [[cited: 6, 9, 11]]\n"
+            + "Body filler. " * 50
+            + "Para two on bundlers. [[cited: 2]]\n"
+            + "More body. " * 50
+            + "Para three on pinning. [[cited: 9]]\n"
+            + "Trailing prose with no marker at all."
+        )
+        agent = _agent_yielding(
+            [
+                {"sources": [{"title": f"doc{i}.md"} for i in range(1, 13)]},
+                {"answer": long_body},
+            ]
+        )
+        frames = self._run(mock_mongo_db, flask_app, agent)
+        answer_text = "".join(
+            f["answer"] for f in frames if f.get("type") == "answer"
+        )
+        assert "[[cited:" not in answer_text, (
+            "inline marker leaked through to streamed answer frames: "
+            f"{answer_text[:200]!r}"
+        )
+        # Prose is preserved.
+        assert "NoirJS" in answer_text
+        assert "Trailing prose with no marker at all" in answer_text
+        # No trailing marker → fail-open: all retrieved sources kept
+        # but capped at _MAX_SOURCES_EMITTED (10) before the SSE frame.
+        source_frames = [f for f in frames if f.get("type") == "source"]
+        assert len(source_frames) == 1
+        assert len(source_frames[0]["source"]) == 10
+
+    def test_inline_marker_leak_recorded_in_audit(
+        self, mock_mongo_db, flask_app
+    ):
+        """``citation_filter.inline_markers_scrubbed`` records the
+        count of inline markers the scrubber removed from
+        ``response_full``. Cheap operator signal — alert / honk-report
+        can pivot on this row without grepping response bodies.
+        """
+        body = (
+            "Section A. [[cited: 1]]\n\n"
+            "Section B. [[cited: 2]]\n\n"
+            "Section C. [[cited: 3]]\n\n"
+            "[[cited: 1, 2, 3]]"
+        )
+        agent = _agent_yielding(
+            [
+                {"sources": [{"title": f"d{i}.md"} for i in range(1, 5)]},
+                {"answer": body},
+            ]
+        )
+        # We can't read query_metadata directly through the SSE wire,
+        # but we can verify the WARN log fires AND the body is clean.
+        import logging
+
+        with self._caplog(
+            mock_mongo_db, flask_app, agent, logging.WARNING
+        ) as (frames, caplog):
+            pass
+        answer_text = "".join(
+            f["answer"] for f in frames if f.get("type") == "answer"
+        )
+        assert "[[cited:" not in answer_text
+        # Three inline markers were emitted (the terminal one doesn't
+        # count toward "inline" — it's stripped by the trailing-marker
+        # path before the inline counter runs).
+        leak_lines = [
+            r.getMessage()
+            for r in caplog.records
+            if "llm.marker_leak_scrubbed" in r.getMessage()
+        ]
+        assert len(leak_lines) == 1, leak_lines
+        assert "count=3" in leak_lines[0]
+        assert "strategy=marker" in leak_lines[0]
+
+    def _caplog(self, mock_mongo_db, flask_app, agent, level):
+        """Tiny helper: run the stream + capture logs at ``level``.
+        Yields ``(frames, caplog_record_list)``.
+        """
+        import contextlib
+        import logging
+
+        @contextlib.contextmanager
+        def _ctx():
+            from application.api.answer.routes.base import BaseAnswerResource
+
+            captured = []
+
+            class _CaptureHandler(logging.Handler):
+                def emit(self, record):
+                    captured.append(record)
+
+            handler = _CaptureHandler(level=level)
+            logger = logging.getLogger("application.api.answer.routes.base")
+            logger.addHandler(handler)
+            try:
+                with flask_app.app_context():
+                    resource = BaseAnswerResource()
+                    stream = list(
+                        resource.complete_stream(
+                            question="Q",
+                            agent=agent,
+                            conversation_id=None,
+                            user_api_key=None,
+                            decoded_token={"sub": "user1"},
+                            should_save_conversation=False,
+                        )
+                    )
+                frames = _stream_to_frames(stream)
+
+                class _Caplog:
+                    @property
+                    def records(self):
+                        return captured
+
+                yield frames, _Caplog()
+            finally:
+                logger.removeHandler(handler)
+
+        return _ctx()
+
+    def test_inline_marker_plus_terminal_marker_both_handled(
+        self, mock_mongo_db, flask_app
+    ):
+        """Model emits one or more inline markers AND a terminal one.
+        The terminal marker still drives source filtering; the inline
+        ones are scrubbed from the visible bytes.
+        """
+        body = (
+            "First section. [[cited: 1]]\n\n"
+            "Second section. [[cited: 2]]\n\n"
+            "Third section. [[cited: 3]]\n\n"
+            "[[cited: 1, 3]]"
+        )
+        agent = _agent_yielding(
+            [
+                {"sources": [{"title": f"d{i}.md"} for i in range(1, 5)]},
+                {"answer": body},
+            ]
+        )
+        frames = self._run(mock_mongo_db, flask_app, agent)
+        answer_text = "".join(
+            f["answer"] for f in frames if f.get("type") == "answer"
+        )
+        assert "[[cited:" not in answer_text
+        # Terminal marker drove source filtering, in LLM order.
+        source_frames = [f for f in frames if f.get("type") == "source"]
+        assert [s["title"] for s in source_frames[0]["source"]] == [
+            "d1.md",
+            "d3.md",
+        ]
+        # All three section headers survived.
+        assert "First section." in answer_text
+        assert "Second section." in answer_text
+        assert "Third section." in answer_text
+
+    def test_unmatched_double_bracket_does_not_stall_stream(
+        self, mock_mongo_db, flask_app
+    ):
+        """An unmatched ``[[`` in legitimate prose (talking about the
+        marker format, or a code example with double-bracket syntax)
+        must NOT pin the buffer split. The holdback is bounded to
+        ``_PARTIAL_MARKER_HOLDBACK_LEN`` chars so an unclosed ``[[``
+        further back from the split point releases normally.
+
+        Buggy code would have pinned ``split_at`` at the ``[[``
+        position forever, releasing the entire body in one frame at
+        end-of-stream instead of streaming it normally.
+        """
+        body = (
+            "Discussion of the [[double-bracket syntax in some doc tool. "
+            + "More prose. " * 200
+            + "End of answer with no trailing marker."
+        )
+        agent = _agent_yielding(
+            [
+                {"sources": [{"title": "a.md"}]},
+                {"answer": body},
+            ]
+        )
+        frames = self._run(mock_mongo_db, flask_app, agent)
+        answer_frames = [f for f in frames if f.get("type") == "answer"]
+        assert len(answer_frames) > 1, (
+            "stream stalled — only one answer frame emitted, "
+            "indicating the unmatched [[ pinned split_at"
+        )
+        answer_text = "".join(f["answer"] for f in answer_frames)
+        # The unmatched ``[[`` passes through verbatim (it's text, not
+        # a marker — the regex requires ``]]`` to match).
+        assert "[[double-bracket syntax" in answer_text
+        assert "End of answer with no trailing marker." in answer_text
+
+    def test_inline_marker_straddling_delta_boundary(
+        self, mock_mongo_db, flask_app
+    ):
+        """The ``[[`` open-bracket lands in one delta, the ``]]`` close
+        in the next. The streaming emitter must hold the partial back
+        in ``pending_tail`` instead of releasing a half-marker prefix.
+        Stress with a body large enough that ``pending_tail`` does
+        actually overflow (forcing the emit path) AND tail-end the
+        whole thing with NO terminal marker so the fail-open scrubber
+        catches the inline one too.
+        """
+        prelude = "z" * (_CITATION_MARKER_MAX_LEN * 3)
+        agent = _agent_yielding(
+            [
+                {"sources": [{"title": "a.md"}, {"title": "b.md"}]},
+                {"answer": prelude + " mid-prose [[cited"},
+                {"answer": ": 2]] more prose without any trailing marker."},
+            ]
+        )
+        frames = self._run(mock_mongo_db, flask_app, agent)
+        answer_text = "".join(
+            f["answer"] for f in frames if f.get("type") == "answer"
+        )
+        assert "[[" not in answer_text
+        assert "[[cited:" not in answer_text
+        # Both halves of the surrounding prose are intact.
+        assert answer_text.startswith(prelude + " mid-prose")
+        assert answer_text.endswith("more prose without any trailing marker.")
 
     def test_invalid_index_dropped(self, mock_mongo_db, flask_app):
         """Out-of-range indices are silently dropped from the emitted

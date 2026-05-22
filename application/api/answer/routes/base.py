@@ -253,6 +253,20 @@ _CITATION_MARKER_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Unanchored scrubber for INLINE markers — defense in depth against
+# models that emit ``[[cited: N]]`` per paragraph / sentence instead of
+# (or in addition to) the single trailing marker. The trailing-marker
+# parser above is authoritative for source filtering; this regex only
+# removes literal marker spans from the bytes the user sees so a
+# degenerate emission loop (observed 2026-05-22: one Discord answer
+# with 283 inline marker spans) can't leak through. The marker is
+# machine-only by prompt contract, so unconditionally stripping every
+# occurrence is information-preserving.
+_INLINE_CITATION_RE = re.compile(
+    r"\[\[\s*cited\s*:[^\]\n]*\]\]",
+    re.IGNORECASE,
+)
+
 # Tail buffer size for streaming-answer-aware strip. Theoretical worst
 # case at 12 sources, 3-char indices, max whitespace ≈ 60 chars; 128
 # gives generous slack without delaying long answers materially. The
@@ -260,6 +274,36 @@ _CITATION_MARKER_RE = re.compile(
 # and arrive after end-of-stream — acceptable for chitchat, which is
 # the case this whole feature targets.
 _CITATION_MARKER_MAX_LEN = 128
+
+# Holdback window for the delta-boundary partial-marker check in
+# ``_emit_answer_delta``. A marker is at most ~50 chars (12 sources,
+# 3-char indices). 64 chars gives generous slack while preventing an
+# unclosed ``[[`` in earlier prose from pinning the split forever.
+_PARTIAL_MARKER_HOLDBACK_LEN = 64
+
+
+def _scrub_inline_citation_markers(text: str) -> str:
+    """Remove every ``[[cited: ...]]`` span from ``text`` regardless of
+    position. Companion to :data:`_CITATION_MARKER_RE` — that regex
+    parses the *authoritative* trailing marker and is intentionally
+    anchored to end-of-string; this helper handles the leak case where
+    the model emitted markers inline. Safe to call on any answer-side
+    bytes (streamed deltas, ``pending_tail``, ``response_full``).
+    """
+    if not text or "[[" not in text:
+        return text
+    return _INLINE_CITATION_RE.sub("", text)
+
+
+def _count_inline_markers(text: str) -> int:
+    """Count ``[[cited: ...]]`` spans in ``text``. Used for the
+    ``citation_filter.inline_markers_scrubbed`` audit field — a small
+    structural signal that the scrubber actually removed something.
+    Cheap (regex scan); call once at end-of-stream, never per-delta.
+    """
+    if not text or "[[" not in text:
+        return 0
+    return sum(1 for _ in _INLINE_CITATION_RE.finditer(text))
 
 
 @dataclass
@@ -874,6 +918,14 @@ class BaseAnswerResource:
         # tool_calls frame.
         marker_parsed: bool = False
         citation_filter_meta: Optional[Dict[str, Any]] = None
+        # Count of INLINE ``[[cited: ...]]`` spans the model emitted
+        # (excluding the legitimate trailing marker). Snapshotted just
+        # before each scrub site so the audit reflects the model's
+        # actual output, not the scrubbed view. Surfaces as
+        # ``citation_filter.inline_markers_scrubbed`` when > 0, and
+        # triggers a ``llm.marker_leak_scrubbed`` WARN log so the
+        # observable signal exists for monitoring / honk-report.
+        inline_markers_scrubbed: int = 0
 
         def _try_parse_marker_from_tail(force: bool = False) -> None:
             """Look for the trailing citation marker in ``pending_tail``.
@@ -900,6 +952,7 @@ class BaseAnswerResource:
             """
             nonlocal pending_tail, response_full, source_log_docs
             nonlocal citation_filter_meta, marker_parsed
+            nonlocal inline_markers_scrubbed
             if marker_parsed or is_structured or paused:
                 return
             if not force and not source_log_docs:
@@ -918,6 +971,15 @@ class BaseAnswerResource:
                 response_full = response_full[: full_marker.start()].rstrip(
                     "\n"
                 )
+            # Belt-and-braces: scrub any INLINE markers the model
+            # emitted before the trailing one. The terminal-marker
+            # strip above only touches the ``\Z``-anchored match;
+            # leaked inline copies (the 283-marker Discord case) are
+            # caught here. Count BEFORE the scrub so the audit
+            # reflects the model's actual output.
+            inline_markers_scrubbed += _count_inline_markers(response_full)
+            pending_tail = _scrub_inline_citation_markers(pending_tail)
+            response_full = _scrub_inline_citation_markers(response_full)
             if parse.invalid_indices:
                 logger.warning(
                     "llm.cited_invalid_index agent_id=%s indices=%s "
@@ -991,6 +1053,14 @@ class BaseAnswerResource:
             leading portion that's safely past the marker window so the
             caller can yield it as an answer SSE frame. Returns ``None``
             when the entire delta fits inside the marker window.
+
+            Inline ``[[cited: ...]]`` markers in the released bytes are
+            scrubbed before return (defense in depth — see
+            :func:`_scrub_inline_citation_markers`). A partial marker
+            prefix (e.g. trailing ``[[cite``) at the split point is
+            held back inside ``pending_tail`` so the next delta can
+            complete it; otherwise a marker straddling the split would
+            leak its prefix to the client.
             """
             nonlocal pending_tail
             pending_tail += delta
@@ -998,8 +1068,30 @@ class BaseAnswerResource:
                 return None
             split_at = len(pending_tail) - _CITATION_MARKER_MAX_LEN
             to_emit = pending_tail[:split_at]
+            # If ``to_emit`` ends with an unfinished ``[[...`` (no
+            # closing ``]]`` after the last ``[[``), the marker may
+            # span the boundary. Back off to before the ``[[`` so the
+            # marker reassembles inside ``pending_tail`` on the next
+            # delta and gets scrubbed there. ONLY when the unclosed
+            # ``[[`` is within ``_PARTIAL_MARKER_HOLDBACK_LEN`` chars
+            # of the split point — otherwise an unmatched ``[[`` in
+            # legitimate prose / code earlier in the answer (e.g. the
+            # docstring describing the marker format, or a code-block
+            # example using double-bracket syntax) would pin
+            # ``split_at`` at that position forever and stall the
+            # stream until end-of-stream flush.
+            last_open = to_emit.rfind("[[")
+            if (
+                last_open != -1
+                and "]]" not in to_emit[last_open:]
+                and split_at - last_open <= _PARTIAL_MARKER_HOLDBACK_LEN
+            ):
+                split_at = last_open
+                to_emit = pending_tail[:split_at]
             pending_tail = pending_tail[split_at:]
-            return to_emit
+            if not to_emit:
+                return None
+            return _scrub_inline_citation_markers(to_emit)
 
         def _flush_pending_tail(force_parse: bool = False) -> Optional[str]:
             """Yield-side helper — try to parse-and-strip the citation
@@ -1011,13 +1103,22 @@ class BaseAnswerResource:
             ``force_parse=True`` is used at end-of-stream so the marker
             is parsed even if the source frame never arrived (e.g.
             empty-corpus run, isNoneDoc).
+
+            ``pending_tail`` is scrubbed of inline markers before
+            emission — defense in depth for the no-trailing-marker
+            path (the model emitted markers inline but never a
+            terminal one, so ``_try_parse_marker_from_tail`` didn't
+            match and didn't scrub).
             """
             nonlocal pending_tail
             _try_parse_marker_from_tail(force=force_parse)
             if not pending_tail:
                 return None
-            frame_data = json.dumps({"type": "answer", "answer": pending_tail})
+            scrubbed = _scrub_inline_citation_markers(pending_tail)
             pending_tail = ""
+            if not scrubbed:
+                return None
+            frame_data = json.dumps({"type": "answer", "answer": scrubbed})
             return f"data: {frame_data}\n\n"
 
         try:
@@ -1189,12 +1290,18 @@ class BaseAnswerResource:
                 yield tail_frame
 
             if not is_structured and not paused and not marker_parsed:
-                # No trailing marker. Try to recover the citation
-                # signal from inline filename references in the answer
-                # (qwen3.6-flash often uses ``Source: foo.md`` /
-                # ``[#10](foo.md)`` / ``(`foo.md`)`` instead of emitting
-                # the marker). Operate on response_full so filenames
-                # mentioned earlier in long answers — past the 128-char
+                # No trailing marker. Scrub any inline markers from
+                # response_full before filename fallback + persistence —
+                # the prompt's "machine-only marker" contract still
+                # holds even when the model didn't put one at the end.
+                inline_markers_scrubbed += _count_inline_markers(response_full)
+                response_full = _scrub_inline_citation_markers(response_full)
+                # Try to recover the citation signal from inline
+                # filename references in the answer (qwen3.6-flash
+                # often uses ``Source: foo.md`` / ``[#10](foo.md)`` /
+                # ``(`foo.md`)`` instead of emitting the marker).
+                # Operate on response_full so filenames mentioned
+                # earlier in long answers — past the 128-char
                 # pending_tail window — are still visible.
                 fallback = _filename_fallback(response_full, source_log_docs)
                 if fallback.kept is not None:
@@ -1249,6 +1356,26 @@ class BaseAnswerResource:
                 yield f"data: {data}\n\n"
 
             if citation_filter_meta is not None:
+                # Attach the inline-marker leak count when non-zero.
+                # This is the structural signal an alert / dashboard
+                # can pivot on without having to grep response bodies
+                # for ``[[cited:`` (which would also hit legitimate
+                # markers in archived rows from before this scrub
+                # landed). When > 0 we also WARN-log a single line —
+                # honk-report and operators can grep for
+                # ``llm.marker_leak_scrubbed`` to surface regressions.
+                if inline_markers_scrubbed > 0:
+                    citation_filter_meta["inline_markers_scrubbed"] = (
+                        inline_markers_scrubbed
+                    )
+                    logger.warning(
+                        "llm.marker_leak_scrubbed agent_id=%s "
+                        "count=%d strategy=%s response_len=%d",
+                        agent_id,
+                        inline_markers_scrubbed,
+                        citation_filter_meta.get("strategy"),
+                        len(response_full or ""),
+                    )
                 # Assign rather than ``setdefault`` so an agent that
                 # also yields its own ``{"metadata": {...}}`` event
                 # can't preempt the audit key. The marker-driven
@@ -1504,6 +1631,22 @@ class BaseAnswerResource:
             if partial_marker:
                 response_full = response_full[: partial_marker.start()].rstrip(
                     "\n"
+                )
+            # Same defense-in-depth scrub as the success path: a model
+            # that emitted markers inline before disconnecting would
+            # otherwise persist those literal spans into the DB row.
+            # Count + log to match the success-path observability so
+            # disconnected-client incidents show up in the same audit
+            # signal (``llm.marker_leak_scrubbed`` grep, dashboards).
+            abort_inline_count = _count_inline_markers(response_full or "")
+            response_full = _scrub_inline_citation_markers(response_full or "")
+            if abort_inline_count > 0:
+                logger.warning(
+                    "llm.marker_leak_scrubbed agent_id=%s count=%d "
+                    "strategy=aborted response_len=%d",
+                    agent_id,
+                    abort_inline_count,
+                    len(response_full or ""),
                 )
             if should_save_conversation and response_full:
                 try:

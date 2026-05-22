@@ -33,10 +33,20 @@ Usage (from inside the backend container or with PYTHONPATH=/app):
 
 import argparse
 import json
+import re
 import sys
 import time
 from collections import Counter
 from pathlib import Path
+
+# Mirror of the backend's ``_INLINE_CITATION_RE`` in
+# ``application/api/answer/routes/base.py``. Kept in sync deliberately
+# — if this regex stops matching what the backend scrubber matches,
+# the eval will miss leaks of marker variants the model invents.
+_MARKER_LEAK_RE = re.compile(
+    r"\[\[\s*cited\s*:[^\]\n]*\]\]",
+    re.IGNORECASE,
+)
 
 GOLDEN_QUERIES_PATH = Path(__file__).parent / "golden_queries.json"
 
@@ -296,6 +306,18 @@ def run_stream_eval(
         has_table = "|---|" in answer or "| ---" in answer
         table_pass = not has_table
 
+        # Citation-marker leak guard. The grounded prompts instruct the
+        # model to emit ONE machine-only ``[[cited: ...]]`` marker at
+        # the very end; the backend strips it. A model that emits the
+        # marker inline (per paragraph) leaks the literal string into
+        # the user-visible bytes. The backend has a scrubber (see
+        # ``_scrub_inline_citation_markers``), but if a stream-mode eval
+        # answer still contains ``[[cited:`` it means EITHER the
+        # scrubber regressed OR the model invented a new marker variant
+        # the scrub doesn't recognize. Either way: hard fail.
+        marker_in_answer = _MARKER_LEAK_RE.search(answer) is not None
+        marker_pass = not marker_in_answer
+
         # Check source diversity (same prefixes as retriever mode)
         min_sources = q.get("min_distinct_sources", 1)
         source_titles = set()
@@ -347,6 +369,7 @@ def run_stream_eval(
         passed = (
             banned_pass and time_pass and content_pass
             and table_pass and diversity_pass and bucket_pass
+            and marker_pass
         )
 
         result = {
@@ -359,6 +382,7 @@ def run_stream_eval(
             "distinct_sources": len(source_titles),
             "found_banned": found_banned,
             "has_table": has_table,
+            "marker_in_answer": marker_in_answer,
             "time_pass": time_pass,
             "diversity_pass": diversity_pass,
             "bucket_pass": bucket_pass,
@@ -387,6 +411,8 @@ def run_stream_eval(
             flags.append(f"banned:{found_banned}")
         if has_table:
             flags.append("table!")
+        if marker_in_answer:
+            flags.append("marker-leak!")
         if not time_pass:
             flags.append(f"slow:{elapsed:.1f}s")
         if not content_pass:

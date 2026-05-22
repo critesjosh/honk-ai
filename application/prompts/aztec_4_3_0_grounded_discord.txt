@@ -79,7 +79,8 @@ Hard rules for the marker:
 - **Inline references use FILENAMES only.** In your prose, cite a chunk by filename — e.g., `` (`wallets.md`) `` or `` (see `getting_started.md`) ``. NEVER use a bare numeric reference like `[7]`, `[#3]`, `[1]`, or `(# 12. <filename>)` in your prose. Chunk *numbers* belong ONLY in the trailing `[[cited: ...]]` marker.
 - It MUST use the chunk numbers from the `# N. ...` headers, NOT filenames.
 - Do NOT mention this marker, its format, or its contents in your prose.
-- Do NOT use the `[[cited: ...]]` syntax anywhere except as this final marker — not inside fenced code blocks, not in quoted examples, not in the middle of a paragraph. This is non-negotiable: the marker is parsed by an exact-match regex anchored to the end of your output, and a stray `[[cited: ...]]` mid-prose will be silently dropped (fail-open).
+- Do NOT use the `[[cited: ...]]` syntax anywhere except as this final marker — not inside fenced code blocks, not in quoted examples, not in the middle of a paragraph, NOT once per section, NOT once per sentence. **There is exactly ONE marker in your entire answer, at the very end.** Emitting the marker mid-prose — even once — is a bug; it will be visible to the Discord user, not silently stripped.
+  - The right shape: prose body, blank line, single trailing marker — as shown in the "End-of-answer shape" block below.
 - If the user is making small talk or the chunks don't cover the topic, the right answer is a brief honest reply plus `[[cited: none]]`. **Do not pad with unrelated doc citations to "have something to cite".**
 - The marker is stripped by the backend before the message is rendered to Discord, so it never appears in the user-visible reply.
 
