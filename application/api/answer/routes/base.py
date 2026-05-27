@@ -41,6 +41,15 @@ _HEARTBEAT_INTERVAL_SECONDS = 15.0
 # a "+ N more" toggle, and long source lists push the answer off-screen.
 _MAX_SOURCES_EMITTED = 10
 
+# Tighter cap for the ``fail_open`` strategy. fail_open means we have NO
+# grounding signal from the model — no trailing marker AND no inline filename
+# the fallback could match — so the source list is "whatever was retrieved",
+# not "what the answer used". Showing the full top-10 there overstates
+# confidence on the ~7% of answers that hit this path, so we cap to the top
+# few. The pre-cap retrieval count is preserved in the audit as
+# ``available_count``.
+_FAIL_OPEN_MAX_SOURCES = 3
+
 # ---- Source URL mapping (Aztec fork) ------------------------------------
 # Corpus paths stored in `metadata.source` are relative to the ingest zip.
 # Map them to public URLs:
@@ -604,6 +613,34 @@ def _filename_fallback(
     )
 
 
+def _fail_open_sources(
+    source_log_docs: List[Dict[str, Any]],
+    *,
+    marker_present: bool,
+    marker_malformed: bool = False,
+) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    """Cap the fail-open source set and build its audit metadata.
+
+    fail_open has no model grounding signal, so we keep only the top
+    ``_FAIL_OPEN_MAX_SOURCES`` retrieved docs (rather than the full list)
+    and record the pre-cap count as ``available_count``. Returns the
+    capped doc list and the ``citation_filter`` meta dict.
+    """
+    available = len(source_log_docs)
+    kept = source_log_docs[:_FAIL_OPEN_MAX_SOURCES]
+    meta: Dict[str, Any] = {
+        "marker_present": marker_present,
+        "strategy": "fail_open",
+        "cited_indices": [],
+        "invalid_indices": [],
+        "filtered_count": len(kept),
+        "available_count": available,
+    }
+    if marker_malformed:
+        meta["marker_malformed"] = True
+    return kept, meta
+
+
 def _build_source_frame(
     source_log_docs: List[Dict[str, Any]],
 ) -> Optional[str]:
@@ -1037,14 +1074,11 @@ class BaseAnswerResource:
                         len(source_log_docs),
                     )
                 else:
-                    citation_filter_meta = {
-                        "marker_present": True,
-                        "marker_malformed": True,
-                        "strategy": "fail_open",
-                        "cited_indices": [],
-                        "invalid_indices": [],
-                        "filtered_count": len(source_log_docs),
-                    }
+                    source_log_docs, citation_filter_meta = _fail_open_sources(
+                        source_log_docs,
+                        marker_present=True,
+                        marker_malformed=True,
+                    )
                 return
             if parse.cited_indices:
                 source_log_docs = _filter_sources_by_indices(
@@ -1346,13 +1380,10 @@ class BaseAnswerResource:
                             agent_id,
                             len(source_log_docs),
                         )
-                    citation_filter_meta = {
-                        "marker_present": False,
-                        "strategy": "fail_open",
-                        "cited_indices": [],
-                        "invalid_indices": [],
-                        "filtered_count": len(source_log_docs),
-                    }
+                    source_log_docs, citation_filter_meta = _fail_open_sources(
+                        source_log_docs,
+                        marker_present=False,
+                    )
 
             # Emit the (possibly filtered) source frame BEFORE any
             # structured_answer / id / usage / end frame so v1

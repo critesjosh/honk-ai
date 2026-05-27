@@ -16,7 +16,7 @@ Structured (JSON-schema) agents bypass the filter entirely.
 1. **`strategy=marker`** — marker matched with indices → emit only cited chunks.
 2. **`strategy=marker_none`** — `[[cited: none]]` / `[[cited: ]]` → emit no source frame.
 3. **`strategy=filename_fallback`** — marker absent or malformed → `_filename_fallback` extracts filename tokens from the full response (`` `foo.md` ``, `[link](foo.md)`, `Source: foo.md`, italic/bold, etc.) and matches them against each retrieved doc's `filename`/`title`/basename(`source`) aliases. Path-form tokens (`aztec-nr/index.md`) match by path-suffix; bare basenames (`index.md`) by basename — the two passes run independently on the literal tokens the model emitted, so a path mention doesn't shadow a separate bare-basename mention. Basename collisions ≥ 3 docs flag `ambiguous_basename_count`. Logs `llm.cited_via_filenames`.
-4. **`strategy=fail_open`** — otherwise emit all retrieved. Logs `llm.cited_missing`.
+4. **`strategy=fail_open`** — otherwise emit the **top `_FAIL_OPEN_MAX_SOURCES` (3)** retrieved docs. fail_open has no grounding signal from the model (no marker AND no filename match), so the source list is "what was retrieved", not "what the answer used" — capping to the top few avoids overstating confidence. The pre-cap retrieval count is preserved in the audit as `available_count`. Both fail_open branches share this cap via `_fail_open_sources`, but log differently: the no-marker branch logs `llm.cited_missing`, the malformed-marker branch logs `llm.cited_malformed`.
 
 ## Inline-marker scrubber
 
@@ -43,7 +43,8 @@ Lands at `conversation_messages.message_metadata.citation_filter`:
 | `marker_malformed` | conditional | `true` when payload didn't parse (e.g. `[[cited: banana]]`) |
 | `cited_indices` | always | 1-indexed source positions the LLM cited |
 | `invalid_indices` | always | Indices outside `[1, source_count]` (dropped, logged) |
-| `filtered_count` | always | Sources emitted in the SSE `source` frame |
+| `filtered_count` | always | Count of docs in the filtered list this strategy produced, BEFORE the `_MAX_SOURCES_EMITTED` (10) render cap. For `marker` this is the cited subset; for `fail_open` it's already capped to `_FAIL_OPEN_MAX_SOURCES` (3). NOT necessarily what the user sees — the SSE frame applies the 10-cap on top. |
+| `available_count` | `fail_open` only | Pre-cap retrieval count (how many docs were available before the fail_open top-3 cap). Lets audit distinguish "model grounded nothing out of 3" from "...out of 78". |
 | `matched_aliases` | `filename_fallback` only | Filename tokens that matched a retrieved doc |
 | `ambiguous_basename_count` | `filename_fallback` only | Basename collisions ≥ 3 docs |
 | `inline_markers_scrubbed` | scrubber removed any | Count of inline `[[cited: …]]` spans removed |
@@ -73,4 +74,4 @@ Lands at `conversation_messages.message_metadata.citation_filter`:
 
 ## Tests
 
-`tests/api/answer/test_citation_marker.py` — 76 cases covering the parser, the inline scrubber, all four end-of-stream strategies, audit-metadata shape, delta-boundary straddle, unmatched-`[[` no-stall, and the GeneratorExit observability.
+`tests/api/answer/test_citation_marker.py` — 82 cases covering the parser, the inline scrubber, all four end-of-stream strategies, the `fail_open` top-`_FAIL_OPEN_MAX_SOURCES` cap (`_fail_open_sources`, both branches) + `available_count` audit, audit-metadata shape, delta-boundary straddle, unmatched-`[[` no-stall, and the GeneratorExit observability.

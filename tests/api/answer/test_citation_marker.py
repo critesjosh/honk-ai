@@ -31,11 +31,55 @@ from application.api.answer.routes.base import (
     _build_source_frame,
     _CITATION_MARKER_MAX_LEN,
     _extract_cited_filenames,
+    _FAIL_OPEN_MAX_SOURCES,
+    _fail_open_sources,
     _filename_fallback,
     _filter_sources_by_indices,
     _parse_citation_marker,
     _scrub_inline_citation_markers,
 )
+
+
+class TestFailOpenSources:
+    """``_fail_open_sources`` caps the source list and records the pre-cap
+    count as ``available_count`` for audit."""
+
+    def _docs(self, n):
+        return [{"title": f"doc{i}", "filename": f"f{i}.md"} for i in range(1, n + 1)]
+
+    def test_caps_to_max_and_records_available(self):
+        docs = self._docs(8)
+        kept, meta = _fail_open_sources(docs, marker_present=False)
+        assert len(kept) == _FAIL_OPEN_MAX_SOURCES
+        assert [d["title"] for d in kept] == ["doc1", "doc2", "doc3"]
+        assert meta["strategy"] == "fail_open"
+        assert meta["marker_present"] is False
+        assert meta["filtered_count"] == _FAIL_OPEN_MAX_SOURCES
+        assert meta["available_count"] == 8
+        assert "marker_malformed" not in meta
+
+    def test_fewer_than_cap_keeps_all(self):
+        docs = self._docs(2)
+        kept, meta = _fail_open_sources(docs, marker_present=False)
+        assert len(kept) == 2
+        assert meta["filtered_count"] == 2
+        assert meta["available_count"] == 2
+
+    def test_malformed_flag_set_and_marker_present(self):
+        docs = self._docs(5)
+        kept, meta = _fail_open_sources(
+            docs, marker_present=True, marker_malformed=True
+        )
+        assert len(kept) == _FAIL_OPEN_MAX_SOURCES
+        assert meta["marker_present"] is True
+        assert meta["marker_malformed"] is True
+        assert meta["available_count"] == 5
+
+    def test_empty_input(self):
+        kept, meta = _fail_open_sources([], marker_present=False)
+        assert kept == []
+        assert meta["filtered_count"] == 0
+        assert meta["available_count"] == 0
 
 
 # ---- _parse_citation_marker -----------------------------------------
@@ -383,14 +427,15 @@ class TestCompleteStreamCitationFilter:
         assert answer_text.strip() == "Yes, I'm here."
 
     def test_no_marker_fails_open(self, mock_mongo_db, flask_app, caplog):
-        """Fail-open behaviour: no marker → all sources emitted.
+        """Fail-open behaviour: no marker → fail-open source set (capped at
+        _FAIL_OPEN_MAX_SOURCES; here 2 retrieved < cap, so both are kept).
 
         The caplog ``llm.cited_missing`` assertion is intentionally
         omitted — pytest's caplog plugin is polluted by sibling-file
         collection in this directory (see module docstring) and that's
-        out of scope for this PR. The wire-level behaviour (all
-        sources emitted) is what matters for the user-visible
-        contract; the log line is observability-only.
+        out of scope for this PR. The wire-level behaviour (fail-open
+        source set, capped at _FAIL_OPEN_MAX_SOURCES) is what matters
+        for the user-visible contract; the log line is observability-only.
         """
         import logging
 
@@ -407,7 +452,7 @@ class TestCompleteStreamCitationFilter:
 
         source_frames = [f for f in frames if f.get("type") == "source"]
         assert len(source_frames) == 1
-        # All sources retained on fail-open.
+        # 2 retrieved < _FAIL_OPEN_MAX_SOURCES, so the cap is a no-op here.
         assert len(source_frames[0]["source"]) == 2
 
     def test_marker_split_across_deltas(self, mock_mongo_db, flask_app):
@@ -490,11 +535,12 @@ class TestCompleteStreamCitationFilter:
         # Prose is preserved.
         assert "NoirJS" in answer_text
         assert "Trailing prose with no marker at all" in answer_text
-        # No trailing marker → fail-open: all retrieved sources kept
-        # but capped at _MAX_SOURCES_EMITTED (10) before the SSE frame.
+        # No trailing marker AND no inline filename the fallback can match
+        # → fail-open, which now caps to _FAIL_OPEN_MAX_SOURCES (no grounding
+        # signal, so we don't fill the frame with the full retrieval set).
         source_frames = [f for f in frames if f.get("type") == "source"]
         assert len(source_frames) == 1
-        assert len(source_frames[0]["source"]) == 10
+        assert len(source_frames[0]["source"]) == _FAIL_OPEN_MAX_SOURCES
 
     def test_inline_marker_leak_recorded_in_audit(
         self, mock_mongo_db, flask_app
@@ -1202,6 +1248,59 @@ class TestFilenameFallbackIntegration:
         emitted = [s["title"] for s in source_frames[0]["source"]]
         assert emitted == ["doc2"]
         # Marker text doesn't leak.
+        answer_text = "".join(
+            f["answer"] for f in frames if f.get("type") == "answer"
+        )
+        assert "[[cited:" not in answer_text
+        assert "banana" not in answer_text
+
+    def test_no_marker_fail_open_caps_sources(self, mock_mongo_db, flask_app):
+        """No marker AND no filename match, with MORE retrieved docs than
+        the fail_open cap → emit only the top ``_FAIL_OPEN_MAX_SOURCES``.
+        fail_open has no grounding signal, so it shouldn't fill the frame
+        with the full retrieval set.
+        """
+        agent = _agent_yielding(
+            [
+                {
+                    "sources": [
+                        {"title": f"doc{i}", "filename": f"f{i}.md"}
+                        for i in range(1, 7)  # 6 retrieved
+                    ]
+                },
+                {"answer": "Pure prose, no filename refs, no marker."},
+            ]
+        )
+        frames = self._run(mock_mongo_db, flask_app, agent)
+        source_frames = [f for f in frames if f.get("type") == "source"]
+        assert len(source_frames) == 1
+        emitted = [s["title"] for s in source_frames[0]["source"]]
+        assert emitted == ["doc1", "doc2", "doc3"]  # top-3, in retrieval order
+
+    def test_malformed_marker_fail_open_caps_sources(
+        self, mock_mongo_db, flask_app
+    ):
+        """Malformed marker (``[[cited: banana]]``) AND no filename the
+        fallback can match → the malformed fail_open branch also applies
+        the top-N cap (previously this branch was untested).
+        """
+        agent = _agent_yielding(
+            [
+                {
+                    "sources": [
+                        {"title": f"doc{i}", "filename": f"f{i}.md"}
+                        for i in range(1, 7)  # 6 retrieved
+                    ]
+                },
+                {"answer": "Prose with no filename refs.\n\n[[cited: banana]]"},
+            ]
+        )
+        frames = self._run(mock_mongo_db, flask_app, agent)
+        source_frames = [f for f in frames if f.get("type") == "source"]
+        assert len(source_frames) == 1
+        emitted = [s["title"] for s in source_frames[0]["source"]]
+        assert emitted == ["doc1", "doc2", "doc3"]
+        # Malformed marker still stripped from the wire.
         answer_text = "".join(
             f["answer"] for f in frames if f.get("type") == "answer"
         )

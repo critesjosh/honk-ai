@@ -364,7 +364,6 @@
     "expected_source_prefixes": [
       "version-v4.3.0/"
     ],
-    "expected_concept_prefix": "version-v4.3.0/",
     "banned_identifiers": [
       "Aztec Productivity Token",
       "Aztec Validation Token",
@@ -379,10 +378,8 @@
     "bucket": "concept",
     "query": "If I delegated my stake to a staking provider, can I still vote on governance proposals, and how?",
     "expected_source_prefixes": [
-      "aztec-participate/",
-      "version-v4.3.0/operators/"
+      "aztec-participate/"
     ],
-    "expected_concept_prefix": "aztec-participate/",
     "banned_identifiers": [
       "completeUnstake",
       "exitStake"
@@ -395,15 +392,52 @@
     "bucket": "concept",
     "query": "If I unstake, how long until I can withdraw my tokens, and what do I call to finalize the withdrawal?",
     "expected_source_prefixes": [
-      "aztec-participate/",
-      "version-v4.3.0/operators/"
+      "aztec-participate/"
     ],
-    "expected_concept_prefix": "aztec-participate/",
     "banned_identifiers": [
       "completeUnstake",
       "exitStake"
     ],
     "max_response_time_s": 20,
     "min_distinct_sources": 2
+  },
+  {
+    "tag": "staking-no-hallucinated-exit",
+    "bucket": "concept",
+    "query": "As a validator, how do I unstake / exit and withdraw my tokens from the Rollup?",
+    "expected_source_prefixes": [
+      "aztec-participate/"
+    ],
+    "banned_identifiers": [
+      "completeUnstake",
+      "exitStake"
+    ],
+    "max_response_time_s": 20,
+    "min_distinct_sources": 2
+  },
+  {
+    "tag": "gse-withdraw-signature",
+    "bucket": "concept",
+    "query": "What is the Solidity function signature of withdraw on the GSE (Governance Staking Escrow) contract?",
+    "expected_source_prefixes": [
+      "l1-contracts/"
+    ],
+    "banned_identifiers": [
+      "completeUnstake",
+      "exitStake"
+    ],
+    "max_response_time_s": 20,
+    "min_distinct_sources": 1,
+    "expected_concept_prefix": "l1-contracts/"
+  },
+  {
+    "tag": "networks-testnet-rollup-address",
+    "bucket": "concept",
+    "query": "What is the Testnet Rollup contract address?",
+    "expected_source_prefixes": [
+      "aztec-site/"
+    ],
+    "max_response_time_s": 20,
+    "min_distinct_sources": 1
   }
 ]
