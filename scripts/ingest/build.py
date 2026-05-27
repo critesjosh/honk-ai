@@ -1,4 +1,4 @@
-"""Build all 13 Aztec corpora as zip files ready for upload.
+"""Build all 14 Aztec corpora as zip files ready for upload.
 
 Usage::
 
@@ -326,7 +326,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         "--corpus",
         action="append",
         help="Build only the named corpus slug(s) (repeatable). "
-             "Defaults to all 13.",
+             "Defaults to all 14.",
     )
     parser.add_argument("--verbose", "-v", action="store_true")
     args = parser.parse_args(argv)

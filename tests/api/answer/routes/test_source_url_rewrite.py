@@ -202,6 +202,40 @@ class TestSiteRootPages:
         assert url == "https://docs.aztec.network/networks"
 
 
+class TestParticipateDocs:
+    """Files at `aztec-participate/...` come from the unversioned
+    ``docs-participate/`` tree and render at /participate/<rest> on
+    docs.aztec.network (Docusaurus ``routeBasePath: "participate"``)."""
+
+    def test_token_staking_page(self):
+        # The page that answers the unstaking/withdrawal questions the
+        # widget previously hallucinated (`completeUnstake`, "1-week cooldown").
+        assert _aztec_source_url("aztec-participate/token/staking.md") == (
+            "https://docs.aztec.network/participate/token/staking"
+        )
+
+    def test_governance_voting_page(self):
+        # The crisp delegator-voting source.
+        assert _aztec_source_url("aztec-participate/governance/voting.md") == (
+            "https://docs.aztec.network/participate/governance/voting"
+        )
+
+    def test_strips_trailing_index_segment(self):
+        assert _aztec_source_url("aztec-participate/governance/index.md") == (
+            "https://docs.aztec.network/participate/governance"
+        )
+
+    def test_handles_mdx(self):
+        assert _aztec_source_url("aztec-participate/token/voting.mdx") == (
+            "https://docs.aztec.network/participate/token/voting"
+        )
+
+    def test_does_not_route_to_github(self):
+        url = _aztec_source_url("aztec-participate/governance/gse.md")
+        assert "github.com" not in url
+        assert url == "https://docs.aztec.network/participate/governance/gse"
+
+
 class TestNoirRepoMappings:
     """noir-docs/ → rendered noir-lang.org/docs (NOT GitHub).
     noir-stdlib/ stays on GitHub since those are real `.nr` source files."""

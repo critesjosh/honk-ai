@@ -54,6 +54,10 @@ _CANONICAL_ORDER: tuple = (
     # networks page (mainnet vs. testnet L1 contract address table)
     # that the versioned operator docs explicitly defer to.
     "aztec_site_networks",
+    # Unversioned Participate docs (curated token/ + governance/) — the
+    # governance/staking educational content that the versioned operator
+    # docs are thin on. Grouped with the operator-facing cluster.
+    "aztec_participate_docs",
     "aztec_e2e_tests",
     "aztec_protocol_circuits",
     "aztec_l1_contracts",
@@ -78,7 +82,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                              "preserves the rest of the agent's source list")
     parser.add_argument("--allow-partial", action="store_true",
                         help="Allow default-mode SQL generation even when the "
-                             "upload manifest is missing some of the 13 canonical "
+                             "upload manifest is missing some of the 14 canonical "
                              "corpora. WITHOUT this flag, default mode refuses to "
                              "emit SQL that would truncate the agent's source list.")
     parser.add_argument("--prompt-id", default=None,
@@ -109,7 +113,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                 + "list to only the uploaded corpora. Use one of:\n"
                 + "  --apiref-only      (rotate just the apiref UUIDs)\n"
                 + "  --allow-partial    (acknowledge the partial set)\n"
-                + "  or upload all 13 corpora before generating SQL.",
+                + "  or upload all 14 corpora before generating SQL.",
                 file=sys.stderr,
             )
             return 2

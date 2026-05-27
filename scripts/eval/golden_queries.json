@@ -373,5 +373,37 @@
     ],
     "max_response_time_s": 30,
     "min_distinct_sources": 2
+  },
+  {
+    "tag": "participate-delegator-voting",
+    "bucket": "concept",
+    "query": "If I delegated my stake to a staking provider, can I still vote on governance proposals, and how?",
+    "expected_source_prefixes": [
+      "aztec-participate/",
+      "version-v4.3.0/operators/"
+    ],
+    "expected_concept_prefix": "aztec-participate/",
+    "banned_identifiers": [
+      "completeUnstake",
+      "exitStake"
+    ],
+    "max_response_time_s": 20,
+    "min_distinct_sources": 2
+  },
+  {
+    "tag": "participate-unstaking-withdrawal",
+    "bucket": "concept",
+    "query": "If I unstake, how long until I can withdraw my tokens, and what do I call to finalize the withdrawal?",
+    "expected_source_prefixes": [
+      "aztec-participate/",
+      "version-v4.3.0/operators/"
+    ],
+    "expected_concept_prefix": "aztec-participate/",
+    "banned_identifiers": [
+      "completeUnstake",
+      "exitStake"
+    ],
+    "max_response_time_s": 20,
+    "min_distinct_sources": 2
   }
 ]

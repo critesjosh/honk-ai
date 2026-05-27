@@ -142,7 +142,7 @@ class Corpus:
         return tuple(t.path for t in self.trees)
 
 
-# ── The 13 corpora ─────────────────────────────────────────────────────────
+# ── The 14 corpora ─────────────────────────────────────────────────────────
 
 
 CORPORA: Tuple[Corpus, ...] = (
@@ -265,6 +265,45 @@ CORPORA: Tuple[Corpus, ...] = (
         notes="single-file corpus: docs/docs/networks.md, rendered at "
               "docs.aztec.network/networks. Add more site-root pages "
               "here by extending include_paths.",
+    ),
+    Corpus(
+        # Unversioned "Participate" docs (``docs-participate/``) — the
+        # educational governance/staking content. NOT in the versioned
+        # developer/network trees, so it was never ingested; the widget
+        # had no crisp source for "can a delegator vote?" or the
+        # unstaking/withdrawal flow and the model filled the gap with
+        # hallucinated method names (``completeUnstake``) and a wrong
+        # "1-week cooldown". See honk-report 2026-05-27.
+        #
+        # CURATED SUBSET: only ``token/`` + ``governance/`` — the slice
+        # that closes that gap. ``basics/`` is deliberately excluded: it
+        # overlaps the versioned developer concept docs and would risk
+        # the off-target-citation duplication that ``migration_notes`` /
+        # changelogs already cause. Widen via ``include_paths`` after
+        # measuring citation overlap.
+        #
+        # Unversioned, same as ``networks.md``: sourced from the
+        # ``next`` snapshot (``aztec-packages-docs``); rendered at
+        # ``docs.aztec.network/participate/<rest>`` (Docusaurus instance
+        # ``routeBasePath: "participate"``). The ``aztec-participate/``
+        # zip prefix is wired into ``_aztec_source_url`` (routes/base.py)
+        # and ``SOURCE_PREFIXES`` (eval_retrieval.py).
+        name="Aztec Participate Docs v4.3.0",
+        slug="aztec_participate_docs",
+        source_root="aztec-packages-docs",
+        trees=(
+            SourceTree(
+                "docs/docs-participate",
+                "aztec-participate",
+                include_paths=("token/*", "governance/*"),
+            ),
+        ),
+        include_extensions=(".md", ".mdx"),
+        transform="passthrough",
+        notes="curated subset (token/ + governance/) of the unversioned "
+              "docs-participate tree, rendered at "
+              "docs.aztec.network/participate/<rest>. Widen include_paths "
+              "after measuring citation overlap with the versioned docs.",
     ),
     # ---- Apiref corpora (noir_apiref transform) ------------------------
     Corpus(

@@ -1,6 +1,6 @@
 # Aztec corpus ingest toolkit
 
-This directory holds the tooling for (re-)ingesting the 13 corpora that
+This directory holds the tooling for (re-)ingesting the 14 corpora that
 make up the Aztec DocsGPT knowledge base. It exists so that bumping to
 a new aztec-packages release (e.g. `v4.3.0` → `v4.3.0`) is a small
 number of commands instead of a folkloric afternoon of `zip` calls and
@@ -10,7 +10,7 @@ SQL guesses.
 
 | File | Purpose |
 |---|---|
-| `corpora.py` | Canonical definition of all 13 corpora (paths, extensions, transform). Single source of truth — edit here when paths change. |
+| `corpora.py` | Canonical definition of all 14 corpora (paths, extensions, transform). Single source of truth — edit here when paths change. |
 | `noir_apiref.py` | Transforms `.nr` source into a Markdown API-reference view (signatures + doc comments only). Used by the `noir_apiref` transform. |
 | `build.py` | CLI: builds upload-ready zips from local checkouts of `aztec-packages` and `noir`. Writes per-corpus + overall manifests. |
 | `upload.py` | CLI: POSTs the zips to `/api/upload`, polls the Celery task, captures the resulting `sources.id` UUIDs. |
@@ -18,7 +18,7 @@ SQL guesses.
 
 ## What the corpora are
 
-13 corpora total, all built from two upstream git repos pinned at
+14 corpora total, all built from two upstream git repos pinned at
 specific revisions per Aztec release:
 
   * `aztec-packages` at the release tag (`v4.3.0` etc.) — used for code corpora.
@@ -89,7 +89,7 @@ NOIR_PIN=$(git -C ../aztec-packages -C /tmp/aztec-vNEW submodule status noir/noi
 git clone https://github.com/noir-lang/noir /tmp/noir-vNEW
 git -C /tmp/noir-vNEW checkout "$NOIR_PIN"
 
-# 2. Build all 13 zips. Idempotent; rerunnable.
+# 2. Build all 14 zips. Idempotent; rerunnable.
 python -m scripts.ingest.build \
     --aztec-pkg      /tmp/aztec-vNEW \
     --aztec-pkg-docs /tmp/aztec-vNEW-docs \
@@ -257,7 +257,7 @@ for trait/impl blocks).
   * **No DB column for `chunk_type`.** The chunker
     (`application/parser/chunking.py`) detects apiref by file
     extension (`*.nr.md`) via a tag set in
-    `application/parser/file/bulk.py`. With 13 corpora a config map
+    `application/parser/file/bulk.py`. With 14 corpora a config map
     is enough — see PLAN-rag-apiref.md.
   * **Apiref output is `.nr.md`, not `.nr.txt`.** This both
     (a) avoids the user-visible "shows as txt" complaint and
@@ -303,7 +303,7 @@ ideally set `is_public=true` on success. Tracked as a follow-up.
 ### `swap_sources.py --allow-partial`
 
 By default `swap_sources.py` refuses to emit SQL when the upload
-manifest is missing any of the 13 canonical corpora. The default
+manifest is missing any of the 14 canonical corpora. The default
 mode rewrites `extra_source_ids` wholesale — a partial manifest
 would silently truncate the agent's source list. Use one of:
 
@@ -311,7 +311,7 @@ would silently truncate the agent's source list. Use one of:
     `array_replace` (preserves all other slot positions)
   * `--allow-partial` to acknowledge that you intentionally only
     uploaded a subset
-  * Upload all 13 corpora before generating SQL
+  * Upload all 14 corpora before generating SQL
 
 For an in-place rotation of a small subset (e.g. just `apiref`, or
 just `(clean)` rebuilds), prefer the `--apiref-only`-style approach

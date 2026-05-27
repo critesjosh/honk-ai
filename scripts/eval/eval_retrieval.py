@@ -54,7 +54,7 @@ SOURCE_PREFIXES = (
     "noir-docs/", "noir-stdlib/", "typescript-api/", "aztec-nr/",
     "aztec.js/", "cli/", "cli-wallet/", "end-to-end/", "l1-contracts/",
     "noir-contracts/", "noir-protocol-circuits/", "version-v4.3.0/docs/",
-    "version-v4.3.0/",
+    "version-v4.3.0/", "aztec-participate/",
 )
 
 # Path prefixes considered "apiref-shaped". A retrieval/citation is an

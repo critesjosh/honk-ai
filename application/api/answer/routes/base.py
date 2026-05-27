@@ -59,6 +59,11 @@ _AZTEC_OPERATE_BASE = "https://docs.aztec.network/operate"
 # e.g. ``networks.md`` rendered at /networks. Lives in the
 # ``aztec_site_networks`` corpus (zip prefix ``aztec-site/``).
 _AZTEC_SITE_BASE = "https://docs.aztec.network"
+# Unversioned "Participate" docs (``docs-participate/``) — educational
+# governance/staking content rendered at /participate/<rest> on the site
+# (Docusaurus instance ``routeBasePath: "participate"``). Lives in the
+# ``aztec_participate_docs`` corpus (zip prefix ``aztec-participate/``).
+_AZTEC_PARTICIPATE_BASE = "https://docs.aztec.network/participate"
 _AZTEC_GITHUB_BASE = (
     "https://github.com/AztecProtocol/aztec-packages/blob/v4.3.0"
 )
@@ -193,6 +198,18 @@ def _aztec_source_url(source_path: str) -> str:
         rest = source_path[len("aztec-site/"):]
         rest = _strip_index_suffix(_strip_doc_ext(rest))
         return f"{_AZTEC_SITE_BASE}/{rest}".rstrip("/")
+
+    # Unversioned "Participate" docs (``aztec-participate/...``) — rendered
+    # at /participate/<rest> on the site. Same Docusaurus URL scheme as the
+    # site-root pages above (strip extension + trailing /index), with
+    # ``apply_slug_override`` for files that declare an ``id:`` in their
+    # frontmatter.
+    if source_path.startswith("aztec-participate/"):
+        source_no_ext = _strip_doc_ext(source_path)
+        rest = source_path[len("aztec-participate/"):]
+        rest = _strip_index_suffix(_strip_doc_ext(rest))
+        rest = apply_slug_override(rest, source_no_ext)
+        return f"{_AZTEC_PARTICIPATE_BASE}/{rest}".rstrip("/")
 
     # Noir language docs are rendered at noir-lang.org/docs. Strip the
     # markdown extension and any `/index` suffix to match the

@@ -41,6 +41,63 @@ def test_networks_corpus_targets_only_networks_md():
     assert tree.include_paths == ("networks.md",)
 
 
+def test_participate_corpus_in_canonical_list():
+    slugs = [c.slug for c in CORPORA]
+    assert "aztec_participate_docs" in slugs
+
+
+def test_participate_corpus_curated_subset():
+    # Curated to token/ + governance/ only — basics/ is intentionally
+    # excluded to avoid duplicating the versioned developer concept docs.
+    c = get_corpus("aztec_participate_docs")
+    assert c.transform == "passthrough"
+    assert c.source_root == "aztec-packages-docs"
+    assert c.in_production_agent is True
+    assert len(c.trees) == 1
+    tree = c.trees[0]
+    assert tree.path == "docs/docs-participate"
+    assert tree.zip_prefix == "aztec-participate"
+    assert tree.include_paths == ("token/*", "governance/*")
+
+
+def test_participate_corpus_wired_into_swap_order():
+    # swap_sources._CANONICAL_ORDER is a hand-maintained mirror of CORPORA.
+    # If a production corpus is missing from it, `_ordered()` silently drops
+    # the upload from the swap SQL + AZTEC_SOURCE_IDS block — the corpus
+    # would build + embed fine but never reach the prod agents.
+    from scripts.ingest.swap_sources import _CANONICAL_ORDER
+
+    assert "aztec_participate_docs" in _CANONICAL_ORDER
+
+
+def test_every_production_corpus_in_swap_order():
+    # Stronger invariant guarding the whole class of "added a corpus but
+    # forgot the swap order" bugs: every in_production_agent corpus must be
+    # wired into _CANONICAL_ORDER.
+    from scripts.ingest.swap_sources import _CANONICAL_ORDER
+
+    prod_slugs = {c.slug for c in CORPORA if c.in_production_agent}
+    missing = prod_slugs - set(_CANONICAL_ORDER)
+    assert not missing, f"production corpora missing from swap order: {missing}"
+
+
+def test_participate_walk_files_excludes_basics(tmp_path: Path):
+    # `basics/` must NOT survive the include_paths allowlist.
+    (tmp_path / "token").mkdir()
+    (tmp_path / "governance").mkdir()
+    (tmp_path / "basics").mkdir()
+    (tmp_path / "token" / "staking.md").write_text("x")
+    (tmp_path / "governance" / "voting.md").write_text("x")
+    (tmp_path / "basics" / "intro.md").write_text("x")
+    kept = _walk_files(
+        tmp_path,
+        extensions=(".md", ".mdx"),
+        include_paths=("token/*", "governance/*"),
+    )
+    names = sorted(p.name for p in kept)
+    assert names == ["staking.md", "voting.md"]
+
+
 def test_walk_files_include_paths_allowlist(tmp_path: Path):
     # Layout that mirrors aztec-packages docs/docs/ at v4.3.0:
     # networks.md, index.mdx, aztec_connect_sunset.mdx
