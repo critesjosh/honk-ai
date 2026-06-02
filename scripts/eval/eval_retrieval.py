@@ -24,6 +24,12 @@ Each golden query carries a ``bucket`` field:
                (regression guard against an over-eager apiref bias).
   example      "Show me a contract" / "give me an example" — concept and
                apiref are both fine, we just assert source diversity.
+  resource     The user is asking for external resources (community tools,
+               dashboards, the awesome-aztec list) that live only in a
+               specific corpus. Like ``identifier``, we assert that corpus
+               appears in the top-3 cited sources via
+               ``expected_first_prefixes`` — this measures recall of the
+               awesome-aztec community-resources corpus.
 
 Usage (from inside the backend container or with PYTHONPATH=/app):
   python scripts/eval/eval_retrieval.py --mode retriever
@@ -345,8 +351,12 @@ def run_stream_eval(
         # that's still a correct answer with a useful citation. Bringing
         # stream mode in line with retriever mode makes the bar match
         # the actual user experience.
+        # ``resource`` queries reuse the same top-3 expected-source check
+        # as ``identifier`` (via ``expected_first_prefixes``) to measure
+        # recall of a specific corpus — e.g. ``awesome-aztec/`` for the
+        # community resource list, whose links live nowhere else.
         apiref_in_top3_cited = False
-        if bucket_name == "identifier" and sources:
+        if bucket_name in ("identifier", "resource") and sources:
             top3_urls = [
                 (s.get("source", "") or "") for s in sources[:3]
             ]
@@ -386,7 +396,7 @@ def run_stream_eval(
             "time_pass": time_pass,
             "diversity_pass": diversity_pass,
             "bucket_pass": bucket_pass,
-            "apiref_in_top3_cited": apiref_in_top3_cited if bucket_name == "identifier" else None,
+            "apiref_in_top3_cited": apiref_in_top3_cited if bucket_name in ("identifier", "resource") else None,
         }
         if capture_answers:
             # Full payload for snapshot/compare. Sources are kept in citation
@@ -421,6 +431,8 @@ def run_stream_eval(
             flags.append(f"low-diversity:{len(source_titles)}<{min_sources}")
         if bucket_name == "identifier" and not apiref_in_top3_cited:
             flags.append("no-apiref-in-top3")
+        if bucket_name == "resource" and not apiref_in_top3_cited:
+            flags.append("no-expected-source-in-top3")
         flag_str = f" ({', '.join(flags)})" if flags else ""
         print(
             f"  [{status}] {tag} ({bucket_name}): {elapsed:.1f}s, "
@@ -464,7 +476,7 @@ def main():
     )
     parser.add_argument(
         "--bucket",
-        choices=["identifier", "concept", "example", "all"],
+        choices=["identifier", "concept", "example", "resource", "all"],
         default="all",
         help="Restrict evaluation to one bucket (default: all)",
     )
