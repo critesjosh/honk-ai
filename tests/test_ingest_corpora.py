@@ -104,16 +104,17 @@ def test_awesome_aztec_corpus_shape():
     assert tree.include_paths == ("README.md",)
 
 
-def test_awesome_aztec_held_out_of_prod_agent():
-    # Deliberately in_production_agent=False until citation-overlap is
-    # measured (see the corpus comment + the source_url rewriter). When
-    # flipping to True, add "awesome_aztec" to _CANONICAL_ORDER too — the
-    # test_every_production_corpus_in_swap_order invariant enforces that.
+def test_awesome_aztec_promoted_to_prod_agent():
+    # Promoted to production after the held-out build was uploaded and
+    # wired into the prod widget agent (2026-06-02). Must be in
+    # _CANONICAL_ORDER so a future re-ingest/swap doesn't drop it — the
+    # test_every_production_corpus_in_swap_order invariant also enforces
+    # this pairing.
     from scripts.ingest.swap_sources import _CANONICAL_ORDER
 
     c = get_corpus("awesome_aztec")
-    assert c.in_production_agent is False
-    assert "awesome_aztec" not in _CANONICAL_ORDER
+    assert c.in_production_agent is True
+    assert "awesome_aztec" in _CANONICAL_ORDER
 
 
 def test_inline_external_links_keeps_external_urls():
@@ -183,25 +184,33 @@ def test_inline_external_links_mixed_list_roundtrips_via_build(tmp_path: Path):
     assert stats["internal_links_stripped"] == 1
 
 
-def test_skip_for_missing_root_holds_out_awesome_aztec():
-    c = get_corpus("awesome_aztec")
+def test_skip_for_missing_root_holds_out_held_out_corpus():
+    import dataclasses
+
+    # Synthetic held-out corpus (no real corpus is held out today).
+    held = dataclasses.replace(get_corpus("awesome_aztec"), in_production_agent=False)
     prod_roots = {"aztec-packages": Path("/x"), "aztec-packages-docs": Path("/y"),
                   "noir": Path("/z")}
-    # Default build, awesome-aztec root absent → skipped.
-    assert _skip_for_missing_root(c, prod_roots, explicitly_selected=False) is True
+    # Default build, its root absent → skipped.
+    assert _skip_for_missing_root(held, prod_roots, explicitly_selected=False) is True
     # Root supplied → not skipped.
     assert _skip_for_missing_root(
-        c, {**prod_roots, "awesome-aztec": Path("/a")}, explicitly_selected=False
+        held, {**prod_roots, "awesome-aztec": Path("/a")}, explicitly_selected=False
     ) is False
     # Explicit --corpus selection → never skipped (let it hard-error if missing).
-    assert _skip_for_missing_root(c, prod_roots, explicitly_selected=True) is False
+    assert _skip_for_missing_root(held, prod_roots, explicitly_selected=True) is False
 
 
 def test_skip_for_missing_root_never_skips_production_corpus():
     # A production corpus with a missing root must NOT be silently skipped
-    # (it should hard-error downstream instead).
-    c = get_corpus("aztec_developer_docs")
-    assert _skip_for_missing_root(c, {}, explicitly_selected=False) is False
+    # (it should hard-error downstream instead) — including awesome_aztec,
+    # now that it's promoted.
+    assert _skip_for_missing_root(
+        get_corpus("aztec_developer_docs"), {}, explicitly_selected=False
+    ) is False
+    assert _skip_for_missing_root(
+        get_corpus("awesome_aztec"), {}, explicitly_selected=False
+    ) is False
 
 
 def test_participate_walk_files_excludes_basics(tmp_path: Path):

@@ -1,8 +1,10 @@
 """Build the Aztec corpora as zip files ready for upload.
 
-15 corpora are defined; the default 'build all' run produces the 14
-production corpora and skips held-out ones whose source root wasn't
-supplied (see _skip_for_missing_root).
+15 corpora are defined, all shipped to the production agent — so the
+default 'build all' run needs every source root (including
+--awesome-aztec). Any held-out corpus (in_production_agent=False) whose
+root isn't supplied is skipped with a warning (see _skip_for_missing_root);
+there are none today.
 
 Usage::
 

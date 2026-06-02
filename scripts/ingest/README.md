@@ -1,8 +1,8 @@
 # Aztec corpus ingest toolkit
 
 This directory holds the tooling for (re-)ingesting the corpora that
-make up the Aztec DocsGPT knowledge base (15 defined; 14 shipped to the
-production agent — `awesome_aztec` is held out, see below). It exists so that bumping to
+make up the Aztec DocsGPT knowledge base (15 corpora, all shipped to the
+production agent). It exists so that bumping to
 a new aztec-packages release (e.g. `v4.3.0` → `v4.3.0`) is a small
 number of commands instead of a folkloric afternoon of `zip` calls and
 SQL guesses.
@@ -19,8 +19,8 @@ SQL guesses.
 
 ## What the corpora are
 
-15 corpora defined (14 shipped to the production agent), built from
-upstream git repos pinned at specific revisions per Aztec release:
+15 corpora, all shipped to the production agent, built from upstream
+git repos pinned at specific revisions per Aztec release:
 
   * `aztec-packages` at the release tag (`v4.3.0` etc.) — used for code corpora.
   * `aztec-packages` at a `next`-branch snapshot commit that contains
@@ -36,10 +36,10 @@ upstream git repos pinned at specific revisions per Aztec release:
   * `AztecProtocol/awesome-aztec` — the community resource list (`awesome_aztec`
     corpus, built via `--awesome-aztec <checkout>`). This is a **moving**
     community repo, NOT release-pinned; source URLs link to the GitHub blob
-    on `main`. It is `in_production_agent=False` (held out of `_CANONICAL_ORDER`
-    and the prod swap) until citation-overlap against the versioned docs is
-    measured — build + eval it, then flip the flag and add the slug to the
-    swap order to ship it.
+    on `main`, and each re-ingest re-pins to whatever `main` is at build
+    time. Live in prod since 2026-06-02 (pin `280f24f0`). Because it's a
+    production corpus now, the standard build **requires** `--awesome-aztec`
+    (a missing root hard-errors rather than skipping).
 
 Run `python -m scripts.ingest.list` (TODO) or read `corpora.py` for the
 full table. The most important distinction is between:
@@ -88,24 +88,24 @@ the wanted slice is far smaller than the source tree. Currently:
 Outline; details below.
 
 ```bash
-# 1. Get clean checkouts of the THREE production source trees (see
-#    "Option B" in PLAN-v4.3.0-bump.md). The docs version snapshot is
-#    taken from a moving branch, so the release tag does NOT contain
-#    version-vNEW/.
+# 1. Get clean checkouts of the FOUR source trees (see "Option B" in
+#    PLAN-v4.3.0-bump.md). The docs version snapshot is taken from a
+#    moving branch, so the release tag does NOT contain version-vNEW/.
+#    awesome-aztec is a moving community repo — just clone current main.
 git -C ../aztec-packages worktree add --detach /tmp/aztec-vNEW      vNEW
 git -C ../aztec-packages worktree add --detach /tmp/aztec-vNEW-docs <next-snapshot-sha>
 NOIR_PIN=$(git -C ../aztec-packages -C /tmp/aztec-vNEW submodule status noir/noir-repo | awk '{print $1}' | tr -d -)
 git clone https://github.com/noir-lang/noir /tmp/noir-vNEW
 git -C /tmp/noir-vNEW checkout "$NOIR_PIN"
+git clone --depth 1 https://github.com/AztecProtocol/awesome-aztec /tmp/awesome-aztec
 
-# 2. Build the 14 production zips. Idempotent; rerunnable. The held-out
-#    awesome_aztec corpus is skipped (with a warning) since --awesome-aztec
-#    isn't passed; build it separately with `--corpus awesome_aztec
-#    --awesome-aztec <checkout>` when measuring its citation overlap.
+# 2. Build all 15 zips. Idempotent; rerunnable. --awesome-aztec is
+#    required (it's a production corpus); a missing root hard-errors.
 python -m scripts.ingest.build \
     --aztec-pkg      /tmp/aztec-vNEW \
     --aztec-pkg-docs /tmp/aztec-vNEW-docs \
     --noir           /tmp/noir-vNEW \
+    --awesome-aztec  /tmp/awesome-aztec \
     --out            /tmp/aztec-corpora-build
 
 # 3. Review the build manifests — especially the apiref ones.
@@ -269,8 +269,8 @@ for trait/impl blocks).
   * **No DB column for `chunk_type`.** The chunker
     (`application/parser/chunking.py`) detects apiref by file
     extension (`*.nr.md`) via a tag set in
-    `application/parser/file/bulk.py`. With 14 corpora a config map
-    is enough — see PLAN-rag-apiref.md.
+    `application/parser/file/bulk.py`. With a handful of corpora a config
+    map is enough — see PLAN-rag-apiref.md.
   * **Apiref output is `.nr.md`, not `.nr.txt`.** This both
     (a) avoids the user-visible "shows as txt" complaint and
     (b) gets free heading-based chunking via `MarkdownParser`, which
@@ -315,7 +315,7 @@ ideally set `is_public=true` on success. Tracked as a follow-up.
 ### `swap_sources.py --allow-partial`
 
 By default `swap_sources.py` refuses to emit SQL when the upload
-manifest is missing any of the 14 canonical corpora. The default
+manifest is missing any of the 15 canonical corpora. The default
 mode rewrites `extra_source_ids` wholesale — a partial manifest
 would silently truncate the agent's source list. Use one of:
 
@@ -323,7 +323,7 @@ would silently truncate the agent's source list. Use one of:
     `array_replace` (preserves all other slot positions)
   * `--allow-partial` to acknowledge that you intentionally only
     uploaded a subset
-  * Upload all 14 corpora before generating SQL
+  * Upload all 15 corpora before generating SQL
 
 For an in-place rotation of a small subset (e.g. just `apiref`, or
 just `(clean)` rebuilds), prefer the `--apiref-only`-style approach

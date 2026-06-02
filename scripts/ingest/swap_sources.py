@@ -61,6 +61,10 @@ _CANONICAL_ORDER: tuple = (
     "aztec_e2e_tests",
     "aztec_protocol_circuits",
     "aztec_l1_contracts",
+    # Community resource list (awesome-aztec README). Supplementary, so
+    # ordered last. Moving community repo — re-pinned to current main on
+    # each re-ingest (build with --awesome-aztec <checkout>).
+    "awesome_aztec",
 )
 
 
@@ -113,7 +117,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                 + "list to only the uploaded corpora. Use one of:\n"
                 + "  --apiref-only      (rotate just the apiref UUIDs)\n"
                 + "  --allow-partial    (acknowledge the partial set)\n"
-                + "  or upload all 14 production corpora before generating SQL.",
+                + "  or upload all 15 production corpora before generating SQL.",
                 file=sys.stderr,
             )
             return 2

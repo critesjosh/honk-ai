@@ -332,13 +332,14 @@ CORPORA: Tuple[Corpus, ...] = (
         # to the GitHub blob on ``main`` (``_aztec_source_url`` in
         # api/answer/routes/base.py), not docs.aztec.network.
         #
-        # in_production_agent=False on purpose: the README is one
-        # heterogeneous link-list file whose chunks are topically mixed,
-        # so it risks becoming an off-target citation magnet (same class
-        # of problem as migration_notes / changelogs). Build + eval it,
-        # measure citation overlap against the versioned docs, THEN flip
-        # this to True and add the slug to ``_CANONICAL_ORDER`` in
-        # swap_sources.py before wiring it into the prod agent.
+        # Promoted to production (in_production_agent=True) and added to
+        # ``_CANONICAL_ORDER`` after the held-out build was uploaded and
+        # wired into the prod widget agent on 2026-06-02 (source
+        # 5afa85e2-…, awesome-aztec pin 280f24f0). Retrieval probes
+        # confirmed external URLs survive ingest and are retrieved
+        # (e.g. dashboard/explorer queries cite this corpus). Because the
+        # repo is a moving target, each re-ingest re-pins to the current
+        # ``main``; re-run with ``--awesome-aztec <checkout>``.
         name="Awesome Aztec (community resources)",
         slug="awesome_aztec",
         source_root="awesome-aztec",
@@ -357,12 +358,12 @@ CORPORA: Tuple[Corpus, ...] = (
         # plain text (and strips internal/relative links to labels) so
         # they survive the parser. See _inline_external_links in build.py.
         transform="inline_external_links",
-        in_production_agent=False,
+        in_production_agent=True,
         notes="single-file corpus: the awesome-aztec README link list. "
               "Moving community repo (not release-pinned); source URLs "
               "link to the GitHub blob on main. External links are inlined "
               "as text (internal links stripped) so URLs survive ingest. "
-              "Held out of the prod agent pending citation-overlap measurement.",
+              "Live in the prod widget agent since 2026-06-02.",
     ),
     # ---- Apiref corpora (noir_apiref transform) ------------------------
     Corpus(
