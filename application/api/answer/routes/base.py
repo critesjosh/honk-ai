@@ -87,6 +87,12 @@ _NOIR_DOCS_BASE = "https://noir-lang.org/docs"
 _NOIR_GITHUB_BASE = (
     "https://github.com/noir-lang/noir/blob/1d9727a6e0a9df75a71bb9c87daacbe30659ba09"
 )
+# awesome-aztec is a moving community repo (not release-pinned), so its
+# source URLs point at the GitHub blob on ``main`` rather than a tag.
+# Lives in the ``awesome_aztec`` corpus (zip prefix ``awesome-aztec/``).
+_AWESOME_AZTEC_GITHUB_BASE = (
+    "https://github.com/AztecProtocol/awesome-aztec/blob/main"
+)
 
 # Corpus prefix → GitHub repo prefix. First match wins, so put the more
 # specific prefixes before their catch-alls.
@@ -219,6 +225,13 @@ def _aztec_source_url(source_path: str) -> str:
         rest = _strip_index_suffix(_strip_doc_ext(rest))
         rest = apply_slug_override(rest, source_no_ext)
         return f"{_AZTEC_PARTICIPATE_BASE}/{rest}".rstrip("/")
+
+    # awesome-aztec community resource list — a single README from the
+    # AztecProtocol/awesome-aztec repo. Links back to the GitHub blob on
+    # ``main`` (moving community repo, not a release tag).
+    if source_path.startswith("awesome-aztec/"):
+        rest = source_path[len("awesome-aztec/"):]
+        return f"{_AWESOME_AZTEC_GITHUB_BASE}/{rest}".rstrip("/")
 
     # Noir language docs are rendered at noir-lang.org/docs. Strip the
     # markdown extension and any `/index` suffix to match the

@@ -113,7 +113,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                 + "list to only the uploaded corpora. Use one of:\n"
                 + "  --apiref-only      (rotate just the apiref UUIDs)\n"
                 + "  --allow-partial    (acknowledge the partial set)\n"
-                + "  or upload all 14 corpora before generating SQL.",
+                + "  or upload all 14 production corpora before generating SQL.",
                 file=sys.stderr,
             )
             return 2

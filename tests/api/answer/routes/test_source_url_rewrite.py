@@ -236,6 +236,21 @@ class TestParticipateDocs:
         assert url == "https://docs.aztec.network/participate/governance/gse"
 
 
+class TestAwesomeAztec:
+    """Files at `awesome-aztec/...` come from the AztecProtocol/awesome-aztec
+    community repo (a moving, non-release-pinned resource list) and link
+    back to the GitHub blob on ``main`` — NOT docs.aztec.network."""
+
+    def test_readme_routes_to_github_main(self):
+        assert _aztec_source_url("awesome-aztec/README.md") == (
+            "https://github.com/AztecProtocol/awesome-aztec/blob/main/README.md"
+        )
+
+    def test_does_not_route_to_docs_site(self):
+        url = _aztec_source_url("awesome-aztec/README.md")
+        assert "docs.aztec.network" not in url
+
+
 class TestNoirRepoMappings:
     """noir-docs/ → rendered noir-lang.org/docs (NOT GitHub).
     noir-stdlib/ stays on GitHub since those are real `.nr` source files."""

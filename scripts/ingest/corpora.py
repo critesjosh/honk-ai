@@ -23,6 +23,14 @@ Conventions
 ``transform``
     ``passthrough``
         Files are zipped as-is. Used for native markdown corpora.
+    ``inline_external_links``
+        Markdown files are copied like ``passthrough``, but each inline
+        ``[label](url)`` is rewritten before zipping: external URLs
+        (``http(s)://`` / ``//`` / ``mailto:``) become ``label (url)``
+        so the bare URL survives the shared markdown parser (which
+        otherwise strips every link to its label), while internal /
+        relative links are stripped to ``label``. Used for link-list
+        corpora (``awesome_aztec``) whose value is the external URLs.
     ``rename_code_to_txt``
         Code files (``.nr`` / ``.ts`` / ``.sol``) get an extra ``.txt``
         suffix appended so the DocsGPT parser allowlist accepts them.
@@ -97,7 +105,7 @@ class Corpus:
     # Short slug used for the zip filename and as a CLI argument.
     slug: str
     # Where the source files live, relative to one of the supported
-    # source roots. Three roots exist because the corpora are pinned at
+    # source roots. Four roots exist because the corpora are pinned at
     # *different* upstream commits per release:
     #   - ``aztec-packages``       → the aztec-packages release tag
     #     (e.g. ``v4.3.0``). Used for code corpora (aztec.js, CLI, e2e,
@@ -114,7 +122,11 @@ class Corpus:
     #   - ``noir``                 → the noir-lang/noir commit pinned
     #     by aztec-packages' ``noir/noir-repo`` submodule at the
     #     release tag. Used for noir docs + noir stdlib apiref.
-    source_root: str  # "aztec-packages" | "aztec-packages-docs" | "noir"
+    #   - ``awesome-aztec``        → the AztecProtocol/awesome-aztec
+    #     community repo. NOT release-pinned (moving target); whatever
+    #     checkout is passed at build time. Used only for the
+    #     ``awesome_aztec`` resource-list corpus.
+    source_root: str  # "aztec-packages" | "aztec-packages-docs" | "noir" | "awesome-aztec"
     # One or more source trees that contribute to this corpus.
     trees: Tuple[SourceTree, ...]
     # Extensions to copy into the zip. Use lower-case.
@@ -142,7 +154,7 @@ class Corpus:
         return tuple(t.path for t in self.trees)
 
 
-# ── The 14 corpora ─────────────────────────────────────────────────────────
+# ── The 15 corpora ─────────────────────────────────────────────────────────
 
 
 CORPORA: Tuple[Corpus, ...] = (
@@ -304,6 +316,53 @@ CORPORA: Tuple[Corpus, ...] = (
               "docs-participate tree, rendered at "
               "docs.aztec.network/participate/<rest>. Widen include_paths "
               "after measuring citation overlap with the versioned docs.",
+    ),
+    Corpus(
+        # Community resource list — the single ``README.md`` from
+        # AztecProtocol/awesome-aztec (curated links to faucets, block
+        # explorers, learning material, tooling). The versioned docs
+        # carry almost none of these external links, so the widget can
+        # name a resource (e.g. "the testnet faucet") but not produce
+        # its URL. See honk-report 2026-06-01.
+        #
+        # MOVING TARGET: unlike every other corpus, awesome-aztec is a
+        # community repo NOT pinned to an Aztec release tag — its
+        # ``source_root`` ("awesome-aztec") is just whatever checkout is
+        # passed via ``--awesome-aztec`` at build time. Source URLs map
+        # to the GitHub blob on ``main`` (``_aztec_source_url`` in
+        # api/answer/routes/base.py), not docs.aztec.network.
+        #
+        # in_production_agent=False on purpose: the README is one
+        # heterogeneous link-list file whose chunks are topically mixed,
+        # so it risks becoming an off-target citation magnet (same class
+        # of problem as migration_notes / changelogs). Build + eval it,
+        # measure citation overlap against the versioned docs, THEN flip
+        # this to True and add the slug to ``_CANONICAL_ORDER`` in
+        # swap_sources.py before wiring it into the prod agent.
+        name="Awesome Aztec (community resources)",
+        slug="awesome_aztec",
+        source_root="awesome-aztec",
+        trees=(
+            SourceTree(
+                ".",
+                "awesome-aztec",
+                include_paths=("README.md",),
+            ),
+        ),
+        include_extensions=(".md",),
+        # NOT passthrough: the shared markdown parser strips every
+        # ``[label](url)`` to ``label`` (remove_hyperlinks=True), which
+        # would delete the external URLs that are this corpus's entire
+        # value. ``inline_external_links`` pre-inlines external URLs as
+        # plain text (and strips internal/relative links to labels) so
+        # they survive the parser. See _inline_external_links in build.py.
+        transform="inline_external_links",
+        in_production_agent=False,
+        notes="single-file corpus: the awesome-aztec README link list. "
+              "Moving community repo (not release-pinned); source URLs "
+              "link to the GitHub blob on main. External links are inlined "
+              "as text (internal links stripped) so URLs survive ingest. "
+              "Held out of the prod agent pending citation-overlap measurement.",
     ),
     # ---- Apiref corpora (noir_apiref transform) ------------------------
     Corpus(

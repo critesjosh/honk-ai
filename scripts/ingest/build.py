@@ -1,4 +1,8 @@
-"""Build all 14 Aztec corpora as zip files ready for upload.
+"""Build the Aztec corpora as zip files ready for upload.
+
+15 corpora are defined; the default 'build all' run produces the 14
+production corpora and skips held-out ones whose source root wasn't
+supplied (see _skip_for_missing_root).
 
 Usage::
 
@@ -9,7 +13,7 @@ Usage::
         --out            /tmp/aztec-corpora-build \
         [--corpus aztec_nr_apiref]   # optional: limit to one corpus
 
-Three source roots are accepted (Option B per ``PLAN-v4.3.0-bump.md``)
+Four source roots are accepted (Option B per ``PLAN-v4.3.0-bump.md``)
 because the corpora are pinned at different upstream commits:
 
   * ``--aztec-pkg``      → aztec-packages at the release tag
@@ -24,6 +28,10 @@ because the corpora are pinned at different upstream commits:
   * ``--noir``           → noir-lang/noir at the commit pinned by
                            aztec-packages' ``noir/noir-repo`` submodule
                            at the release tag.
+  * ``--awesome-aztec``  → AztecProtocol/awesome-aztec, a moving
+                           community resource list NOT pinned to a
+                           release tag. Used only for the
+                           ``awesome_aztec`` corpus.
 
 A flag is required only if one of the selected corpora actually needs
 that root — single-corpus builds (``--corpus aztec_nr_apiref``) can
@@ -43,13 +51,14 @@ import argparse
 import fnmatch
 import json
 import logging
+import re
 import shutil
 import sys
 import tempfile
 import zipfile
 from dataclasses import asdict
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 from scripts.ingest.corpora import CORPORA, Corpus, SourceTree, get_corpus
 from scripts.ingest import noir_apiref
@@ -76,7 +85,27 @@ _SOURCE_ROOT_TO_FLAG = {
     "aztec-packages": "--aztec-pkg",
     "aztec-packages-docs": "--aztec-pkg-docs",
     "noir": "--noir",
+    "awesome-aztec": "--awesome-aztec",
 }
+
+
+def _skip_for_missing_root(
+    corpus: Corpus, roots: dict, explicitly_selected: bool
+) -> bool:
+    """Whether to silently skip ``corpus`` from a default 'build all' run.
+
+    A held-out corpus (``in_production_agent=False``) is skipped when its
+    source root wasn't supplied, so the standard re-ingest (which passes
+    only the production roots) doesn't abort in ``_resolve_source_dir``.
+    Production corpora are never skipped — a missing root for them is a
+    hard error so an incomplete prod build can't pass silently. An
+    explicit ``--corpus`` selection always attempts the build.
+    """
+    return (
+        not explicitly_selected
+        and not corpus.in_production_agent
+        and corpus.source_root not in roots
+    )
 
 
 def _resolve_source_dir(corpus: Corpus, tree: SourceTree, roots: dict) -> Path:
@@ -162,6 +191,107 @@ def _build_passthrough(
             shutil.copy2(f, target)
             files_copied += 1
     return {"files_copied": files_copied}
+
+
+# Markdown link forms, matched in this order so the more specific ones
+# win before the general link regex:
+#   1. Nested linked image / badge: ``[![alt](img)](href)`` — keep the
+#      OUTER href (the real destination); the inner image src is dropped.
+#      awesome-* READMEs open with rows of these (shields.io badges).
+#   2. Standalone image: ``![alt](src)`` — reduced to alt text; image
+#      srcs are decorative, not links worth surfacing.
+#   3. Plain inline link: ``[label](url)``.
+# A trailing ``"title"`` after the URL is tolerated and dropped. URLs
+# containing ``)`` are not handled (same limitation as the downstream
+# remove_hyperlinks regex).
+_MD_LINKED_IMAGE_RE = re.compile(
+    r"\[!\[([^\]]*)\]\([^)]*\)\]\(\s*([^)\s]+)(?:\s+[^)]*)?\)"
+)
+_MD_IMAGE_RE = re.compile(r"!\[([^\]]*)\]\([^)]*\)")
+_MD_LINK_RE = re.compile(r"\[([^\]]*)\]\(\s*([^)\s]+)(?:\s+[^)]*)?\)")
+_EXTERNAL_URL_PREFIXES = ("http://", "https://", "//", "mailto:")
+
+
+def _inline_external_links(content: str) -> Tuple[str, int, int]:
+    """Rewrite markdown links so external URLs survive the downstream
+    markdown parser as plain text, while internal/relative links are
+    stripped to their label (matching the parser's default).
+
+    ``application/parser/file/markdown_parser.py`` strips every
+    ``[label](url)`` to ``label`` (``remove_hyperlinks=True``), which is
+    right for internal doc cross-links but destroys the external URLs
+    that are the whole point of a resource-list corpus. We pre-process
+    here so that:
+
+      * external (``http(s)://`` / ``//`` / ``mailto:``) → ``label (url)``
+        — the bare URL is left in the text and survives the parser.
+      * everything else (relative paths, ``#anchors``) → ``label`` —
+        stripped, same as the parser would have done.
+
+    Linked-image badges (``[![alt](img)](href)``) keep the outer ``href``,
+    not the inner image src; standalone images are reduced to their alt.
+
+    Returns ``(new_content, external_kept, stripped)``.
+    """
+    counts = {"kept": 0, "stripped": 0}
+
+    def _resolve(label: str, url: str) -> str:
+        if url.startswith(_EXTERNAL_URL_PREFIXES):
+            counts["kept"] += 1
+            return f"{label} ({url})" if label else url
+        counts["stripped"] += 1
+        return label
+
+    def repl_linked_image(m: "re.Match") -> str:
+        # group(1) = inner image alt, group(2) = outer link href
+        return _resolve(m.group(1), m.group(2).strip())
+
+    def repl_image(m: "re.Match") -> str:
+        # Drop the image src entirely; keep only the alt text.
+        counts["stripped"] += 1
+        return m.group(1)
+
+    def repl_link(m: "re.Match") -> str:
+        return _resolve(m.group(1), m.group(2).strip())
+
+    new_content = _MD_LINKED_IMAGE_RE.sub(repl_linked_image, content)
+    new_content = _MD_IMAGE_RE.sub(repl_image, new_content)
+    new_content = _MD_LINK_RE.sub(repl_link, new_content)
+    return new_content, counts["kept"], counts["stripped"]
+
+
+def _build_inline_external_links(
+    corpus: Corpus, src_dirs: List[Path], staging: Path,
+) -> dict:
+    """Like passthrough for markdown, but rewrites each file's inline
+    links via ``_inline_external_links`` so external URLs are preserved
+    as plain text and internal/relative links are stripped to labels."""
+    files_copied = 0
+    external_kept = 0
+    internal_stripped = 0
+    for src_dir, tree in zip(src_dirs, corpus.trees):
+        rel_root = staging / tree.zip_prefix.rstrip("/")
+        rel_root.mkdir(parents=True, exist_ok=True)
+        for f in _walk_files(
+            src_dir,
+            corpus.include_extensions,
+            tree.exclude_paths,
+            tree.include_paths,
+        ):
+            rel = f.relative_to(src_dir)
+            target = rel_root / rel
+            target.parent.mkdir(parents=True, exist_ok=True)
+            content = f.read_text(encoding="utf-8")
+            rewritten, kept, stripped = _inline_external_links(content)
+            target.write_text(rewritten, encoding="utf-8")
+            files_copied += 1
+            external_kept += kept
+            internal_stripped += stripped
+    return {
+        "files_copied": files_copied,
+        "external_links_kept": external_kept,
+        "internal_links_stripped": internal_stripped,
+    }
 
 
 def _build_rename_code_to_txt(
@@ -253,6 +383,8 @@ def build_corpus(
 
         if corpus.transform == "passthrough":
             stats = _build_passthrough(corpus, src_dirs, staging)
+        elif corpus.transform == "inline_external_links":
+            stats = _build_inline_external_links(corpus, src_dirs, staging)
         elif corpus.transform == "rename_code_to_txt":
             stats = _build_rename_code_to_txt(corpus, src_dirs, staging)
         elif corpus.transform == "noir_apiref":
@@ -317,6 +449,14 @@ def main(argv: Optional[List[str]] = None) -> int:
              "'noir'.",
     )
     parser.add_argument(
+        "--awesome-aztec",
+        required=False,
+        help="Path to a checkout of AztecProtocol/awesome-aztec (a moving "
+             "community repo, not release-pinned). Required for the "
+             "'awesome_aztec' corpus. Its README.md links to the GitHub "
+             "blob on main.",
+    )
+    parser.add_argument(
         "--out",
         required=True,
         help="Output directory; zips land in <out>/zips/, manifests in "
@@ -326,7 +466,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         "--corpus",
         action="append",
         help="Build only the named corpus slug(s) (repeatable). "
-             "Defaults to all 14.",
+             "Defaults to all 15.",
     )
     parser.add_argument("--verbose", "-v", action="store_true")
     args = parser.parse_args(argv)
@@ -343,7 +483,10 @@ def main(argv: Optional[List[str]] = None) -> int:
         roots["aztec-packages-docs"] = Path(args.aztec_pkg_docs).resolve()
     if args.noir:
         roots["noir"] = Path(args.noir).resolve()
+    if args.awesome_aztec:
+        roots["awesome-aztec"] = Path(args.awesome_aztec).resolve()
 
+    explicitly_selected = bool(args.corpus)
     selected = (
         [get_corpus(s) for s in args.corpus] if args.corpus else list(CORPORA)
     )
@@ -353,11 +496,19 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     overall = {"out": str(out_dir), "corpora": []}
     for c in selected:
+        if _skip_for_missing_root(c, roots, explicitly_selected):
+            flag = _SOURCE_ROOT_TO_FLAG.get(c.source_root, "<unknown>")
+            logger.warning(
+                "skipping held-out corpus %s: no root for %s "
+                "(pass %s to include it, or --corpus %s)",
+                c.slug, c.source_root, flag, c.slug,
+            )
+            continue
         overall["corpora"].append(build_corpus(c, out_dir, roots))
 
     overall_path = out_dir / "build_manifest.json"
     overall_path.write_text(json.dumps(overall, indent=2), encoding="utf-8")
-    print(f"\nbuilt {len(selected)} corpora → {out_dir}")
+    print(f"\nbuilt {len(overall['corpora'])} corpora → {out_dir}")
     print(f"build manifest: {overall_path}")
     return 0
 
