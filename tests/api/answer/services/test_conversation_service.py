@@ -228,6 +228,40 @@ class TestConversationServiceSave:
         got = ConversationsRepository(pg_conn).get_any(conv_id, user)
         assert got["name"] == "q-fallback"
 
+    def test_save_with_title_gen_exception_falls_back(self, pg_conn):
+        """Regression: a provider failure during title generation must not
+        lose the conversation — the first-turn save (including the abort
+        path's only copy of a partial response) should persist with a
+        truncated-question title instead of raising."""
+        from application.api.answer.services.conversation_service import (
+            ConversationService,
+        )
+        from application.storage.db.repositories.conversations import (
+            ConversationsRepository,
+        )
+
+        user = "u-title-exc"
+        mock_llm = MagicMock()
+        mock_llm.gen.side_effect = Exception("Error code: 401 - provider down")
+
+        with _patch_db(pg_conn):
+            conv_id = ConversationService().save_conversation(
+                conversation_id=None,
+                question="q-exception-fallback", response="r", thought="",
+                sources=[], tool_calls=[],
+                llm=mock_llm, model_id="gpt-4",
+                decoded_token={"sub": user},
+            )
+        repo = ConversationsRepository(pg_conn)
+        got = repo.get_any(conv_id, user)
+        assert got["name"] == "q-exception-fallback"
+        # The incident class is "don't lose the first turn" — assert the
+        # message itself was persisted, not just the conversation row.
+        messages = repo.get_messages(str(got["id"]))
+        assert len(messages) == 1
+        assert messages[0]["prompt"] == "q-exception-fallback"
+        assert messages[0]["response"] == "r"
+
 
 class TestCompressionMetadata:
     def test_update_compression_metadata(self, pg_conn):

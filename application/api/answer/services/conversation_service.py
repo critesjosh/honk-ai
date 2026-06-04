@@ -136,11 +136,23 @@ class ConversationService:
                 },
             ]
 
-            completion = llm.gen(
-                model=model_id, messages=messages_summary, max_tokens=500
-            )
+            # Title generation is best-effort: a transient provider
+            # failure here must NOT lose the conversation itself (the
+            # user already received the streamed answer — or, on the
+            # abort path, this is the only copy of the partial
+            # response). Fall back to a truncated question as title.
+            try:
+                completion = llm.gen(
+                    model=model_id, messages=messages_summary, max_tokens=500
+                )
+            except Exception as e:
+                logger.warning(
+                    "Title generation failed, falling back to truncated "
+                    f"question: {str(e)}"
+                )
+                completion = None
 
-            if not completion or not completion.strip():
+            if not isinstance(completion, str) or not completion.strip():
                 completion = question[:50] if question else "New Conversation"
 
             resolved_api_key: Optional[str] = None
