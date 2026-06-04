@@ -1714,11 +1714,26 @@ class BaseAnswerResource:
                     if isNoneDoc:
                         for doc in source_log_docs:
                             doc["source"] = "None"
+                    # Resolve the provider key the same way the success
+                    # path does — ``settings.API_KEY`` is NOT a provider
+                    # credential in prod (it's an agent UUID), and using
+                    # it here made the title-generation call inside
+                    # ``save_conversation`` 401 on first-turn aborts,
+                    # silently dropping the partial response.
+                    provider = (
+                        get_provider_from_model_id(model_id)
+                        if model_id
+                        else settings.LLM_PROVIDER
+                    )
+                    system_api_key = get_api_key_for_provider(
+                        provider or settings.LLM_PROVIDER
+                    )
                     llm = LLMCreator.create_llm(
-                        settings.LLM_PROVIDER,
-                        api_key=settings.API_KEY,
+                        provider or settings.LLM_PROVIDER,
+                        api_key=system_api_key,
                         user_api_key=user_api_key,
                         decoded_token=decoded_token,
+                        model_id=model_id,
                         agent_id=agent_id,
                     )
                     self.conversation_service.save_conversation(

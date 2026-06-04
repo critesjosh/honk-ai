@@ -560,3 +560,61 @@ class TestCompleteStreamGeneratorExit:
 
             next(gen)
             gen.close()  # Should not crash even with save error
+
+    def test_generator_exit_resolves_provider_api_key(self, mock_mongo_db, flask_app):
+        """Regression: the abort-save path must resolve the provider key via
+        get_api_key_for_provider (like the success path), NOT pass
+        settings.API_KEY — which is an agent UUID in prod and 401s the
+        title-generation call inside save_conversation, dropping the
+        partial response."""
+        from unittest.mock import patch
+
+        from application.api.answer.routes.base import BaseAnswerResource
+
+        with flask_app.app_context():
+            resource = BaseAnswerResource()
+            mock_agent = MagicMock()
+
+            def gen_answers():
+                yield {"answer": "partial"}
+
+            mock_agent.gen.return_value = gen_answers()
+            mock_agent.compression_metadata = None
+            mock_agent.compression_saved = False
+            mock_agent.tool_calls = []
+
+            resource.conversation_service = MagicMock()
+            resource.conversation_service.save_conversation.return_value = "conv1"
+
+            with (
+                patch(
+                    "application.api.answer.routes.base.LLMCreator"
+                ) as mock_creator,
+                patch(
+                    "application.api.answer.routes.base.get_api_key_for_provider",
+                    return_value="provider-key",
+                ) as mock_get_key,
+                patch(
+                    "application.api.answer.routes.base.get_provider_from_model_id",
+                    return_value="openrouter",
+                ) as mock_get_provider,
+            ):
+                gen = resource.complete_stream(
+                    question="Q",
+                    agent=mock_agent,
+                    conversation_id="conv1",
+                    user_api_key=None,
+                    decoded_token={"sub": "u"},
+                    should_save_conversation=True,
+                    model_id="openrouter/some-model",
+                )
+                next(gen)
+                gen.close()  # Triggers GeneratorExit → partial save
+
+            mock_get_provider.assert_called_once_with("openrouter/some-model")
+            mock_get_key.assert_called_once_with("openrouter")
+            assert mock_creator.create_llm.call_count == 1
+            _, kwargs = mock_creator.create_llm.call_args
+            assert kwargs["api_key"] == "provider-key"
+            assert kwargs["model_id"] == "openrouter/some-model"
+            resource.conversation_service.save_conversation.assert_called_once()
