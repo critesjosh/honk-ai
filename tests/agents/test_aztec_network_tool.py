@@ -10,10 +10,15 @@ import requests
 
 from application.agents.tools.aztec_network import AztecNetworkTool
 
+_MAINNET = "https://api.aztecscan.xyz/v1"
+_TESTNET = "https://api.testnet.aztecscan.xyz/v1"
+
 
 @pytest.fixture
 def tool():
-    return AztecNetworkTool(config={"base_url": "https://api.testnet.aztecscan.xyz/v1", "api_key": "k"})
+    return AztecNetworkTool(
+        config={"mainnet_base_url": _MAINNET, "testnet_base_url": _TESTNET, "api_key": "k"}
+    )
 
 
 def _resp(status_code: int = 200, json_body=None, text: str | bytes = ""):
@@ -33,6 +38,41 @@ def _resp(status_code: int = 200, json_body=None, text: str | bytes = ""):
 
 
 @pytest.mark.unit
+class TestNetworkSelection:
+    @patch("application.agents.tools.aztec_network.requests.get")
+    def test_defaults_to_mainnet(self, mock_get, tool):
+        mock_get.return_value = _resp(200, json_body=42)
+        result = tool.execute_action("aztec_network_get_latest_height")
+        url = mock_get.call_args[0][0]
+        assert url.startswith(_MAINNET + "/k/")
+        assert result["network"] == "mainnet"
+
+    @patch("application.agents.tools.aztec_network.requests.get")
+    def test_testnet_routes_to_testnet_host(self, mock_get, tool):
+        mock_get.return_value = _resp(200, json_body=42)
+        result = tool.execute_action("aztec_network_get_latest_height", network="testnet")
+        url = mock_get.call_args[0][0]
+        assert url.startswith(_TESTNET + "/k/")
+        assert result["network"] == "testnet"
+
+    @patch("application.agents.tools.aztec_network.requests.get")
+    def test_network_is_case_insensitive(self, mock_get, tool):
+        mock_get.return_value = _resp(200, json_body=42)
+        tool.execute_action("aztec_network_get_latest_height", network="TESTNET")
+        assert mock_get.call_args[0][0].startswith(_TESTNET)
+
+    def test_unsupported_network_fails(self, tool):
+        result = tool.execute_action("aztec_network_get_latest_height", network="devnet")
+        assert result["status_code"] == 0
+        assert "Unsupported network" in result["message"]
+
+    def test_non_string_network_fails(self, tool):
+        result = tool.execute_action("aztec_network_get_latest_height", network=1)
+        assert result["status_code"] == 0
+        assert "network must be a string" in result["message"]
+
+
+@pytest.mark.unit
 class TestUrlConstruction:
     @patch("application.agents.tools.aztec_network.requests.get")
     def test_url_includes_api_key_in_path(self, mock_get, tool):
@@ -43,7 +83,7 @@ class TestUrlConstruction:
 
     @patch("application.agents.tools.aztec_network.requests.get")
     def test_base_url_trailing_slash_stripped(self, mock_get):
-        t = AztecNetworkTool(config={"base_url": "https://api.testnet.aztecscan.xyz/v1/", "api_key": "k"})
+        t = AztecNetworkTool(config={"mainnet_base_url": _MAINNET + "/", "api_key": "k"})
         mock_get.return_value = _resp(200, json_body=42)
         t.execute_action("aztec_network_get_latest_height")
         url = mock_get.call_args[0][0]
@@ -51,7 +91,7 @@ class TestUrlConstruction:
         assert "//k" not in url
 
     def test_invalid_base_url_degrades_to_config_error(self):
-        t = AztecNetworkTool(config={"base_url": "ftp://example.com"})
+        t = AztecNetworkTool(config={"mainnet_base_url": "ftp://example.com"})
         result = t.execute_action("aztec_network_get_latest_height")
         assert result["status_code"] == 0
         assert "configuration error" in result["message"]
@@ -62,12 +102,9 @@ class TestUrlConstruction:
         env may block the loading of unrelated tools — the constructor
         only stores config; validation happens per request."""
         AztecNetworkTool(
-            config={
-                "base_url": "https://does-not-resolve-1234567.invalid/v1",
-                "api_key": "k",
-            }
+            config={"mainnet_base_url": "https://does-not-resolve-1234567.invalid/v1", "api_key": "k"}
         )
-        AztecNetworkTool(config={"base_url": "ftp://garbage", "api_key": "k/../admin"})
+        AztecNetworkTool(config={"mainnet_base_url": "ftp://garbage", "api_key": "k/../admin"})
 
     @patch.dict("os.environ", {"AZTECSCAN_API_KEY": "bad key with spaces"})
     def test_bad_env_var_degrades_to_config_error(self):
@@ -81,18 +118,14 @@ class TestUrlConstruction:
         assert "bad key with spaces" not in result["message"]
 
     def test_api_key_path_injection_degrades_to_config_error(self):
-        t = AztecNetworkTool(
-            config={"base_url": "https://api.testnet.aztecscan.xyz/v1", "api_key": "k/../admin"}
-        )
+        t = AztecNetworkTool(config={"mainnet_base_url": _MAINNET, "api_key": "k/../admin"})
         result = t.execute_action("aztec_network_get_latest_height")
         assert result["status_code"] == 0
         assert "configuration error" in result["message"]
         assert "k/../admin" not in result["message"]
 
     def test_base_url_query_fragment_degrades_to_config_error(self):
-        t = AztecNetworkTool(
-            config={"base_url": "https://api.testnet.aztecscan.xyz/v1?evil=1"}
-        )
+        t = AztecNetworkTool(config={"mainnet_base_url": _MAINNET + "?evil=1"})
         result = t.execute_action("aztec_network_get_latest_height")
         assert result["status_code"] == 0
         assert "query or fragment" in result["message"]
@@ -111,7 +144,7 @@ class TestUrlConstruction:
         """urllib.parse vs requests disagree on backslash / userinfo
         authorities — that mismatch is an SSRF bypass, so reject pre-flight
         and never issue the request."""
-        t = AztecNetworkTool(config={"base_url": bad_url, "api_key": "k"})
+        t = AztecNetworkTool(config={"mainnet_base_url": bad_url, "api_key": "k"})
         result = t.execute_action("aztec_network_get_latest_height")
         assert result["status_code"] == 0
         assert "configuration error" in result["message"]
@@ -124,7 +157,7 @@ class TestLatestHeight:
     def test_success(self, mock_get, tool):
         mock_get.return_value = _resp(200, json_body=80369)
         result = tool.execute_action("aztec_network_get_latest_height")
-        assert result == {"status_code": 200, "height": 80369}
+        assert result == {"status_code": 200, "network": "mainnet", "height": 80369}
 
     @patch("application.agents.tools.aztec_network.requests.get")
     def test_non_int_payload(self, mock_get, tool):
@@ -151,11 +184,9 @@ class TestLatestHeight:
     def test_transport_failure_redacts_api_key(self, mock_get):
         """requests exception strings embed the request URL, whose path
         contains the API key — it must never reach the tool result."""
-        t = AztecNetworkTool(
-            config={"base_url": "https://api.testnet.aztecscan.xyz/v1", "api_key": "SECRETKEY123"}
-        )
+        t = AztecNetworkTool(config={"mainnet_base_url": _MAINNET, "api_key": "SECRETKEY123"})
         mock_get.side_effect = requests.ConnectionError(
-            "HTTPSConnectionPool(host='api.testnet.aztecscan.xyz', port=443): "
+            "HTTPSConnectionPool(host='api.aztecscan.xyz', port=443): "
             "Max retries exceeded with url: /v1/SECRETKEY123/l2/latest-height"
         )
         result = t.execute_action("aztec_network_get_latest_height")
@@ -167,9 +198,7 @@ class TestLatestHeight:
     def test_error_body_redacts_api_key(self, mock_get):
         """Upstream error pages can echo the request path (e.g. Apache's
         default 404) — the API key in that path must be redacted."""
-        t = AztecNetworkTool(
-            config={"base_url": "https://api.testnet.aztecscan.xyz/v1", "api_key": "SECRETKEY123"}
-        )
+        t = AztecNetworkTool(config={"mainnet_base_url": _MAINNET, "api_key": "SECRETKEY123"})
         mock_get.return_value = _resp(
             404, text="The requested URL /v1/SECRETKEY123/l2/latest-height was not found."
         )
@@ -199,9 +228,8 @@ class TestLatestHeight:
 class TestLatestBlock:
     @patch("application.agents.tools.aztec_network.requests.get")
     def test_success_extracts_summary(self, mock_get, tool):
-        # Field names mirror the LIVE Aztecscan response (verified
-        # against api.testnet.aztecscan.xyz): nativeStatus, not the
-        # earlier-assumed finalizationStatus.
+        # Field names mirror the LIVE Aztecscan response (verified against
+        # api.aztecscan.xyz): nativeStatus, not the assumed finalizationStatus.
         mock_get.return_value = _resp(
             200,
             json_body={
@@ -220,6 +248,7 @@ class TestLatestBlock:
         )
         result = tool.execute_action("aztec_network_get_latest_block")
         assert result["status_code"] == 200
+        assert result["network"] == "mainnet"
         assert result["hash"] == "0xabc"
         assert result["height"] == 77344
         assert result["finalization_status"] == "finalized"
@@ -259,6 +288,7 @@ class TestBlocksByStatus:
         )
         result = tool.execute_action("aztec_network_get_blocks_by_status")
         assert result["status_code"] == 200
+        assert result["network"] == "mainnet"
         assert result["stage_finalized_height"] == 100
         assert result["stage_proven_height"] == 95
         assert result["stage_checkpointed_height"] == 80
@@ -290,7 +320,7 @@ class TestRpcNodes:
                     "rpcNodeName": "http://1.2.3.4:8080",
                     "nodeVersion": "2.1.4",
                     "lastSeenAt": "2025-12-10T09:01:47.762Z",
-                    "l2NetworkId": "TESTNET",
+                    "l2NetworkId": "MAINNET",
                 }
             ],
         )
@@ -324,25 +354,36 @@ class TestRpcNodes:
 @pytest.mark.unit
 class TestChainInfo:
     @patch("application.agents.tools.aztec_network.requests.get")
-    def test_success(self, mock_get, tool):
+    def test_mainnet(self, mock_get, tool):
         mock_get.return_value = _resp(
             200,
             json_body={
-                "l2NetworkId": "TESTNET",
-                "l1ChainId": 11155111,
-                "rollupVersion": "4127419662",
+                "l2NetworkId": "MAINNET",
+                "l1ChainId": 1,
+                "rollupVersion": "2934756905",
                 "l1ContractAddresses": {
-                    "rollupAddress": "0xf6d0",
-                    "registryAddress": "0xa0bf",
+                    "rollupAddress": "0xae20",
+                    "registryAddress": "0x35b2",
                     "inboxAddress": "0xf1bb",
                     "outboxAddress": "0x5fe6",
                 },
             },
         )
         result = tool.execute_action("aztec_network_get_chain_info")
+        assert result["network"] == "mainnet"
+        assert result["l2_network_id"] == "MAINNET"
+        assert result["l1_chain_id"] == 1
+        assert result["rollup_address"] == "0xae20"
+
+    @patch("application.agents.tools.aztec_network.requests.get")
+    def test_testnet(self, mock_get, tool):
+        mock_get.return_value = _resp(
+            200, json_body={"l2NetworkId": "TESTNET", "l1ChainId": 11155111}
+        )
+        result = tool.execute_action("aztec_network_get_chain_info", network="testnet")
+        assert result["network"] == "testnet"
         assert result["l2_network_id"] == "TESTNET"
         assert result["l1_chain_id"] == 11155111
-        assert result["rollup_address"] == "0xf6d0"
 
 
 @pytest.mark.unit
@@ -363,37 +404,50 @@ class TestActionsMetadata:
         names = [m["name"] for m in meta]
         assert all(n.startswith("aztec_network_") for n in names)
 
+    def test_every_action_exposes_network_enum(self, tool):
+        for m in tool.get_actions_metadata():
+            net = m["parameters"]["properties"]["network"]
+            assert net["enum"] == ["mainnet", "testnet"]
+
     def test_unknown_action_raises(self, tool):
         with pytest.raises(ValueError, match="Unknown action"):
             tool.execute_action("aztec_network_bogus")
 
     def test_config_requirements_shape(self, tool):
         reqs = tool.get_config_requirements()
-        assert "base_url" in reqs
+        assert "mainnet_base_url" in reqs
+        assert "testnet_base_url" in reqs
         assert "api_key" in reqs
-        assert reqs["base_url"]["required"] is False
+        assert reqs["api_key"]["secret"] is True
 
 
 @pytest.mark.unit
 class TestEnvOverride:
+    # validate_url() does a real DNS lookup; patch it out so these
+    # precedence tests can use non-resolvable hosts to assert routing.
     @patch.dict(
         "os.environ",
-        {"AZTECSCAN_BASE_URL": "https://api.devnet.aztecscan.xyz/v1", "AZTECSCAN_API_KEY": "override"},
+        {
+            "AZTECSCAN_MAINNET_BASE_URL": "https://mainnet.example.com/v1",
+            "AZTECSCAN_TESTNET_BASE_URL": "https://testnet.example.com/v1",
+            "AZTECSCAN_API_KEY": "override",
+        },
     )
+    @patch("application.agents.tools.aztec_network.validate_url", lambda _u: None)
     @patch("application.agents.tools.aztec_network.requests.get")
     def test_env_overrides_default(self, mock_get):
         mock_get.return_value = _resp(200, json_body=1)
         t = AztecNetworkTool(config={})
         t.execute_action("aztec_network_get_latest_height")
-        url = mock_get.call_args[0][0]
-        assert "devnet" in url
-        assert "/override/" in url
+        assert mock_get.call_args[0][0].startswith("https://mainnet.example.com/v1/override/")
+        t.execute_action("aztec_network_get_latest_height", network="testnet")
+        assert mock_get.call_args[0][0].startswith("https://testnet.example.com/v1/override/")
 
-    @patch.dict("os.environ", {"AZTECSCAN_BASE_URL": "https://api.devnet.aztecscan.xyz/v1"})
+    @patch.dict("os.environ", {"AZTECSCAN_MAINNET_BASE_URL": "https://env.example.com/v1"})
+    @patch("application.agents.tools.aztec_network.validate_url", lambda _u: None)
     @patch("application.agents.tools.aztec_network.requests.get")
     def test_config_overrides_env(self, mock_get):
         mock_get.return_value = _resp(200, json_body=1)
-        t = AztecNetworkTool(config={"base_url": "https://api.testnet.aztecscan.xyz/v1"})
+        t = AztecNetworkTool(config={"mainnet_base_url": "https://cfg.example.com/v1"})
         t.execute_action("aztec_network_get_latest_height")
-        url = mock_get.call_args[0][0]
-        assert "testnet" in url
+        assert mock_get.call_args[0][0].startswith("https://cfg.example.com/v1/")

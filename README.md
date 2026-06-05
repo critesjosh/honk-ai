@@ -192,16 +192,20 @@ removed. See [`CLAUDE.md`](./CLAUDE.md) for the architectural diff and
   `application/agents/tools/ethereum_network.py`) — give the Discord +
   widget agents live read access to chain state.
   - **Aztec L2** via Aztecscan REST
-    (`https://api.testnet.aztecscan.xyz/v1/{apiKey}/...`). Six actions:
+    (`https://api.aztecscan.xyz/v1/{apiKey}/...`). Six actions:
     latest height, latest block summary, blocks-by-finalization-stage,
     chain info (incl. L1 chain id + L1 contract addresses), validator
-    totals, RPC node health. There is **no `api.mainnet.aztecscan.xyz`**
-    today (Aztec has no mainnet) — the real hosts are
-    `api.testnet.aztecscan.xyz` and `api.devnet.aztecscan.xyz`. The
+    totals, RPC node health. Each action takes a `network` arg —
+    **`mainnet`** (the live network, anchored to Ethereum mainnet /
+    `l1ChainId=1`, host `api.aztecscan.xyz`) or **`testnet`** (anchored
+    to Sepolia / `l1ChainId=11155111`, host `api.testnet.aztecscan.xyz`)
+    — **defaulting to `mainnet`**. Every result carries the `network` it
+    came from, so testnet data is never mistaken for mainnet. The
     documented public placeholder key `temporary-api-key` works without
     signup; the key is a raw URL path segment so it must match
-    `[A-Za-z0-9._-]{1,128}`. Config precedence: `user_tools.config` >
-    `AZTECSCAN_BASE_URL`/`AZTECSCAN_API_KEY` env > testnet default.
+    `[A-Za-z0-9._-]{1,128}`. Per-network base URLs are configurable
+    (`AZTECSCAN_MAINNET_BASE_URL` / `AZTECSCAN_TESTNET_BASE_URL`); config
+    precedence: `user_tools.config` > env > default.
   - **Ethereum L1** via public JSON-RPC. Five actions: block number, gas
     price, chain id, sync status, trimmed block header. Each takes
     `network` = `"mainnet"` or `"sepolia"`; **Sepolia is the L1 the Aztec
@@ -234,7 +238,8 @@ removed. See [`CLAUDE.md`](./CLAUDE.md) for the architectural diff and
   `AZTEC_SOURCE_IDS`, `AZTEC_CORPUS_VERSION`, `CORS_ALLOWED_ORIGINS`,
   `EMBEDDINGS_DIMENSION`, `RAG_MAX_DOC_TOKENS`, `VITE_ASK_AZTEC_AGENT_KEY`
   (build arg for the public `/ask` bundle), network-status tool vars
-  `AZTECSCAN_BASE_URL`, `AZTECSCAN_API_KEY`, `ETHEREUM_RPC_URL`,
+  `AZTECSCAN_MAINNET_BASE_URL`, `AZTECSCAN_TESTNET_BASE_URL`,
+  `AZTECSCAN_API_KEY`, `ETHEREUM_RPC_URL`,
   `ETHEREUM_SEPOLIA_RPC_URL`, plus Discord-bot vars
   `DISCORD_TOKEN` and `NOIR_GUILD_IDS` (legacy single-guild
   `NOIR_GUILD_ID` is still honored).
