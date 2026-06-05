@@ -213,6 +213,22 @@ Operator follow-ups (out-of-band, in the Cloudflare Zero Trust dashboard):
    - 32–64 KB body cap to bound history payload abuse.
 3. **Rotate the key** by editing `agents.key` in Postgres directly (the provisioner deliberately preserves the existing key on re-run; rotation is a deliberate UPDATE so an accidental script invocation doesn't break every deployed bundle).
 
+### 7d. Provision network-status agent tools (optional)
+
+Both the Discord (Honk AI) and widget (`docs.aztec.network`) agents can be given live read access to Aztec L2 + Ethereum L1 chain state. The provisioner inserts two `user_tools` rows under `user_id='local'` and (with `--attach-to-agents`) appends both UUIDs to `agents.tools` for every agent matching `surface IN ('discord','widget')`.
+
+```bash
+docker compose --env-file .env -f deployment/docker-compose-hub.yaml run --rm \
+  -v "$(pwd)/scripts:/app/scripts:ro" \
+  -e PYTHONPATH=/app \
+  backend python scripts/db/create_network_tools.py --attach-to-agents
+# Use --dry-run first to preview without committing.
+```
+
+Defaults call public, no-API-key endpoints (`api.testnet.aztecscan.xyz` for Aztec L2; `ethereum-rpc.publicnode.com` and `ethereum-sepolia-rpc.publicnode.com` for L1). Override per-environment via `AZTECSCAN_BASE_URL`, `AZTECSCAN_API_KEY`, `ETHEREUM_RPC_URL`, `ETHEREUM_SEPOLIA_RPC_URL` — see `.env-template`. Re-runs are idempotent and refresh action metadata + config requirements. A successful run **prints the exact UUID-scoped rollback SQL** for the two tools it provisioned — use that (it removes only these two tool UUIDs from `agents.tools`, leaving any other attached tools intact) rather than a blanket `tools = '[]'` reset.
+
+**Not attached** to the public `/ask` agent (`web_ask`) — its `tools='[]'` guardrail is intentional under the public-bearer threat model. Not attached to per-user `Aztec MCP` agents either, since their `user_id` is per-Discord-pseudonym; that integration would extend `/api/internal/create_mcp_key`.
+
 ### 8. Staging → production cutover
 
 Run the full deployment on a staging hostname first (e.g., `docs-staging.yourcompany.com`). Verify:
@@ -728,5 +744,6 @@ DocsGPT/
   scripts/db/
     init_postgres.py                    # alembic upgrade head wrapper
     create_ask_aztec_public_agent.py    # provisioner for the /ask bearer-key agent
+    create_network_tools.py             # provisioner for Aztec + Ethereum network-status tools
     verify_pseudonymization.sql         # post-migration sentinels for Discord pseudonyms
 ```

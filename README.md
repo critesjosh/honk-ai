@@ -187,10 +187,55 @@ removed. See [`CLAUDE.md`](./CLAUDE.md) for the architectural diff and
   same primary-source-prepend fix, and an empty-apiref-chunk filter
   that drops apiref chunks whose body is just a path-only file
   heading.
+- **Network-status agent tools**
+  (`application/agents/tools/aztec_network.py`,
+  `application/agents/tools/ethereum_network.py`) — give the Discord +
+  widget agents live read access to chain state.
+  - **Aztec L2** via Aztecscan REST
+    (`https://api.testnet.aztecscan.xyz/v1/{apiKey}/...`). Six actions:
+    latest height, latest block summary, blocks-by-finalization-stage,
+    chain info (incl. L1 chain id + L1 contract addresses), validator
+    totals, RPC node health. There is **no `api.mainnet.aztecscan.xyz`**
+    today (Aztec has no mainnet) — the real hosts are
+    `api.testnet.aztecscan.xyz` and `api.devnet.aztecscan.xyz`. The
+    documented public placeholder key `temporary-api-key` works without
+    signup; the key is a raw URL path segment so it must match
+    `[A-Za-z0-9._-]{1,128}`. Config precedence: `user_tools.config` >
+    `AZTECSCAN_BASE_URL`/`AZTECSCAN_API_KEY` env > testnet default.
+  - **Ethereum L1** via public JSON-RPC. Five actions: block number, gas
+    price, chain id, sync status, trimmed block header. Each takes
+    `network` = `"mainnet"` or `"sepolia"`; **Sepolia is the L1 the Aztec
+    testnet anchors to** (`l1ChainId=11155111`). Defaults are
+    publicnode.com endpoints; override via `ETHEREUM_RPC_URL` /
+    `ETHEREUM_SEPOLIA_RPC_URL`. A literal Ethereum-MCP-server sidecar was
+    rejected: the payload is identical JSON-RPC and `mcp_tool.py`'s SSRF
+    guard blocks compose-internal hostnames; mirroring the MCP tool
+    surface gives the same agent ergonomics without a sidecar.
+  - **Security hardening shared by both tools**: SSRF `validate_url()`
+    re-check per request (DNS-rebinding mitigation); env-derived config
+    validated lazily at request time so a malformed env var degrades only
+    these tools instead of breaking `ToolManager`'s eager
+    instantiate-every-tool loop; `allow_redirects=False` (a malicious
+    upstream could 302 to localhost or `169.254.169.254`); 512 KiB
+    response cap; `network`/`block_tag` validated at the action boundary;
+    transport-error messages are sanitized to the exception class name —
+    `requests` exception strings embed the request URL, which can carry
+    the Aztecscan key or an RPC provider token, so raw `str(exc)` never
+    reaches logs or tool results.
+  - **Provisioner** (`scripts/db/create_network_tools.py`) — idempotent
+    upsert of the two `user_tools` rows under `user_id='local'`; with
+    `--attach-to-agents` appends both UUIDs to `agents.tools` for every
+    agent matching `surface IN ('discord','widget')`. `--dry-run`
+    previews without committing. Rollback SQL in the script docstring.
+    Not attached to the public `/ask` agent (`tools='[]'` guardrail) or
+    the per-user `Aztec MCP` agents (per-pseudonym `user_id` needs a
+    `/api/internal/create_mcp_key` extension) — both are follow-ups.
 - **Custom settings** — `MCP_PROVISIONING_KEY`, `USER_ID_PEPPER`,
   `AZTEC_SOURCE_IDS`, `AZTEC_CORPUS_VERSION`, `CORS_ALLOWED_ORIGINS`,
   `EMBEDDINGS_DIMENSION`, `RAG_MAX_DOC_TOKENS`, `VITE_ASK_AZTEC_AGENT_KEY`
-  (build arg for the public `/ask` bundle), plus Discord-bot vars
+  (build arg for the public `/ask` bundle), network-status tool vars
+  `AZTECSCAN_BASE_URL`, `AZTECSCAN_API_KEY`, `ETHEREUM_RPC_URL`,
+  `ETHEREUM_SEPOLIA_RPC_URL`, plus Discord-bot vars
   `DISCORD_TOKEN` and `NOIR_GUILD_IDS` (legacy single-guild
   `NOIR_GUILD_ID` is still honored).
 
