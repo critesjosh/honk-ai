@@ -192,10 +192,22 @@ removed. See [`CLAUDE.md`](./CLAUDE.md) for the architectural diff and
   `application/agents/tools/ethereum_network.py`) — give the Discord +
   widget agents live read access to chain state.
   - **Aztec L2** via Aztecscan REST
-    (`https://api.aztecscan.xyz/v1/{apiKey}/...`). Six actions:
+    (`https://api.aztecscan.xyz/v1/{apiKey}/...`). Ten actions:
     latest height, latest block summary, blocks-by-finalization-stage,
     chain info (incl. L1 chain id + L1 contract addresses), validator
-    totals, RPC node health. Each action takes a `network` arg —
+    totals, RPC node health, explorer search (`/l2/search` — resolve a
+    block/tx/contract/account by hash, height, or address), contract
+    instance lookup (`/l2/contract-instances/{address}`), L1 governance
+    proposals (`/l1/governance/proposals`, optional `state` filter), and
+    chain finality tips (`/l2/tips` — proposed/checkpointed/proven/
+    finalized heads). The curated set was chosen by probing each endpoint
+    live on both hosts; spec endpoints that 404 in production (e.g.
+    `/l2/txEffects/{hash}`) were excluded — explorer search covers
+    transaction lookup instead. LLM-supplied identifiers are charset-
+    validated before they reach the URL (hex ids must match
+    `0x[0-9a-fA-F]{1,128}`; free-text search is urlencoded) so a tool
+    argument can never alter the request authority or escape its path
+    segment. Each action takes a `network` arg —
     **`mainnet`** (the live network, anchored to Ethereum mainnet /
     `l1ChainId=1`, host `api.aztecscan.xyz`) or **`testnet`** (anchored
     to Sepolia / `l1ChainId=11155111`, host `api.testnet.aztecscan.xyz`)

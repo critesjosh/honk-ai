@@ -398,11 +398,19 @@ class TestValidatorTotals:
 
 @pytest.mark.unit
 class TestActionsMetadata:
-    def test_six_actions(self, tool):
+    def test_ten_actions(self, tool):
         meta = tool.get_actions_metadata()
-        assert len(meta) == 6
+        assert len(meta) == 10
         names = [m["name"] for m in meta]
         assert all(n.startswith("aztec_network_") for n in names)
+        # The curated additions are present.
+        for name in (
+            "aztec_network_search",
+            "aztec_network_get_contract_instance",
+            "aztec_network_get_governance_proposals",
+            "aztec_network_get_tips",
+        ):
+            assert name in names
 
     def test_every_action_exposes_network_enum(self, tool):
         for m in tool.get_actions_metadata():
@@ -451,3 +459,385 @@ class TestEnvOverride:
         t = AztecNetworkTool(config={"mainnet_base_url": "https://cfg.example.com/v1"})
         t.execute_action("aztec_network_get_latest_height")
         assert mock_get.call_args[0][0].startswith("https://cfg.example.com/v1/")
+
+
+# Live-confirmed response shapes (probed against api.aztecscan.xyz and
+# api.testnet.aztecscan.xyz with the public temporary-api-key).
+_SEARCH_BODY = {
+    "searchPhrase": "1",
+    "results": {
+        "blocks": [{"hash": "0x022f", "blockNumber": 1, "slotNumber": 30650}],
+        "txEffects": [],
+        "droppedTx": [],
+        "pendingTx": [],
+        "registeredContractClasses": [],
+        "contractInstances": [],
+        "validators": [],
+        "accounts": [],
+    },
+}
+_CONTRACT_INSTANCE_BODY = {
+    "address": "0x14c4",
+    "blockHash": "0x19d6",
+    "version": 1,
+    "salt": "0x0",
+    "currentContractClassId": "0x1acd",
+    "originalContractClassId": "0x1acd",
+    "initializationHash": "0x11fc",
+    "deployer": "0x0",
+    "artifactContractName": "Token",
+    "standardContractType": None,
+    "sourceCodeUrl": "https://example/src",
+    "isOrphaned": False,
+    "publicKeys": {"masterNullifierPublicKey": "0x0149"},
+}
+_PROPOSALS_BODY = [
+    {
+        "id": "c829",
+        "proposalId": "3",
+        "payloadAddress": "0xa156",
+        "proposer": "0x06Ef",
+        "state": "Queued",
+        "cachedState": "Pending",
+        "createdAt": 1778568755000,
+        "summedYea": "709004000000000000000000000",
+        "summedNay": "0",
+    }
+]
+_TIPS_BODY = {
+    "tips": {
+        "proposed": {"number": 75980, "hash": "0x2acf"},
+        "checkpointed": {
+            "block": {"number": 75980, "hash": "0x2acf"},
+            "checkpoint": {"number": 74732, "hash": "0x0093"},
+        },
+        "proven": {
+            "block": {"number": 75970, "hash": "0x1ec9"},
+            "checkpoint": {"number": 74722, "hash": "0x0074"},
+        },
+        "finalized": {
+            "block": {"number": 75938, "hash": "0x2721"},
+            "checkpoint": {"number": 74690, "hash": "0x0041"},
+        },
+    },
+    "observedAt": 1780928559793,
+    "stale": False,
+}
+
+
+@pytest.mark.unit
+class TestSearch:
+    @patch("application.agents.tools.aztec_network.requests.get")
+    def test_success_groups_non_empty_categories(self, mock_get, tool):
+        mock_get.return_value = _resp(200, json_body=_SEARCH_BODY)
+        result = tool.execute_action("aztec_network_search", query="1")
+        assert result["status_code"] == 200
+        assert result["network"] == "mainnet"
+        assert result["search_phrase"] == "1"
+        # Only the non-empty category survives.
+        assert set(result["matches"]) == {"blocks"}
+        assert result["matches"]["blocks"][0]["blockNumber"] == 1
+        assert result["total_matches"] == 1
+        assert result["truncated"] is False
+
+    @patch("application.agents.tools.aztec_network.requests.get")
+    def test_query_is_urlencoded_into_query_string(self, mock_get, tool):
+        mock_get.return_value = _resp(200, json_body=_SEARCH_BODY)
+        tool.execute_action("aztec_network_search", query="a b&c=d?e#f/@x")
+        url = mock_get.call_args[0][0]
+        # Host + path prefix unchanged; the user value lives only in the
+        # urlencoded query string — no extra path segments, no authority.
+        assert url.startswith(_MAINNET + "/k/l2/search?q=")
+        # Exactly one '?': the user value did not introduce a second query
+        # delimiter or any '#'/path segment.
+        assert url.count("?") == 1
+        assert "#" not in url
+        query_part = url.split("?", 1)[1]
+        assert query_part.startswith("q=")
+        # The raw value is urlencoded, not present literally.
+        assert "a b&c=d?e#f/@x" not in url
+        assert "a b" not in url  # space encoded to '+'
+
+    @patch("application.agents.tools.aztec_network.requests.get")
+    def test_routes_to_testnet(self, mock_get, tool):
+        mock_get.return_value = _resp(200, json_body=_SEARCH_BODY)
+        result = tool.execute_action("aztec_network_search", query="1", network="testnet")
+        assert mock_get.call_args[0][0].startswith(_TESTNET + "/k/l2/search?q=")
+        assert result["network"] == "testnet"
+
+    @patch("application.agents.tools.aztec_network.requests.get")
+    def test_truncates_large_category(self, mock_get, tool):
+        big = {"searchPhrase": "x", "results": {"blocks": [{"i": i} for i in range(25)]}}
+        mock_get.return_value = _resp(200, json_body=big)
+        result = tool.execute_action("aztec_network_search", query="x")
+        assert len(result["matches"]["blocks"]) == 10
+        assert result["total_matches"] == 25
+        assert result["truncated"] is True
+
+    @patch("application.agents.tools.aztec_network.requests.get")
+    def test_unexpected_shape(self, mock_get, tool):
+        mock_get.return_value = _resp(200, json_body={"no_results": True})
+        result = tool.execute_action("aztec_network_search", query="x")
+        assert result["status_code"] == 502
+
+    @pytest.mark.parametrize(
+        "bad",
+        ["", "   ", None, 5, "x" * 257, "has\nnewline", "tab\there", "ctrl\x01char"],
+    )
+    @patch("application.agents.tools.aztec_network.requests.get")
+    def test_invalid_query_degrades_without_request(self, mock_get, tool, bad):
+        result = tool.execute_action("aztec_network_search", query=bad)
+        assert result["status_code"] == 0
+        assert "invalid query" in result["message"]
+        mock_get.assert_not_called()
+
+    @patch("application.agents.tools.aztec_network.requests.get")
+    def test_invalid_query_does_not_echo_value(self, mock_get, tool):
+        result = tool.execute_action("aztec_network_search", query="secret\x01value")
+        assert "secret" not in result["message"]
+        mock_get.assert_not_called()
+
+
+@pytest.mark.unit
+class TestContractInstance:
+    @patch("application.agents.tools.aztec_network.requests.get")
+    def test_success_extracts_fields(self, mock_get, tool):
+        mock_get.return_value = _resp(200, json_body=_CONTRACT_INSTANCE_BODY)
+        result = tool.execute_action(
+            "aztec_network_get_contract_instance", address="0x14c4"
+        )
+        assert result["status_code"] == 200
+        assert result["network"] == "mainnet"
+        assert result["address"] == "0x14c4"
+        assert result["contract_class_id"] == "0x1acd"
+        assert result["deployer"] == "0x0"
+        assert result["artifact_contract_name"] == "Token"
+        # Verbose fields are dropped.
+        assert "publicKeys" not in result
+        assert "salt" not in result
+
+    @patch("application.agents.tools.aztec_network.requests.get")
+    def test_address_is_path_segment(self, mock_get, tool):
+        mock_get.return_value = _resp(200, json_body=_CONTRACT_INSTANCE_BODY)
+        tool.execute_action("aztec_network_get_contract_instance", address="0xABCdef01")
+        assert mock_get.call_args[0][0] == _MAINNET + "/k/l2/contract-instances/0xABCdef01"
+
+    @patch("application.agents.tools.aztec_network.requests.get")
+    def test_contract_class_id_falls_back_to_legacy_field(self, mock_get, tool):
+        # No currentContractClassId; the plain contractClassId is used.
+        body = {"address": "0x1", "contractClassId": "0xLEGACY"}
+        mock_get.return_value = _resp(200, json_body=body)
+        result = tool.execute_action("aztec_network_get_contract_instance", address="0x1")
+        assert result["contract_class_id"] == "0xLEGACY"
+
+    @patch("application.agents.tools.aztec_network.requests.get")
+    def test_404_returns_not_found(self, mock_get, tool):
+        mock_get.return_value = _resp(404, text="<html>Cannot GET</html>")
+        result = tool.execute_action(
+            "aztec_network_get_contract_instance", address="0x99"
+        )
+        assert result["status_code"] == 404
+        assert "not found" in result["message"].lower()
+
+    @pytest.mark.parametrize(
+        "bad",
+        [
+            None,
+            5,
+            "",
+            "deadbeef",  # missing 0x
+            "0x",  # no hex digits
+            "0xGG",  # non-hex
+            "0x12/../../admin",  # path traversal
+            "0x12/extra",  # path delimiter
+            "0x12@evil.com",  # userinfo
+            "0x12 34",  # whitespace
+            "0x" + "a" * 129,  # over length
+        ],
+    )
+    @patch("application.agents.tools.aztec_network.requests.get")
+    def test_invalid_address_degrades_without_request(self, mock_get, tool, bad):
+        result = tool.execute_action("aztec_network_get_contract_instance", address=bad)
+        assert result["status_code"] == 0
+        assert "invalid address" in result["message"]
+        mock_get.assert_not_called()
+
+
+@pytest.mark.unit
+class TestGovernanceProposals:
+    @patch("application.agents.tools.aztec_network.requests.get")
+    def test_success_trims_proposals(self, mock_get, tool):
+        mock_get.return_value = _resp(200, json_body=_PROPOSALS_BODY)
+        result = tool.execute_action("aztec_network_get_governance_proposals")
+        assert result["status_code"] == 200
+        assert result["network"] == "mainnet"
+        assert result["returned_count"] == 1
+        assert result["total_count"] == 1
+        assert result["truncated"] is False
+        p = result["proposals"][0]
+        assert p["proposal_id"] == "3"
+        assert p["state"] == "Queued"
+        assert p["created_at"] == 1778568755000
+
+    @patch("application.agents.tools.aztec_network.requests.get")
+    def test_no_state_sends_no_query(self, mock_get, tool):
+        mock_get.return_value = _resp(200, json_body=_PROPOSALS_BODY)
+        tool.execute_action("aztec_network_get_governance_proposals")
+        assert mock_get.call_args[0][0] == _MAINNET + "/k/l1/governance/proposals"
+
+    @patch("application.agents.tools.aztec_network.requests.get")
+    def test_valid_state_is_query_param(self, mock_get, tool):
+        mock_get.return_value = _resp(200, json_body=_PROPOSALS_BODY)
+        tool.execute_action("aztec_network_get_governance_proposals", state="Active")
+        assert mock_get.call_args[0][0] == _MAINNET + "/k/l1/governance/proposals?state=Active"
+
+    @patch("application.agents.tools.aztec_network.requests.get")
+    def test_truncates_to_cap(self, mock_get, tool):
+        body = [{"proposalId": str(i), "state": "Active"} for i in range(30)]
+        mock_get.return_value = _resp(200, json_body=body)
+        result = tool.execute_action("aztec_network_get_governance_proposals")
+        assert result["returned_count"] == 20
+        assert result["total_count"] == 30
+        assert result["truncated"] is True
+
+    @pytest.mark.parametrize("bad", [5, "has space", "St8te", "x" * 33, "Act-ive"])
+    @patch("application.agents.tools.aztec_network.requests.get")
+    def test_invalid_state_degrades_without_request(self, mock_get, tool, bad):
+        result = tool.execute_action("aztec_network_get_governance_proposals", state=bad)
+        assert result["status_code"] == 0
+        assert "invalid state" in result["message"]
+        mock_get.assert_not_called()
+
+    @patch("application.agents.tools.aztec_network.requests.get")
+    def test_non_list_body(self, mock_get, tool):
+        mock_get.return_value = _resp(200, json_body={"oops": True})
+        result = tool.execute_action("aztec_network_get_governance_proposals")
+        assert result["status_code"] == 502
+
+    @patch("application.agents.tools.aztec_network.requests.get")
+    def test_malformed_entries_filtered_before_cap(self, mock_get, tool):
+        # Non-dict entries must not consume cap slots or skew the counts:
+        # 2 junk entries + 1 valid proposal must still surface the proposal.
+        body = ["junk", 42, {"proposalId": "7", "state": "Active"}]
+        mock_get.return_value = _resp(200, json_body=body)
+        result = tool.execute_action("aztec_network_get_governance_proposals")
+        assert result["returned_count"] == 1
+        assert result["total_count"] == 1
+        assert result["proposals"][0]["proposal_id"] == "7"
+
+
+@pytest.mark.unit
+class TestTips:
+    @patch("application.agents.tools.aztec_network.requests.get")
+    def test_flattens_stages(self, mock_get, tool):
+        mock_get.return_value = _resp(200, json_body=_TIPS_BODY)
+        result = tool.execute_action("aztec_network_get_tips")
+        assert result["status_code"] == 200
+        assert result["network"] == "mainnet"
+        # 'proposed' is flat; the rest nest under 'block'.
+        assert result["proposed_height"] == 75980
+        assert result["proposed_hash"] == "0x2acf"
+        assert result["checkpointed_height"] == 75980
+        assert result["proven_height"] == 75970
+        assert result["finalized_height"] == 75938
+        assert result["finalized_hash"] == "0x2721"
+
+    @patch("application.agents.tools.aztec_network.requests.get")
+    def test_tolerates_absent_stage(self, mock_get, tool):
+        mock_get.return_value = _resp(
+            200, json_body={"tips": {"proposed": {"number": 5, "hash": "0xaa"}}}
+        )
+        result = tool.execute_action("aztec_network_get_tips")
+        assert result["proposed_height"] == 5
+        assert "proven_height" not in result
+
+    @patch("application.agents.tools.aztec_network.requests.get")
+    def test_unexpected_shape(self, mock_get, tool):
+        mock_get.return_value = _resp(200, json_body={"no_tips": 1})
+        result = tool.execute_action("aztec_network_get_tips")
+        assert result["status_code"] == 502
+
+
+@pytest.mark.unit
+class TestNewActionRedaction:
+    @patch("application.agents.tools.aztec_network.requests.get")
+    def test_search_transport_error_redacts_key(self, mock_get):
+        t = AztecNetworkTool(config={"mainnet_base_url": _MAINNET, "api_key": "SECRETKEY123"})
+        mock_get.side_effect = requests.ConnectionError(
+            "Max retries exceeded with url: /v1/SECRETKEY123/l2/search?q=x"
+        )
+        result = t.execute_action("aztec_network_search", query="x")
+        # Transport failure (request status 0) maps to a 502 like the other
+        # multi-field actions; the point here is the key never surfaces.
+        assert result["status_code"] == 502
+        assert "SECRETKEY123" not in result["message"]
+
+    @patch("application.agents.tools.aztec_network.requests.get")
+    def test_contract_instance_error_body_redacts_key(self, mock_get):
+        t = AztecNetworkTool(config={"mainnet_base_url": _MAINNET, "api_key": "SECRETKEY123"})
+        mock_get.return_value = _resp(
+            500, text="error at /v1/SECRETKEY123/l2/contract-instances/0x1"
+        )
+        result = t.execute_action("aztec_network_get_contract_instance", address="0x1")
+        assert "SECRETKEY123" not in result["message"]
+
+    @patch("application.agents.tools.aztec_network.requests.get")
+    def test_search_error_body_redacts_decoded_query_value(self, mock_get, tool):
+        # The query is urlencoded in the URL (spaces -> '+'), but an
+        # upstream error can echo the DECODED form. Both must be redacted.
+        mock_get.return_value = _resp(
+            400, text="bad query: needle haystack term"
+        )
+        result = tool.execute_action("aztec_network_search", query="needle haystack term")
+        assert "needle haystack term" not in result["message"]
+
+
+@pytest.mark.unit
+class TestRequestPathGuard:
+    """The path grammar is asserted inside _request so a future caller
+    can't smuggle a query/fragment through the path arg."""
+
+    @patch("application.agents.tools.aztec_network.requests.get")
+    def test_malformed_path_degrades(self, mock_get, tool):
+        for bad in ("l2/no-leading-slash", "/l2/x?inject=1", "/l2/x#frag", "/l2/x y"):
+            result = tool._request(bad, "mainnet")
+            assert result[0] == 0
+            assert "malformed request path" in result[1]
+        mock_get.assert_not_called()
+
+
+@pytest.mark.unit
+class TestLlmSchemaConversion:
+    """The LLM-visible function schema is rebuilt from the action metadata
+    by ToolExecutor._build_tool_parameters, which honors a per-PROPERTY
+    'required' flag (not a top-level 'required' list). Guard that the
+    required args actually surface as required through that real path."""
+
+    def _converted(self, action_name):
+        from application.agents.tool_executor import ToolExecutor
+
+        meta = {m["name"]: m for m in AztecNetworkTool(config={}).get_actions_metadata()}
+        action = {
+            "name": action_name,
+            "description": meta[action_name]["description"],
+            "parameters": meta[action_name]["parameters"],
+            "active": True,
+        }
+        tools_dict = {"0": {"name": "aztec_network", "actions": [action]}}
+        schemas = ToolExecutor().prepare_tools_for_llm(tools_dict)
+        return next(s["function"] for s in schemas if s["function"]["name"] == action_name)
+
+    def test_search_query_is_required(self):
+        fn = self._converted("aztec_network_search")
+        assert "query" in fn["parameters"]["properties"]
+        assert "query" in fn["parameters"]["required"]
+        assert "network" not in fn["parameters"]["required"]
+
+    def test_contract_instance_address_is_required(self):
+        fn = self._converted("aztec_network_get_contract_instance")
+        assert "address" in fn["parameters"]["required"]
+
+    def test_governance_state_is_optional(self):
+        fn = self._converted("aztec_network_get_governance_proposals")
+        assert "state" in fn["parameters"]["properties"]
+        assert "state" not in fn["parameters"]["required"]

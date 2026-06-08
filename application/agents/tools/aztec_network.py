@@ -22,7 +22,7 @@ import logging
 import os
 import re
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import unquote_plus, urlencode, urlparse
 
 import requests
 
@@ -43,6 +43,24 @@ _MAX_RESPONSE_BYTES = 512 * 1024
 # Aztec API key goes into the URL path. Reject anything containing
 # path/query/fragment delimiters or control chars to avoid escapes.
 _API_KEY_RE = re.compile(r"^[A-Za-z0-9._\-]{1,128}$")
+# LLM-supplied identifiers (contract addresses, hashes) are interpolated
+# into the URL path. Aztec field elements are 32-byte hex (0x + 64 hex);
+# allow up to 128 hex chars for headroom. The strict charset rejects path
+# delimiters, userinfo, traversal, whitespace, and control chars, so a
+# validated id can never alter the authority or escape the path segment.
+_HEX_ID_RE = re.compile(r"^0x[0-9a-fA-F]{1,128}$")
+# Governance proposal states are short alpha labels (Queued / Pending /
+# Active / Executed / ...). Sent as a query value.
+_GOV_STATE_RE = re.compile(r"^[A-Za-z]{1,32}$")
+# Reject control chars in a free-text search query before it is
+# urlencoded. (urlencode *escapes* these rather than dropping them, so we
+# reject up front to keep the value clean in logs/redaction.)
+_FORBIDDEN_QUERY_CHARS_RE = re.compile(r"[\x00-\x1f\x7f]")
+_MAX_SEARCH_QUERY_LEN = 256
+# Cap how many entries we surface from list endpoints so a large upstream
+# response can't bloat the tool result the LLM has to read.
+_SEARCH_CATEGORY_CAP = 10
+_GOVERNANCE_CAP = 20
 
 
 class AztecNetworkTool(Tool):
@@ -124,21 +142,39 @@ class AztecNetworkTool(Tool):
             "aztec_network_get_chain_info": self._get_chain_info,
             "aztec_network_get_validator_totals": self._get_validator_totals,
             "aztec_network_get_rpc_nodes": self._get_rpc_nodes,
+            "aztec_network_search": self._search,
+            "aztec_network_get_contract_instance": self._get_contract_instance,
+            "aztec_network_get_governance_proposals": self._get_governance_proposals,
+            "aztec_network_get_tips": self._get_tips,
         }
         if action_name not in actions:
             raise ValueError(f"Unknown action: {action_name}")
         return actions[action_name](**kwargs)
 
-    def _request(self, path: str, network: Any) -> tuple[int, Any, str | None]:
+    def _request(
+        self, path: str, network: Any, query: dict[str, str] | None = None
+    ) -> tuple[int, Any, str | None]:
         """Issue a GET against the Aztecscan base for *network*. Returns
         ``(status_code, parsed_or_text, net)``. ``net`` is the normalized
         network (``None`` on a config error). Exceptions become a 0 status
-        with a redacted exception string as the second tuple element."""
+        with a redacted exception string as the second tuple element.
+
+        *path* is always built internally (callers interpolate only
+        charset-validated identifiers via ``_validate_hex_id``); *query*
+        is the only way a ``?`` reaches the URL, and its values are
+        urlencoded. The path grammar is asserted here so a future caller
+        can't smuggle a query/fragment or authority confusion through the
+        path and bypass the base-URL SSRF validation."""
         try:
             base_url, api_key, net = self._resolve_settings(network)
         except ValueError as exc:
             return 0, f"configuration error: {exc}", None
+        if not path.startswith("/") or _FORBIDDEN_PATH_CHARS_RE.search(path):
+            # Our own constant message — no caller value echoed.
+            return 0, "internal error: malformed request path", net
         url = f"{base_url}/{api_key}{path}"
+        if query:
+            url = f"{url}?{urlencode(query)}"
         # The full URL (and api_key path segment) is redacted from every
         # message that could surface upstream text or the request URL.
         secrets = _redaction_secrets(url) + (api_key,)
@@ -307,6 +343,124 @@ class AztecNetworkTool(Tool):
             )
         return {"status_code": 200, "network": net, "nodes": nodes}
 
+    def _search(self, query: Any = None, network: str = "mainnet") -> dict[str, Any]:
+        try:
+            q = _validate_search_query(query)
+        except ValueError as exc:
+            # Validation runs before any request, so the network is not yet
+            # resolved. The message names the field but never echoes the
+            # rejected value.
+            return self._err(0, f"invalid query: {exc}")
+        status, body, net = self._request("/l2/search", network, query={"q": q})
+        if status != 200:
+            return self._err(status or 502, f"Failed to search: {body}", net)
+        if not isinstance(body, dict) or not isinstance(body.get("results"), dict):
+            return self._err(502, "Unexpected search body shape (expected a results object)", net)
+        matches: dict[str, Any] = {}
+        total = 0
+        truncated = False
+        for category, entries in body["results"].items():
+            if isinstance(entries, list) and entries:
+                total += len(entries)
+                if len(entries) > _SEARCH_CATEGORY_CAP:
+                    truncated = True
+                matches[category] = entries[:_SEARCH_CATEGORY_CAP]
+        return {
+            "status_code": 200,
+            "network": net,
+            "search_phrase": body.get("searchPhrase"),
+            "matches": matches,
+            "total_matches": total,
+            "truncated": truncated,
+        }
+
+    def _get_contract_instance(self, address: Any = None, network: str = "mainnet") -> dict[str, Any]:
+        try:
+            addr = _validate_hex_id(address, "address")
+        except ValueError as exc:
+            return self._err(0, f"invalid address: {exc}")
+        status, body, net = self._request(f"/l2/contract-instances/{addr}", network)
+        if status == 404:
+            return self._err(404, "Contract instance not found", net)
+        if status != 200:
+            return self._err(status or 502, f"Failed to fetch contract instance: {body}", net)
+        if not isinstance(body, dict):
+            return self._err(502, "Unexpected contract-instance body shape (expected an object)", net)
+        return {
+            "status_code": 200,
+            "network": net,
+            "address": body.get("address"),
+            "block_hash": body.get("blockHash"),
+            "version": body.get("version"),
+            # Live Aztecscan exposes both currentContractClassId and a
+            # plain contractClassId; prefer the explicit "current".
+            "contract_class_id": body.get("currentContractClassId") or body.get("contractClassId"),
+            "original_contract_class_id": body.get("originalContractClassId"),
+            "deployer": body.get("deployer"),
+            "initialization_hash": body.get("initializationHash"),
+            "artifact_contract_name": body.get("artifactContractName"),
+            "standard_contract_type": body.get("standardContractType"),
+            "source_code_url": body.get("sourceCodeUrl"),
+            "is_orphaned": body.get("isOrphaned"),
+        }
+
+    def _get_governance_proposals(self, state: Any = None, network: str = "mainnet") -> dict[str, Any]:
+        query: dict[str, str] | None = None
+        if state is not None:
+            try:
+                query = {"state": _validate_gov_state(state)}
+            except ValueError as exc:
+                return self._err(0, f"invalid state: {exc}")
+        status, body, net = self._request("/l1/governance/proposals", network, query=query)
+        if status != 200:
+            return self._err(status or 502, f"Failed to fetch governance proposals: {body}", net)
+        if not isinstance(body, list):
+            return self._err(502, "Unexpected governance-proposals body shape (expected an array)", net)
+        # Filter to well-formed entries BEFORE capping, so a malformed
+        # entry in the first _GOVERNANCE_CAP slots can't push a valid
+        # proposal out of the result (and the counts stay accurate).
+        entries = [e for e in body if isinstance(e, dict)]
+        proposals = [
+            {
+                "proposal_id": entry.get("proposalId"),
+                "state": entry.get("state"),
+                "cached_state": entry.get("cachedState"),
+                "proposer": entry.get("proposer"),
+                "payload_address": entry.get("payloadAddress"),
+                "created_at": _coerce_int(entry.get("createdAt")),
+                "summed_yea": entry.get("summedYea"),
+                "summed_nay": entry.get("summedNay"),
+            }
+            for entry in entries[:_GOVERNANCE_CAP]
+        ]
+        return {
+            "status_code": 200,
+            "network": net,
+            "proposals": proposals,
+            "returned_count": len(proposals),
+            "total_count": len(entries),
+            "truncated": len(entries) > _GOVERNANCE_CAP,
+        }
+
+    def _get_tips(self, network: str = "mainnet") -> dict[str, Any]:
+        status, body, net = self._request("/l2/tips", network)
+        if status != 200:
+            return self._err(status or 502, f"Failed to fetch tips: {body}", net)
+        if not isinstance(body, dict) or not isinstance(body.get("tips"), dict):
+            return self._err(502, "Unexpected tips body shape (expected a tips object)", net)
+        tips = body["tips"]
+        out: dict[str, Any] = {"status_code": 200, "network": net}
+        for stage in ("proposed", "checkpointed", "proven", "finalized"):
+            node = tips.get(stage)
+            if not isinstance(node, dict):
+                continue
+            # 'proposed' is flat {number, hash}; checkpointed/proven/
+            # finalized nest the head block under a 'block' key.
+            block = node["block"] if isinstance(node.get("block"), dict) else node
+            out[f"{stage}_height"] = _coerce_int(block.get("number"))
+            out[f"{stage}_hash"] = block.get("hash")
+        return out
+
     def get_actions_metadata(self) -> list[dict[str, Any]]:
         network_param = {
             "type": "string",
@@ -321,10 +475,18 @@ class AztecNetworkTool(Tool):
             ),
         }
 
-        def params() -> dict[str, Any]:
+        def params(extra: dict[str, Any] | None = None) -> dict[str, Any]:
+            # NOTE on required-ness: the LLM-visible schema is rebuilt from
+            # these properties by ToolExecutor._build_tool_parameters, which
+            # reads a per-PROPERTY ``required: True`` flag and ignores any
+            # top-level ``required`` list. So a required arg must carry the
+            # flag on its own property dict (see ``query``/``address``).
+            properties: dict[str, Any] = {"network": network_param}
+            if extra:
+                properties.update(extra)
             return {
                 "type": "object",
-                "properties": {"network": network_param},
+                "properties": properties,
                 "required": [],
                 "additionalProperties": False,
             }
@@ -389,6 +551,82 @@ class AztecNetworkTool(Tool):
                 ),
                 "parameters": params(),
             },
+            {
+                "name": "aztec_network_search",
+                "description": (
+                    "Search the Aztec explorer for a block (by hash, "
+                    "height, or slot), transaction effect, contract class, "
+                    "contract instance, validator, or account. Pass the "
+                    "raw identifier (e.g. a 0x… hash/address or a block "
+                    "number) as 'query'. Returns the matching entries "
+                    "grouped by category. Use this to look up 'what is "
+                    "<hash>?' or to resolve a transaction by hash. "
+                    "Defaults to mainnet."
+                ),
+                "parameters": params(
+                    {
+                        "query": {
+                            "type": "string",
+                            "required": True,
+                            "description": (
+                                "The identifier to look up: a 0x-prefixed "
+                                "hash or address, a block height/number, or "
+                                "a slot number."
+                            ),
+                        }
+                    }
+                ),
+            },
+            {
+                "name": "aztec_network_get_contract_instance",
+                "description": (
+                    "Get a deployed Aztec L2 contract instance by its "
+                    "address: contract class id, deployer, initialization "
+                    "hash, artifact name, and verification/source metadata. "
+                    "Defaults to mainnet."
+                ),
+                "parameters": params(
+                    {
+                        "address": {
+                            "type": "string",
+                            "required": True,
+                            "description": "The 0x-prefixed contract instance address.",
+                        }
+                    }
+                ),
+            },
+            {
+                "name": "aztec_network_get_governance_proposals",
+                "description": (
+                    "List Aztec L1 governance proposals (proposal id, "
+                    "state, proposer, payload address, vote tallies). "
+                    "Optionally filter by 'state' (e.g. Pending, Active, "
+                    "Queued, Executed). Use for 'what governance proposals "
+                    "are active/queued?'. Defaults to mainnet."
+                ),
+                "parameters": params(
+                    {
+                        "state": {
+                            "type": "string",
+                            "description": (
+                                "Optional governance state filter (alpha "
+                                "label, e.g. 'Active' or 'Queued'). Omit to "
+                                "list all proposals."
+                            ),
+                        }
+                    }
+                ),
+            },
+            {
+                "name": "aztec_network_get_tips",
+                "description": (
+                    "Get the Aztec L2 chain finality heads: the proposed, "
+                    "checkpointed, proven, and finalized block heights and "
+                    "hashes. Use to see how far proven/finalized lag the "
+                    "chain tip. Defaults to mainnet."
+                ),
+                "parameters": params(),
+            },
         ]
 
     def get_config_requirements(self) -> dict[str, Any]:
@@ -443,7 +681,51 @@ def _coerce_int(value: Any) -> int | None:
         return None
 
 
+def _validate_hex_id(value: Any, label: str) -> str:
+    """Validate an LLM-supplied 0x-hex identifier for URL-path use.
+
+    Raises ``ValueError`` (caught at the action boundary → error dict) on
+    a non-string or out-of-charset value. The strict ``0x[0-9a-fA-F]``
+    charset rejects path delimiters, ``@``, ``..`` traversal, whitespace
+    and control chars, so the validated id is byte-safe to interpolate
+    into the request path without altering the authority. The message
+    never echoes the rejected value (it can be attacker-controlled and
+    flows to logs / the LLM)."""
+    if not isinstance(value, str) or not _HEX_ID_RE.match(value):
+        raise ValueError(f"{label} must be a 0x-prefixed hex string (0x[0-9a-fA-F], <=128 chars)")
+    return value
+
+
+def _validate_search_query(value: Any) -> str:
+    """Validate a free-text search query for use as a urlencoded query
+    value. Raises ``ValueError`` on a non-string, empty, over-length, or
+    control-char-bearing value. Never echoes the rejected value."""
+    if not isinstance(value, str):
+        raise ValueError("query must be a string")
+    q = value.strip()
+    if not q:
+        raise ValueError("query must not be empty")
+    if len(q) > _MAX_SEARCH_QUERY_LEN:
+        raise ValueError(f"query must be at most {_MAX_SEARCH_QUERY_LEN} characters")
+    if _FORBIDDEN_QUERY_CHARS_RE.search(q):
+        raise ValueError("query must not contain control characters")
+    return q
+
+
+def _validate_gov_state(value: Any) -> str:
+    """Validate an optional governance-state filter. Raises ``ValueError``
+    on a non-string or non-alpha value. Never echoes the rejected value."""
+    if not isinstance(value, str) or not _GOV_STATE_RE.match(value):
+        raise ValueError("state must match [A-Za-z]{1,32}")
+    return value
+
+
 _FORBIDDEN_URL_CHARS_RE = re.compile(r"[\x00-\x20\x7f\\]")
+# Same as the URL char ban, plus the query/fragment delimiters: an
+# internally-built path must never carry these (only ``_request(query=)``
+# may introduce a ``?``). Keeps the dialed path byte-identical to what the
+# base-URL SSRF check validated.
+_FORBIDDEN_PATH_CHARS_RE = re.compile(r"[\x00-\x20\x7f\\?#]")
 
 
 def _validate_request_url(url: str, label: str) -> None:
@@ -482,6 +764,13 @@ def _redaction_secrets(url: str) -> tuple[str, ...]:
     full path) is still caught. The bare hostname is not a secret
     (defaults are documented). Sorted longest-first so a short segment
     can't pre-empt a longer match.
+
+    Query values are redacted in BOTH their urlencoded form (as they
+    appear in the dialed URL) and their decoded form — an upstream error
+    or JSON-decode message can echo the decoded value, so redacting only
+    the encoded form would miss it. (Today's query values are non-secret
+    user input, but this keeps the contract robust if a sensitive query
+    param is ever added.)
     """
     parsed = urlparse(url)
     parts: set[str] = {url}
@@ -494,6 +783,9 @@ def _redaction_secrets(url: str) -> tuple[str, ...]:
             value = pair.split("=", 1)[-1]
             if len(value) >= 4:
                 parts.add(value)
+                decoded = unquote_plus(value)
+                if len(decoded) >= 4:
+                    parts.add(decoded)
     return tuple(sorted((p for p in parts if p), key=len, reverse=True))
 
 
