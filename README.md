@@ -192,8 +192,12 @@ removed. See [`CLAUDE.md`](./CLAUDE.md) for the architectural diff and
   `application/agents/tools/ethereum_network.py`) — give the Discord +
   widget agents live read access to chain state.
   - **Aztec L2** via Aztecscan REST
-    (`https://api.aztecscan.xyz/v1/{apiKey}/...`). Ten actions:
-    latest height, latest block summary, blocks-by-finalization-stage,
+    (`https://api.aztecscan.xyz/v1/{apiKey}/...`). Eleven actions:
+    latest height, latest block summary, a recent-block window
+    (`/l2/blocks` — up to 20 blocks with timestamps for an inclusive
+    `from_height`/`to_height` range, or the latest 20 with no range; use
+    it to compute block intervals / average block time),
+    blocks-by-finalization-stage,
     chain info (incl. L1 chain id + L1 contract addresses), validator
     totals, RPC node health, explorer search (`/l2/search` — resolve a
     block/tx/contract/account by hash, height, or address), contract

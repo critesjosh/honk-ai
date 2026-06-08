@@ -398,9 +398,9 @@ class TestValidatorTotals:
 
 @pytest.mark.unit
 class TestActionsMetadata:
-    def test_ten_actions(self, tool):
+    def test_eleven_actions(self, tool):
         meta = tool.get_actions_metadata()
-        assert len(meta) == 10
+        assert len(meta) == 11
         names = [m["name"] for m in meta]
         assert all(n.startswith("aztec_network_") for n in names)
         # The curated additions are present.
@@ -409,6 +409,7 @@ class TestActionsMetadata:
             "aztec_network_get_contract_instance",
             "aztec_network_get_governance_proposals",
             "aztec_network_get_tips",
+            "aztec_network_get_blocks",
         ):
             assert name in names
 
@@ -523,6 +524,194 @@ _TIPS_BODY = {
     "observedAt": 1780928559793,
     "stale": False,
 }
+# /l2/blocks returns an array newest-first; each entry carries its
+# timestamp under header.globalVariables.timestamp (unix ms). Probed
+# values are 72s apart, matching the live testnet cadence.
+_BLOCKS_BODY = [
+    {
+        "hash": "0x15c8",
+        "height": "108335",
+        "nativeStatus": "checkpointed",
+        "header": {"globalVariables": {"blockNumber": 108335, "timestamp": 1780945980000}},
+        "body": {"txEffects": []},
+    },
+    {
+        "hash": "0x1f78",
+        "height": "108334",
+        "nativeStatus": "checkpointed",
+        "header": {"globalVariables": {"blockNumber": 108334, "timestamp": 1780945908000}},
+    },
+    {
+        "hash": "0x0c39",
+        "height": "108333",
+        "nativeStatus": "checkpointed",
+        "header": {"globalVariables": {"blockNumber": 108333, "timestamp": 1780945836000}},
+    },
+]
+
+
+@pytest.mark.unit
+class TestGetBlocks:
+    @patch("application.agents.tools.aztec_network.requests.get")
+    def test_no_range_returns_latest_blocks(self, mock_get, tool):
+        mock_get.return_value = _resp(200, json_body=_BLOCKS_BODY)
+        result = tool.execute_action("aztec_network_get_blocks")
+        assert result["status_code"] == 200
+        assert result["network"] == "mainnet"
+        assert result["returned_count"] == 3
+        assert result["truncated"] is False
+        # Newest-first order is preserved; each block exposes the three
+        # fields needed to reason about block intervals.
+        assert [b["height"] for b in result["blocks"]] == [108335, 108334, 108333]
+        assert result["blocks"][0]["timestamp"] == 1780945980000
+        assert result["blocks"][0]["hash"] == "0x15c8"
+        # Consecutive timestamps are 72s apart — block-time math works.
+        ts = [b["timestamp"] for b in result["blocks"]]
+        assert ts[0] - ts[1] == 72000
+
+    @patch("application.agents.tools.aztec_network.requests.get")
+    def test_no_range_sends_no_query(self, mock_get, tool):
+        mock_get.return_value = _resp(200, json_body=_BLOCKS_BODY)
+        tool.execute_action("aztec_network_get_blocks")
+        assert mock_get.call_args[0][0] == _MAINNET + "/k/l2/blocks"
+
+    @patch("application.agents.tools.aztec_network.requests.get")
+    def test_inclusive_range_translates_to_half_open(self, mock_get, tool):
+        mock_get.return_value = _resp(200, json_body=_BLOCKS_BODY)
+        tool.execute_action(
+            "aztec_network_get_blocks", from_height=108300, to_height=108309
+        )
+        url = mock_get.call_args[0][0]
+        # Inclusive 108300..108309 → upstream half-open from=108300&to=108310.
+        assert url == _MAINNET + "/k/l2/blocks?from=108300&to=108310"
+
+    @patch("application.agents.tools.aztec_network.requests.get")
+    def test_range_accepts_digit_strings(self, mock_get, tool):
+        mock_get.return_value = _resp(200, json_body=_BLOCKS_BODY)
+        tool.execute_action(
+            "aztec_network_get_blocks", from_height="100", to_height="109"
+        )
+        assert mock_get.call_args[0][0] == _MAINNET + "/k/l2/blocks?from=100&to=110"
+
+    @patch("application.agents.tools.aztec_network.requests.get")
+    def test_single_block_window(self, mock_get, tool):
+        mock_get.return_value = _resp(200, json_body=_BLOCKS_BODY[:1])
+        tool.execute_action("aztec_network_get_blocks", from_height=5, to_height=5)
+        assert mock_get.call_args[0][0] == _MAINNET + "/k/l2/blocks?from=5&to=6"
+
+    @patch("application.agents.tools.aztec_network.requests.get")
+    def test_max_window_allowed(self, mock_get, tool):
+        mock_get.return_value = _resp(200, json_body=_BLOCKS_BODY)
+        # 0..19 inclusive == 20 blocks == the cap; request must go out.
+        result = tool.execute_action(
+            "aztec_network_get_blocks", from_height=0, to_height=19
+        )
+        assert result["status_code"] == 200
+        assert mock_get.call_args[0][0] == _MAINNET + "/k/l2/blocks?from=0&to=20"
+
+    @patch("application.agents.tools.aztec_network.requests.get")
+    def test_window_too_wide_degrades_without_request(self, mock_get, tool):
+        # 0..20 inclusive == 21 blocks == one past the cap.
+        result = tool.execute_action(
+            "aztec_network_get_blocks", from_height=0, to_height=20
+        )
+        assert result["status_code"] == 0
+        assert "at most 20" in result["message"]
+        mock_get.assert_not_called()
+
+    @patch("application.agents.tools.aztec_network.requests.get")
+    def test_reversed_range_degrades_without_request(self, mock_get, tool):
+        result = tool.execute_action(
+            "aztec_network_get_blocks", from_height=10, to_height=5
+        )
+        assert result["status_code"] == 0
+        assert "from_height must be <= to_height" in result["message"]
+        mock_get.assert_not_called()
+
+    @pytest.mark.parametrize("kwargs", [{"from_height": 5}, {"to_height": 5}])
+    @patch("application.agents.tools.aztec_network.requests.get")
+    def test_partial_range_degrades_without_request(self, mock_get, tool, kwargs):
+        result = tool.execute_action("aztec_network_get_blocks", **kwargs)
+        assert result["status_code"] == 0
+        assert "pass both" in result["message"]
+        mock_get.assert_not_called()
+
+    @pytest.mark.parametrize("bad", [-1, 1.5, "abc", "0x10", "  ", "1.0", True])
+    @patch("application.agents.tools.aztec_network.requests.get")
+    def test_invalid_height_degrades_without_request(self, mock_get, tool, bad):
+        result = tool.execute_action(
+            "aztec_network_get_blocks", from_height=bad, to_height=10
+        )
+        assert result["status_code"] == 0
+        assert "invalid range" in result["message"]
+        mock_get.assert_not_called()
+
+    @patch("application.agents.tools.aztec_network.requests.get")
+    def test_routes_to_testnet(self, mock_get, tool):
+        mock_get.return_value = _resp(200, json_body=_BLOCKS_BODY)
+        result = tool.execute_action("aztec_network_get_blocks", network="testnet")
+        assert mock_get.call_args[0][0] == _TESTNET + "/k/l2/blocks"
+        assert result["network"] == "testnet"
+
+    @patch("application.agents.tools.aztec_network.requests.get")
+    def test_empty_window_returns_empty_list(self, mock_get, tool):
+        mock_get.return_value = _resp(200, json_body=[])
+        result = tool.execute_action(
+            "aztec_network_get_blocks", from_height=99999990, to_height=99999999
+        )
+        assert result["status_code"] == 200
+        assert result["blocks"] == []
+        assert result["returned_count"] == 0
+
+    @patch("application.agents.tools.aztec_network.requests.get")
+    def test_unexpected_shape(self, mock_get, tool):
+        mock_get.return_value = _resp(200, json_body={"not": "a list"})
+        result = tool.execute_action("aztec_network_get_blocks")
+        assert result["status_code"] == 502
+
+    @patch("application.agents.tools.aztec_network.requests.get")
+    def test_upstream_error_surfaced(self, mock_get, tool):
+        # A valid client-side range can still 400 upstream (backstop path).
+        mock_get.return_value = _resp(
+            400, json_body={"message": "Range too wide. Maximum is 20 blocks."}
+        )
+        result = tool.execute_action(
+            "aztec_network_get_blocks", from_height=0, to_height=5
+        )
+        assert result["status_code"] == 400
+        assert "Failed to fetch blocks" in result["message"]
+
+    @patch("application.agents.tools.aztec_network.requests.get")
+    def test_oversized_upstream_list_is_capped(self, mock_get, tool):
+        # Defensive: if upstream ever returns more than the cap, we trim and
+        # flag it rather than bloating the tool result.
+        big = [
+            {"height": str(i), "header": {"globalVariables": {"timestamp": i}}}
+            for i in range(25)
+        ]
+        mock_get.return_value = _resp(200, json_body=big)
+        result = tool.execute_action("aztec_network_get_blocks")
+        assert result["returned_count"] == 20
+        assert result["truncated"] is True
+
+    @patch("application.agents.tools.aztec_network.requests.get")
+    def test_malformed_entries_and_missing_timestamp_tolerated(self, mock_get, tool):
+        body = [
+            "not-a-dict",
+            {"height": "108335", "hash": "0xaa"},  # no header → timestamp None
+            # Truthy non-dict header AND globalVariables must not raise.
+            {"height": "108334", "header": "garbage", "hash": "0xbb"},
+            {"height": "108333", "header": {"globalVariables": "garbage"}, "hash": "0xcc"},
+            {"height": "108332", "header": {"globalVariables": {"timestamp": 7}}},
+        ]
+        mock_get.return_value = _resp(200, json_body=body)
+        result = tool.execute_action("aztec_network_get_blocks")
+        # The string entry is dropped; the four dicts survive without crashing.
+        assert result["returned_count"] == 4
+        assert result["blocks"][0] == {"height": 108335, "timestamp": None, "hash": "0xaa"}
+        assert result["blocks"][1] == {"height": 108334, "timestamp": None, "hash": "0xbb"}
+        assert result["blocks"][2] == {"height": 108333, "timestamp": None, "hash": "0xcc"}
+        assert result["blocks"][3]["timestamp"] == 7
 
 
 @pytest.mark.unit
@@ -782,6 +971,18 @@ class TestNewActionRedaction:
         assert "SECRETKEY123" not in result["message"]
 
     @patch("application.agents.tools.aztec_network.requests.get")
+    def test_get_blocks_transport_error_redacts_key(self, mock_get):
+        t = AztecNetworkTool(config={"mainnet_base_url": _MAINNET, "api_key": "SECRETKEY123"})
+        mock_get.side_effect = requests.ConnectionError(
+            "Max retries exceeded with url: /v1/SECRETKEY123/l2/blocks?from=0&to=10"
+        )
+        result = t.execute_action(
+            "aztec_network_get_blocks", from_height=0, to_height=9
+        )
+        assert result["status_code"] == 502
+        assert "SECRETKEY123" not in result["message"]
+
+    @patch("application.agents.tools.aztec_network.requests.get")
     def test_search_error_body_redacts_decoded_query_value(self, mock_get, tool):
         # The query is urlencoded in the URL (spaces -> '+'), but an
         # upstream error can echo the DECODED form. Both must be redacted.
@@ -841,3 +1042,10 @@ class TestLlmSchemaConversion:
         fn = self._converted("aztec_network_get_governance_proposals")
         assert "state" in fn["parameters"]["properties"]
         assert "state" not in fn["parameters"]["required"]
+
+    def test_get_blocks_range_bounds_are_optional(self):
+        fn = self._converted("aztec_network_get_blocks")
+        props = fn["parameters"]["properties"]
+        assert "from_height" in props and "to_height" in props
+        assert "from_height" not in fn["parameters"].get("required", [])
+        assert "to_height" not in fn["parameters"].get("required", [])

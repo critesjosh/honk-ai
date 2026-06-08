@@ -61,14 +61,20 @@ _MAX_SEARCH_QUERY_LEN = 256
 # response can't bloat the tool result the LLM has to read.
 _SEARCH_CATEGORY_CAP = 10
 _GOVERNANCE_CAP = 20
+# Aztecscan's /l2/blocks endpoint rejects a from/to window wider than 20
+# blocks (HTTP 400 "Range too wide"); we validate against this client-side
+# so the LLM gets a clear message before a wasted request, and cap the
+# no-range "latest blocks" response to the same size.
+_BLOCKS_WINDOW_CAP = 20
 
 
 class AztecNetworkTool(Tool):
     """Query live Aztec L2 network state via Aztecscan.
 
     Action surface mirrors the most useful read-only endpoints from the
-    Aztecscan OpenAPI spec — chain head, finalization status, chain info,
-    validator totals, registered RPC nodes. Each action takes a
+    Aztecscan OpenAPI spec — chain head, recent block windows,
+    finalization status, chain info, validator totals, registered RPC
+    nodes. Each action takes a
     ``network`` ("mainnet" / "testnet", default "mainnet") and returns a
     small dict shaped ``{status_code, network, ...data}`` or
     ``{status_code, message}`` on failure.
@@ -138,6 +144,7 @@ class AztecNetworkTool(Tool):
         actions = {
             "aztec_network_get_latest_height": self._get_latest_height,
             "aztec_network_get_latest_block": self._get_latest_block,
+            "aztec_network_get_blocks": self._get_blocks,
             "aztec_network_get_blocks_by_status": self._get_blocks_by_status,
             "aztec_network_get_chain_info": self._get_chain_info,
             "aztec_network_get_validator_totals": self._get_validator_totals,
@@ -290,6 +297,76 @@ class AztecNetworkTool(Tool):
                 continue
             summary[f"stage_{stage}_height"] = height
         return summary
+
+    def _get_blocks(
+        self,
+        from_height: Any = None,
+        to_height: Any = None,
+        network: str = "mainnet",
+    ) -> dict[str, Any]:
+        """Fetch a window of recent blocks (each with its timestamp).
+
+        With no range, returns the latest blocks (capped at
+        ``_BLOCKS_WINDOW_CAP``). With both ``from_height`` and
+        ``to_height``, returns that inclusive height window. The
+        LLM-facing range is inclusive; Aztecscan's ``/l2/blocks`` uses a
+        half-open ``[from, to)`` range, so the upper bound is translated
+        to ``to_height + 1``.
+        """
+        query: dict[str, str] | None = None
+        if from_height is not None or to_height is not None:
+            # An incomplete range is ambiguous — require both bounds so we
+            # never silently widen to "latest" when only one was given.
+            if from_height is None or to_height is None:
+                return self._err(
+                    0,
+                    "invalid range: pass both from_height and to_height, or "
+                    "neither (to get the latest blocks)",
+                )
+            try:
+                lo = _validate_block_height(from_height, "from_height")
+                hi = _validate_block_height(to_height, "to_height")
+            except ValueError as exc:
+                return self._err(0, f"invalid range: {exc}")
+            if lo > hi:
+                return self._err(0, "invalid range: from_height must be <= to_height")
+            if hi - lo + 1 > _BLOCKS_WINDOW_CAP:
+                return self._err(
+                    0,
+                    f"invalid range: window must be at most {_BLOCKS_WINDOW_CAP} "
+                    "blocks (from_height..to_height inclusive)",
+                )
+            # Translate the inclusive LLM range to the upstream half-open one.
+            query = {"from": str(lo), "to": str(hi + 1)}
+        status, body, net = self._request("/l2/blocks", network, query=query)
+        if status != 200:
+            return self._err(status or 502, f"Failed to fetch blocks: {body}", net)
+        if not isinstance(body, list):
+            return self._err(502, "Unexpected blocks body shape (expected an array)", net)
+        entries = [e for e in body if isinstance(e, dict)]
+        blocks = []
+        for entry in entries[:_BLOCKS_WINDOW_CAP]:
+            # Guard both nesting levels: a malformed upstream entry could
+            # set header / globalVariables to a truthy non-dict, and an
+            # unguarded .get() there would raise mid-stream.
+            header = entry.get("header")
+            header = header if isinstance(header, dict) else {}
+            global_vars = header.get("globalVariables")
+            global_vars = global_vars if isinstance(global_vars, dict) else {}
+            blocks.append(
+                {
+                    "height": _coerce_int(entry.get("height")),
+                    "timestamp": _coerce_int(global_vars.get("timestamp")),
+                    "hash": entry.get("hash"),
+                }
+            )
+        return {
+            "status_code": 200,
+            "network": net,
+            "blocks": blocks,
+            "returned_count": len(blocks),
+            "truncated": len(entries) > _BLOCKS_WINDOW_CAP,
+        }
 
     def _get_chain_info(self, network: str = "mainnet") -> dict[str, Any]:
         status, body, net = self._request("/l2/info", network)
@@ -512,6 +589,41 @@ class AztecNetworkTool(Tool):
                 "parameters": params(),
             },
             {
+                "name": "aztec_network_get_blocks",
+                "description": (
+                    "Get a window of recent Aztec L2 blocks, each with its "
+                    "height, unix-millisecond timestamp, and hash, newest "
+                    "first. Call with NO from_height/to_height to get the "
+                    "latest 20 blocks — use this to compute average block "
+                    "time or intervals over recent blocks (diff consecutive "
+                    "timestamps). To fetch a specific historical window, "
+                    "pass BOTH from_height and to_height (inclusive); the "
+                    "window is capped at 20 blocks. Defaults to mainnet."
+                ),
+                "parameters": params(
+                    {
+                        "from_height": {
+                            "type": "integer",
+                            "description": (
+                                "Optional inclusive lower bound of the "
+                                "block-height window. Must be passed together "
+                                "with to_height; the window cannot exceed 20 "
+                                "blocks. Omit both bounds for the latest "
+                                "blocks."
+                            ),
+                        },
+                        "to_height": {
+                            "type": "integer",
+                            "description": (
+                                "Optional inclusive upper bound of the "
+                                "block-height window. Must be passed together "
+                                "with from_height."
+                            ),
+                        },
+                    }
+                ),
+            },
+            {
                 "name": "aztec_network_get_blocks_by_status",
                 "description": (
                     "Get one block per L2 finalization stage so you can "
@@ -710,6 +822,28 @@ def _validate_search_query(value: Any) -> str:
     if _FORBIDDEN_QUERY_CHARS_RE.search(q):
         raise ValueError("query must not contain control characters")
     return q
+
+
+def _validate_block_height(value: Any, label: str) -> int:
+    """Validate an LLM-supplied block height: a non-negative integer.
+
+    Accepts an int or an all-digits string; rejects bools (``True`` is an
+    ``int`` in Python), floats, negatives, and non-numeric strings. Raises
+    ``ValueError`` (caught at the action boundary → error dict). The
+    height is sent as a urlencoded query value, not a path segment, so
+    this is a type/range check, not a charset-escape guard. Never echoes
+    the rejected value."""
+    if isinstance(value, bool):
+        raise ValueError(f"{label} must be a non-negative integer")
+    if isinstance(value, int):
+        height = value
+    elif isinstance(value, str) and value.strip().isdigit():
+        height = int(value.strip())
+    else:
+        raise ValueError(f"{label} must be a non-negative integer")
+    if height < 0:
+        raise ValueError(f"{label} must be a non-negative integer")
+    return height
 
 
 def _validate_gov_state(value: Any) -> str:
