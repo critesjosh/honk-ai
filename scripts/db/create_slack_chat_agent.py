@@ -45,11 +45,20 @@ from __future__ import annotations
 import os
 import sys
 import uuid
+from pathlib import Path
 
 from sqlalchemy import text
 
-from application.core.settings import settings
-from application.storage.db.session import db_session
+# Make ``application`` importable when this is run directly as
+# ``python scripts/db/create_slack_chat_agent.py`` (e.g. via
+# ``docker compose run --rm backend …`` with scripts bind-mounted):
+# Python puts the script's own dir on sys.path[0], NOT the repo root, so
+# ``import application`` would otherwise fail. ``parents[2]`` is the repo
+# root (scripts/db/<file> → root), mirroring scripts/db/init_postgres.py.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
+from application.core.settings import settings  # noqa: E402
+from application.storage.db.session import db_session  # noqa: E402
 
 
 AGENT_USER_ID = "local"
