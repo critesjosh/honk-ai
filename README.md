@@ -189,8 +189,8 @@ removed. See [`CLAUDE.md`](./CLAUDE.md) for the architectural diff and
   heading.
 - **Network-status agent tools**
   (`application/agents/tools/aztec_network.py`,
-  `application/agents/tools/ethereum_network.py`) — give the Discord +
-  widget agents live read access to chain state.
+  `application/agents/tools/ethereum_network.py`) — give the Discord,
+  widget, and Slack agents live read access to chain state.
   - **Aztec L2** via Aztecscan REST
     (`https://api.aztecscan.xyz/v1/{apiKey}/...`). Eleven actions:
     latest height, latest block summary, a recent-block window
@@ -245,7 +245,8 @@ removed. See [`CLAUDE.md`](./CLAUDE.md) for the architectural diff and
   - **Provisioner** (`scripts/db/create_network_tools.py`) — idempotent
     upsert of the two `user_tools` rows under `user_id='local'`; with
     `--attach-to-agents` appends both UUIDs to `agents.tools` for every
-    agent matching `surface IN ('discord','widget')`. `--dry-run`
+    agent matching `surface IN ('discord','widget','slack')` (a
+    re-run of `create_slack_chat_agent.py` preserves them). `--dry-run`
     previews without committing. Rollback SQL in the script docstring.
     Not attached to the public `/ask` agent (`tools='[]'` guardrail) or
     the per-user `Aztec MCP` agents (per-pseudonym `user_id` needs a

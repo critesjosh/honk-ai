@@ -215,7 +215,7 @@ Operator follow-ups (out-of-band, in the Cloudflare Zero Trust dashboard):
 
 ### 7d. Provision network-status agent tools (optional)
 
-Both the Discord (Honk AI) and widget (`docs.aztec.network`) agents can be given live read access to Aztec L2 + Ethereum L1 chain state. The provisioner inserts two `user_tools` rows under `user_id='local'` and (with `--attach-to-agents`) appends both UUIDs to `agents.tools` for every agent matching `surface IN ('discord','widget')`.
+The Discord (Honk AI), widget (`docs.aztec.network`), and Slack chat agents can be given live read access to Aztec L2 + Ethereum L1 chain state. The provisioner inserts two `user_tools` rows under `user_id='local'` and (with `--attach-to-agents`) appends both UUIDs to `agents.tools` for every agent matching `surface IN ('discord','widget','slack')`. (Re-running `create_slack_chat_agent.py` preserves these attached tools.)
 
 ```bash
 docker compose --env-file .env -f deployment/docker-compose-hub.yaml run --rm \

@@ -23,6 +23,9 @@ agent-level cap if desired.
 Idempotent: look up by ``(user_id, name)``; refresh source/prompt on
 update, preserve ``key`` so the deployed bot keeps working (rotating the
 key silences the bot until its ``.env`` is updated + service recreated).
+A refresh also preserves ``tools`` — so the network-status tools attached
+by ``scripts/db/create_network_tools.py --attach-to-agents`` survive a
+re-run. Only the initial create seeds an empty tool list.
 
 Usage (scripts/ is NOT in the backend image — bind-mount it; see
 CLAUDE.md)::
@@ -169,7 +172,12 @@ def main() -> int:
                 " agent_type = 'classic',"
                 " prompt_id = COALESCE(CAST(:pid AS uuid), prompt_id),"
                 " default_model_id = COALESCE(:model, default_model_id),"
-                " tools = '[]'::jsonb,"
+                # NOTE: ``tools`` is intentionally NOT reset here. A refresh
+                # must preserve whatever the operator attached out-of-band
+                # (e.g. the aztec_network / ethereum_network tools appended
+                # by scripts/db/create_network_tools.py --attach-to-agents).
+                # The INSERT path seeds tools='[]'; only that initial create
+                # should start empty.
                 " allow_system_prompt_override = false,"
                 " surface = 'slack',"
                 " updated_at = now()"

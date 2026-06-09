@@ -4,7 +4,7 @@ Creates two ``user_tools`` rows under ``user_id='local'`` — one
 ``aztec_network``, one ``ethereum_network`` — with every action flagged
 ``active=true``. With ``--attach-to-agents``, also appends both tool
 UUIDs to the ``agents.tools`` JSONB array for every agent matching
-``user_id='local' AND surface IN ('discord','widget')``.
+``user_id='local' AND surface IN ('discord','widget','slack')``.
 
 Idempotent. Re-running refreshes the action lists (in case we add new
 actions later) and is a no-op for already-attached agents. Tool UUIDs
@@ -29,7 +29,7 @@ leaves any other attached tools intact::
         FROM jsonb_array_elements_text(tools) elem
         WHERE elem NOT IN ('<aztec_uuid>', '<ethereum_uuid>')
     )
-    WHERE user_id = 'local' AND surface IN ('discord','widget');
+    WHERE user_id = 'local' AND surface IN ('discord','widget','slack');
     UPDATE user_tools SET status = false
         WHERE user_id = 'local' AND name IN ('aztec_network', 'ethereum_network');
 """
@@ -48,6 +48,14 @@ from application.storage.db.session import db_session
 
 
 TOOL_USER_ID = "local"
+
+# Surfaces whose ``user_id='local'`` chat agents get the network tools on
+# ``--attach-to-agents``. The gated chat surfaces (Discord, Slack) and the
+# docs widget — NOT the public ``web_ask`` agent (its ``tools='[]'`` is an
+# intentional guardrail under the public-bearer threat model) and NOT
+# per-user ``mcp`` agents. Single source of truth for the SQL filter.
+_ATTACH_SURFACES = ("discord", "widget", "slack")
+_ATTACH_SURFACES_SQL = ", ".join(f"'{s}'" for s in _ATTACH_SURFACES)
 
 # (name, display_name, description, tool_class). The display_name and
 # description show up in the operator's tool listing only — agents see
@@ -160,18 +168,22 @@ def _upsert_tool(
 
 
 def _attach_to_agents(conn, tool_ids: list[str]) -> None:
-    """Append each tool UUID to ``agents.tools`` for Discord + widget
-    agents, only when not already present. UUIDs are stored as JSONB
-    strings, so the duplicate check uses JSON containment."""
+    """Append each tool UUID to ``agents.tools`` for the chat/widget
+    agents in ``_ATTACH_SURFACES`` (Discord, widget, Slack), only when not
+    already present. UUIDs are stored as JSONB strings, so the duplicate
+    check uses JSON containment."""
     agents = conn.execute(
         text(
             "SELECT id, name, tools FROM agents "
-            "WHERE user_id = :uid AND surface IN ('discord','widget')"
+            f"WHERE user_id = :uid AND surface IN ({_ATTACH_SURFACES_SQL})"
         ),
         {"uid": TOOL_USER_ID},
     ).fetchall()
     if not agents:
-        print("No discord/widget agents found under user_id='local' — skipping attach.")
+        print(
+            f"No {'/'.join(_ATTACH_SURFACES)} agents found under user_id='local' "
+            "— skipping attach."
+        )
         return
     for agent_id, agent_name, current_tools in agents:
         current = list(current_tools or [])
@@ -198,7 +210,7 @@ def main() -> int:
     parser.add_argument(
         "--attach-to-agents",
         action="store_true",
-        help="Also append the tool UUIDs to agents.tools for discord+widget agents.",
+        help="Also append the tool UUIDs to agents.tools for discord+widget+slack agents.",
     )
     parser.add_argument(
         "--dry-run",
@@ -236,7 +248,7 @@ def main() -> int:
         "      FROM jsonb_array_elements_text(tools) elem\n"
         f"      WHERE elem NOT IN ({quoted})\n"
         "  )\n"
-        "  WHERE user_id = 'local' AND surface IN ('discord','widget');\n"
+        f"  WHERE user_id = 'local' AND surface IN ({_ATTACH_SURFACES_SQL});\n"
         "  UPDATE user_tools SET status = false\n"
         "      WHERE user_id = 'local' AND name IN ('aztec_network', 'ethereum_network');"
     )
