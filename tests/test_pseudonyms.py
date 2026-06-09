@@ -9,6 +9,7 @@ import pytest
 
 from application.pseudonyms import (
     DISCORD_PSEUDO_PREFIX,
+    SLACK_PSEUDO_PREFIX,
     canonical_user_id,
     pseudonymize_provider_user_id,
 )
@@ -84,3 +85,20 @@ class TestCanonicalUserId:
             canonical_user_id("discord", "", pepper=GOLDEN_PEPPER)
         with pytest.raises(ValueError):
             canonical_user_id("discord", "42", pepper="")
+
+    def test_slack_prefixed_form(self):
+        """Slack uses its own ``user_id`` prefix; the bare HMAC is shared
+        (provider-blind) — the ``mcp_provider`` column + prefix are what
+        disambiguate provider."""
+        out = canonical_user_id("slack", GOLDEN_RAW_ID, pepper=GOLDEN_PEPPER)
+        assert out == SLACK_PSEUDO_PREFIX + GOLDEN_BARE_HEX
+        assert re.fullmatch(r"slack_p_v1:[a-f0-9]{32}", out)
+
+    def test_provider_distinguished_by_prefix_only(self):
+        """Same raw id under discord vs slack share the bare HMAC but get
+        distinct prefixed canonical ids — so the two never collide in any
+        ``user_id`` column."""
+        d = canonical_user_id("discord", GOLDEN_RAW_ID, pepper=GOLDEN_PEPPER)
+        s = canonical_user_id("slack", GOLDEN_RAW_ID, pepper=GOLDEN_PEPPER)
+        assert d != s
+        assert d.split(":", 1)[1] == s.split(":", 1)[1]  # same bare hex

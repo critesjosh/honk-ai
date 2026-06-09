@@ -4,6 +4,7 @@ Uses the ephemeral ``pg_conn`` fixture so the sources repository writes
 happen against a real Postgres schema.
 """
 
+import re
 from contextlib import contextmanager
 from unittest.mock import patch
 
@@ -834,4 +835,187 @@ class TestStreamPseudonymPropagation:
         # which conversations.user_id derives from.
         assert re.fullmatch(r"discord_p_v1:[a-f0-9]{32}", data["user"]), (
             f"agent identity not pseudonymized: data['user']={data['user']!r}"
+        )
+
+
+class TestSlackProvider:
+    """The generalized (provider-aware) create/forget path used by Slack.
+
+    Locks down: the new ``{provider, provider_user_id}`` request shape,
+    the strict provider allowlist + no-fallback rule, the
+    ``mcp_provider='slack'`` / ``surface='mcp'`` storage shape, and
+    cross-provider isolation (a Slack forget must not touch a Discord row
+    that shares the same raw id).
+    """
+
+    _PROV_KEY = "test-prov-key"
+    _AUTH = {"X-Provisioning-Key": _PROV_KEY}
+    # Slack compound identity: workspace-scoped ``team_id:user_id``.
+    _SLACK_RAW = "T0AZTEC:U0HONK"
+
+    def _provision_slack(self, pg_conn, *, raw_id=_SLACK_RAW):
+        ids = TestCreateMcpKey._make_sources(pg_conn, count=2)
+        app = _make_app()
+        with patch(
+            "application.api.internal.routes.settings.MCP_PROVISIONING_KEY",
+            self._PROV_KEY,
+        ), patch(
+            "application.api.internal.routes.settings.AZTEC_SOURCE_IDS",
+            ",".join(ids),
+        ), _patch_db(pg_conn):
+            with app.test_client() as c:
+                return c.post(
+                    "/api/internal/create_mcp_key",
+                    headers=self._AUTH,
+                    json={"provider": "slack", "provider_user_id": raw_id},
+                )
+
+    def test_create_slack_key_storage_shape(self, pg_conn):
+        from sqlalchemy import text as sql_text
+
+        r = self._provision_slack(pg_conn)
+        assert r.status_code == 200, r.json
+
+        # mcp_provider='slack', surface stays 'mcp', bare-hex (no raw id).
+        row = pg_conn.execute(
+            sql_text(
+                "SELECT mcp_provider, surface, mcp_provider_user_id, user_id "
+                "FROM agents WHERE key = :k"
+            ),
+            {"k": r.json["api_key"]},
+        ).fetchone()
+        assert row.mcp_provider == "slack"
+        assert row.surface == "mcp"
+        assert re.fullmatch(r"[a-f0-9]{32}", row.mcp_provider_user_id)
+        assert row.user_id.startswith("slack_p_v1:")
+        # Raw compound id must never appear in storage.
+        leaked = pg_conn.execute(
+            sql_text(
+                "SELECT count(*) FROM agents WHERE mcp_provider_user_id = :raw"
+            ),
+            {"raw": self._SLACK_RAW},
+        ).scalar()
+        assert leaked == 0
+
+    def test_slack_username_not_required(self, pg_conn):
+        """Unlike the legacy Discord shape, the generalized shape does not
+        require a username field."""
+        r = self._provision_slack(pg_conn)
+        assert r.status_code == 200
+
+    def test_generalized_shape_requires_provider_user_id(self, pg_conn):
+        app = _make_app()
+        with patch(
+            "application.api.internal.routes.settings.MCP_PROVISIONING_KEY",
+            self._PROV_KEY,
+        ), _patch_db(pg_conn):
+            with app.test_client() as c:
+                r = c.post(
+                    "/api/internal/create_mcp_key",
+                    headers=self._AUTH,
+                    json={"provider": "slack"},
+                )
+        assert r.status_code == 400
+        assert "provider_user_id" in (r.json or {}).get("error", "")
+
+    def test_no_fallback_from_slack_to_discord_field(self, pg_conn):
+        """A Slack caller that supplies only ``discord_user_id`` (no
+        ``provider_user_id``) must 400 — NOT silently mint a Discord-scoped
+        pseudonym from the stray field."""
+        app = _make_app()
+        with patch(
+            "application.api.internal.routes.settings.MCP_PROVISIONING_KEY",
+            self._PROV_KEY,
+        ), _patch_db(pg_conn):
+            with app.test_client() as c:
+                r = c.post(
+                    "/api/internal/create_mcp_key",
+                    headers=self._AUTH,
+                    json={"provider": "slack", "discord_user_id": "T1:U1"},
+                )
+        assert r.status_code == 400
+
+    def test_empty_provider_does_not_fall_back_to_discord(self, pg_conn):
+        """An explicit empty/whitespace ``provider`` is a malformed
+        generalized call — it must 400, NOT silently fall back to the
+        Discord fields and mint a Discord-scoped pseudonym."""
+        app = _make_app()
+        with patch(
+            "application.api.internal.routes.settings.MCP_PROVISIONING_KEY",
+            self._PROV_KEY,
+        ), _patch_db(pg_conn):
+            with app.test_client() as c:
+                r = c.post(
+                    "/api/internal/create_mcp_key",
+                    headers=self._AUTH,
+                    json={"provider": "  ", "discord_user_id": "u1", "discord_username": "x"},
+                )
+        assert r.status_code == 400
+        assert "unsupported provider" in (r.json or {}).get("error", "")
+
+    def test_unsupported_provider_rejected(self, pg_conn):
+        app = _make_app()
+        with patch(
+            "application.api.internal.routes.settings.MCP_PROVISIONING_KEY",
+            self._PROV_KEY,
+        ), _patch_db(pg_conn):
+            with app.test_client() as c:
+                r = c.post(
+                    "/api/internal/create_mcp_key",
+                    headers=self._AUTH,
+                    json={"provider": "github", "provider_user_id": "x"},
+                )
+        assert r.status_code == 400
+        assert "unsupported provider" in (r.json or {}).get("error", "")
+
+    def test_forget_slack_isolates_from_discord(self, pg_conn):
+        """Provision the SAME raw id under both discord and slack, then
+        forget only slack. The discord row must survive."""
+        from sqlalchemy import text as sql_text
+
+        ids = TestCreateMcpKey._make_sources(pg_conn, count=1)
+        shared_raw = "COLLIDE:ME"
+        app = _make_app()
+        with patch(
+            "application.api.internal.routes.settings.MCP_PROVISIONING_KEY",
+            self._PROV_KEY,
+        ), patch(
+            "application.api.internal.routes.settings.AZTEC_SOURCE_IDS",
+            ",".join(ids),
+        ), _patch_db(pg_conn):
+            with app.test_client() as c:
+                d = c.post(
+                    "/api/internal/create_mcp_key",
+                    headers=self._AUTH,
+                    json={"discord_user_id": shared_raw, "discord_username": "x"},
+                )
+                s = c.post(
+                    "/api/internal/create_mcp_key",
+                    headers=self._AUTH,
+                    json={"provider": "slack", "provider_user_id": shared_raw},
+                )
+                assert d.status_code == 200 and s.status_code == 200
+                # Two distinct rows despite the shared raw id.
+                assert d.json["api_key"] != s.json["api_key"]
+
+                forget = c.post(
+                    "/api/internal/forget_discord_user",
+                    headers=self._AUTH,
+                    json={"provider": "slack", "provider_user_id": shared_raw},
+                )
+        assert forget.status_code == 200
+        assert forget.json["deleted"]["agents"] == 1
+
+        # Slack row gone, Discord row survives.
+        assert (
+            pg_conn.execute(
+                sql_text("SELECT count(*) FROM agents WHERE mcp_provider = 'slack'")
+            ).scalar()
+            == 0
+        )
+        assert (
+            pg_conn.execute(
+                sql_text("SELECT count(*) FROM agents WHERE mcp_provider = 'discord'")
+            ).scalar()
+            == 1
         )

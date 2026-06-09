@@ -16,8 +16,9 @@ Two output shapes:
 
 - :func:`pseudonymize_provider_user_id` returns the **bare 32-char hex**
   HMAC. This is what ``agents.mcp_provider_user_id`` stores — no prefix
-  on that column because the column itself only holds Discord (today)
-  pseudonyms, and the prefix lives one column over in ``user_id``.
+  on that column because the sibling ``mcp_provider`` column already
+  disambiguates the provider, and the ``user_id``-column prefix lives
+  one column over.
 - :func:`canonical_user_id` returns the **prefixed form**, e.g.
   ``"discord_p_v1:<32hex>"``. This is what every ``user_id`` column
   across the schema stores.
@@ -28,6 +29,17 @@ import hmac as _hmac
 
 # Public for callers that need to grep / filter by prefix in SQL.
 DISCORD_PSEUDO_PREFIX = "discord_p_v1:"
+SLACK_PSEUDO_PREFIX = "slack_p_v1:"
+
+# Provider → ``user_id`` prefix. Adding a provider here is the ONLY place a
+# new chat/MCP surface's pseudonym prefix is declared; the bot supplies the
+# raw identity (for Slack a workspace-scoped ``team_id:user_id`` compound —
+# see the Slack bot's ``slack_raw_identity``) and the backend never sees the
+# plaintext id in storage.
+_PROVIDER_PREFIXES = {
+    "discord": DISCORD_PSEUDO_PREFIX,
+    "slack": SLACK_PSEUDO_PREFIX,
+}
 
 _HMAC_HEX_LEN = 32  # 32 hex chars = 128 bits
 
@@ -56,13 +68,14 @@ def pseudonymize_provider_user_id(raw_id: str, *, pepper: str) -> str:
 def canonical_user_id(provider: str, raw_id: str, *, pepper: str) -> str:
     """Prefixed pseudonym for storage in any ``user_id`` column.
 
-    Today only ``provider="discord"`` is supported. Adding another
-    provider means adding another prefix here AND updating the
-    migration's table sweep, the smoke SQL, and the
-    ``forget_<provider>_user`` endpoint.
+    Supported providers are declared in ``_PROVIDER_PREFIXES``
+    (``discord`` and ``slack`` today). Adding another provider means
+    adding its prefix there AND updating the create/forget endpoints,
+    the migration ``surface`` CHECK enum, and the smoke SQL. The
+    provider allowlist is strict — an unknown provider raises rather
+    than silently minting an un-erasable pseudonym.
     """
-    if provider != "discord":
+    prefix = _PROVIDER_PREFIXES.get(provider)
+    if prefix is None:
         raise ValueError(f"unsupported provider: {provider!r}")
-    return DISCORD_PSEUDO_PREFIX + pseudonymize_provider_user_id(
-        raw_id, pepper=pepper
-    )
+    return prefix + pseudonymize_provider_user_id(raw_id, pepper=pepper)

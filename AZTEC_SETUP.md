@@ -231,6 +231,34 @@ Defaults call public, no-API-key endpoints. Aztec L2 is queried per-`network`: m
 
 **Not attached** to the public `/ask` agent (`web_ask`) — its `tools='[]'` guardrail is intentional under the public-bearer threat model. Not attached to per-user `Aztec MCP` agents either, since their `user_id` is per-Discord-pseudonym; that integration would extend `/api/internal/create_mcp_key`.
 
+### 7e. (Optional) Provision the Slack bot
+
+The Slack bot (`extensions/slack/`, service `slack-bot`) is the Slack sibling of the Discord bot. Full design + scopes in `extensions/slack/README.md`; the steps here are the deploy path.
+
+1. **Create the Slack app** at <https://api.slack.com/apps> → **From an app manifest** → paste `extensions/slack/slack-app-manifest.json` (sets Socket Mode, scopes, events, slash commands, interactivity in one shot). Then generate an App-Level token (`xapp-`, `connections:write`) → `SLACK_APP_TOKEN`, install to the workspace, copy the Bot token (`xoxb-`) → `SLACK_BOT_TOKEN` in `.env`, and `/invite @Honk AI` to the channels it should answer in. Details + scope rationale in `extensions/slack/README.md`.
+
+2. **Apply the surface migration** (adds `slack` to the `agents.surface` enum). It's part of `alembic upgrade head`:
+   ```bash
+   docker compose -f deployment/docker-compose-hub.yaml --env-file .env run --rm backend alembic upgrade head
+   ```
+
+3. **Provision the Slack chat agent** (its key becomes the bot's `API_KEY`; `scripts/` is bind-mounted because it isn't in the image):
+   ```bash
+   docker compose -f deployment/docker-compose-hub.yaml --env-file .env run --rm \
+     -v $(pwd)/scripts:/app/scripts:ro \
+     -e SLACK_AGENT_KEY="$(uuidgen)" \
+     backend python scripts/db/create_slack_chat_agent.py
+   ```
+   Put the printed key in `.env` as `SLACK_API_KEY` (NOT the Discord agent's key — keep per-surface analytics clean). Optionally reuse the Discord-grounded prompt with `-e SLACK_PROMPT_ID=4bfa9ddf-5d8e-4d5d-a94e-c9e52e1a9ba2`.
+
+4. **Build + start** the service:
+   ```bash
+   docker compose -f deployment/docker-compose-hub.yaml --env-file .env build slack-bot
+   docker compose -f deployment/docker-compose-hub.yaml --env-file .env up -d --force-recreate slack-bot
+   ```
+
+5. Optionally set `SLACK_TEAM_IDS` (workspace allowlist) and `SLACK_TEAM_DAILY_USD_CAPS` (per-workspace spend cap), then `--force-recreate slack-bot` again (restart won't pick up `.env`).
+
 ### 8. Staging → production cutover
 
 Run the full deployment on a staging hostname first (e.g., `docs-staging.yourcompany.com`). Verify:
@@ -242,8 +270,9 @@ Run the full deployment on a staging hostname first (e.g., `docs-staging.yourcom
 - [ ] After login, UI loads, an agent can be created, a row lands in `agents`.
 - [ ] A doc uploaded via `/api/upload` creates a `sources` row and embeddings land in the `documents` table.
 - [ ] Discord `/mcp-key` command returns a key; a corresponding `agents` row has the expected `mcp_provider = 'discord'` AND `surface = 'mcp'`.
-- [ ] `SELECT surface, COUNT(*) FROM agents GROUP BY surface;` returns at least one of each: `discord`, `widget`, `web_ask`, `mcp` (the four production surfaces). Missing rows indicate a provisioner that did not run; rows with `surface IS NULL` are impossible (NOT NULL since migration `0009`).
+- [ ] `SELECT surface, COUNT(*) FROM agents GROUP BY surface;` returns at least one of each: `discord`, `widget`, `web_ask`, `mcp` (the core production surfaces), plus `slack` if the Slack bot is deployed. Missing rows indicate a provisioner that did not run; rows with `surface IS NULL` are impossible (NOT NULL since migration `0009`).
 - [ ] Discord `@`-mention reply includes a `-#` "Sources" footer with up to 5 cited URLs.
+- [ ] (If Slack is deployed) `slack-bot` logs show "connected as …"; an `@Honk AI` mention in an allowed workspace streams a threaded answer with a "Was this helpful?" 👍/👎 block; `/aztec-mcp-key` returns a key and a row lands with `mcp_provider = 'slack'` AND `surface = 'mcp'`; the Slack chat agent row has `surface = 'slack'`.
 - [ ] (If `/ask` is deployed) `https://$PUBLIC_HOSTNAME/ask/` loads anonymously without SSO redirect; age gate appears on first visit; a starter prompt streams an answer with rendered markdown and source chips.
 - [ ] `nmap` from an external host: only 443 open (+ 80 if Caddy does HTTP→HTTPS redirect).
 - [ ] Retrieval quality check: ask a question you know the answer to from the Aztec corpus, confirm a sensible answer.

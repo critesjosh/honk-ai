@@ -154,15 +154,68 @@ def upload_index_files():
     return {"status": "ok"}
 
 
+# Providers whose bots may provision MCP keys / erase data. Mirrors the
+# strict allowlist in ``application/pseudonyms.py`` — an unknown provider
+# is a 400, never a silently-Discord-scoped pseudonym.
+_SUPPORTED_PROVIDERS = ("discord", "slack")
+
+
+def _resolve_provider_identity(data: dict) -> tuple[str, str, str]:
+    """Resolve ``(provider, raw_user_id, username)`` from a request body.
+
+    Two accepted shapes, chosen by whether ``provider`` is present so the
+    legacy Discord bot's payload keeps working byte-for-byte:
+
+    - **Legacy (no ``provider``):** requires ``discord_user_id`` (and, for
+      ``create_mcp_key`` only, ``discord_username``). Resolves to provider
+      ``discord``. This is exactly the old contract.
+    - **Generalized (``provider`` present):** requires ``provider`` in the
+      allowlist and ``provider_user_id``; ``provider_username`` is optional.
+      There is deliberately NO fallback to ``discord_user_id`` here — a
+      Slack caller that forgot ``provider_user_id`` must fail rather than
+      mint a Discord-scoped pseudonym from a stray field.
+
+    For Slack the caller supplies a workspace-scoped compound id
+    (``team_id:user_id``); the backend treats it as an opaque raw id and
+    never stores the plaintext.
+
+    Raises ``ValueError`` with a user-safe message on a bad shape; callers
+    turn that into a 400.
+    """
+    # Shape is chosen by PRESENCE of the ``provider`` key, not its
+    # truthiness — an explicit ``"provider": ""`` is a malformed
+    # generalized call, NOT a license to fall back to the Discord fields
+    # (which would silently mint a Discord-scoped pseudonym for it).
+    if "provider" in data:
+        raw_provider = (data.get("provider") or "").strip()
+        if raw_provider not in _SUPPORTED_PROVIDERS:
+            raise ValueError(f"unsupported provider: {raw_provider!r}")
+        raw_user_id = (data.get("provider_user_id") or "").strip()
+        if not raw_user_id:
+            raise ValueError("provider_user_id is required")
+        username = (data.get("provider_username") or "").strip()
+        return raw_provider, raw_user_id, username
+
+    # Legacy Discord shape.
+    raw_user_id = (data.get("discord_user_id") or "").strip()
+    if not raw_user_id:
+        raise ValueError("discord_user_id is required")
+    username = (data.get("discord_username") or "").strip()
+    return "discord", raw_user_id, username
+
+
 @internal.route("/api/internal/create_mcp_key", methods=["POST"])
 def create_mcp_key():
-    """Create or retrieve an MCP API key for a Discord user.
+    """Create or retrieve an MCP API key for a bot user.
 
-    Self-authenticates via ``X-Provisioning-Key`` against
-    ``MCP_PROVISIONING_KEY`` — a key dedicated to this endpoint so that
-    a compromise of the Discord bot does not leak ``INTERNAL_KEY``.
-    Atomic upsert on (mcp_provider, mcp_provider_user_id, mcp_purpose)
-    prevents races on concurrent calls for the same Discord user.
+    Provider-aware (see ``_resolve_provider_identity``): accepts the legacy
+    Discord shape (``discord_user_id``/``discord_username``) AND the
+    generalized ``{provider, provider_user_id}`` shape used by the Slack
+    bot. Self-authenticates via ``X-Provisioning-Key`` against
+    ``MCP_PROVISIONING_KEY`` — a key dedicated to this endpoint so that a
+    compromise of a bot does not leak ``INTERNAL_KEY``. Atomic upsert on
+    (mcp_provider, mcp_provider_user_id, mcp_purpose) prevents races on
+    concurrent calls for the same user.
     """
     provisioning_key = request.headers.get("X-Provisioning-Key")
     if (
@@ -173,23 +226,27 @@ def create_mcp_key():
         return jsonify({"error": "Unauthorized"}), 401
 
     data = request.get_json(silent=True) or {}
-    discord_user_id = (data.get("discord_user_id") or "").strip()
-    discord_username = (data.get("discord_username") or "").strip()
-    if not discord_user_id:
-        return jsonify({"error": "discord_user_id is required"}), 400
-    if not discord_username:
+    try:
+        provider, raw_user_id, username = _resolve_provider_identity(data)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    # The legacy Discord shape additionally required a username in the
+    # payload; preserve that contract for Discord so the existing bot's
+    # request validation behaviour is unchanged. Other providers don't
+    # require it (it's never stored — see note below).
+    if provider == "discord" and not username:
         return jsonify({"error": "discord_username is required"}), 400
 
-    # ``discord_username`` is intentionally NOT used for storage anymore
-    # (it would re-introduce the very PII we're pseudonymizing away).
-    # We still require it in the payload so the bot's request shape
-    # doesn't change and so the `/mcp-key` flow can be extended later
-    # to send the user a personalized confirmation message in Discord.
+    # ``username`` is intentionally NOT used for storage (it would
+    # re-introduce the very PII we're pseudonymizing away). We still
+    # accept it in the payload so the bot's request shape doesn't change
+    # and so the `/mcp-key` flow can be extended later to send the user a
+    # personalized confirmation message.
     pseudo_provider_user_id = pseudonymize_provider_user_id(
-        discord_user_id, pepper=settings.USER_ID_PEPPER
+        raw_user_id, pepper=settings.USER_ID_PEPPER
     )
     pseudo_canonical_user_id = canonical_user_id(
-        "discord", discord_user_id, pepper=settings.USER_ID_PEPPER
+        provider, raw_user_id, pepper=settings.USER_ID_PEPPER
     )
 
     if not settings.AZTEC_SOURCE_IDS:
@@ -244,7 +301,7 @@ def create_mcp_key():
             extras = valid_source_ids[1:]
 
             agent = AgentsRepository(conn).upsert_mcp_key(
-                mcp_provider="discord",
+                mcp_provider=provider,
                 mcp_provider_user_id=pseudo_provider_user_id,
                 mcp_purpose="aztec_mcp",
                 user_id=pseudo_canonical_user_id,
@@ -277,17 +334,27 @@ def create_mcp_key():
 
 @internal.route("/api/internal/forget_discord_user", methods=["POST"])
 def forget_discord_user():
-    """Erase all data tied to a Discord user (GDPR Article 17).
+    """Erase all data tied to a bot user (GDPR Article 17).
 
-    Self-authenticates via ``X-Provisioning-Key`` against
-    ``MCP_PROVISIONING_KEY`` (same trust model as create_mcp_key — the
-    Discord bot already holds this key). Deletes:
+    Despite the legacy route name, this endpoint is provider-aware: it
+    accepts the original Discord shape (``discord_user_id``) AND the
+    generalized shape (``provider`` + ``provider_user_id``) used by the
+    Slack bot. Self-authenticates via ``X-Provisioning-Key`` against
+    ``MCP_PROVISIONING_KEY`` (same trust model as create_mcp_key — both
+    bots already hold this key). Deletes:
 
-    - The MCP-provisioned agent for this Discord user.
-    - Every conversation owned by ``user_id = "discord:<id>"`` and its
-      messages (cascade).
-    - Operational rows in ``user_logs``, ``stack_logs``, and
-      ``token_usage`` for the same ``user_id``.
+    - The MCP-provisioned agent for this user (matched on the
+      ``(mcp_provider, mcp_provider_user_id)`` pair).
+    - Every conversation / operational row owned by the user's
+      pseudonymous ``user_id`` and its messages (cascade).
+
+    Scope note: bot *chat* turns are written under the shared chat
+    agent's owner (``user_id='local'``), NOT the per-user pseudonym (see
+    ``stream_processor`` identity handling), so they are not per-user
+    erasable here. This matches the existing Discord behaviour — what
+    this endpoint removes is the user's MCP key plus any MCP-originated
+    data keyed to their pseudonym, plus the bot's local cache (dropped
+    bot-side by the slash-command handler).
     """
     provisioning_key = request.headers.get("X-Provisioning-Key")
     if (
@@ -298,21 +365,22 @@ def forget_discord_user():
         return jsonify({"error": "Unauthorized"}), 401
 
     data = request.get_json(silent=True) or {}
-    discord_user_id = (data.get("discord_user_id") or "").strip()
-    if not discord_user_id:
-        return jsonify({"error": "discord_user_id is required"}), 400
+    try:
+        provider, raw_user_id, _username = _resolve_provider_identity(data)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
 
-    # Compute the pseudonyms the row was written under. The endpoint's
-    # request shape is unchanged (callers still pass the raw Discord
-    # ID); only the storage representation changed. If the helper
-    # drifts between create and forget, /forget-me silently fails to
-    # find rows — locked down by the parity contract test in
+    # Compute the pseudonyms the row was written under. Callers still
+    # pass the raw provider ID (for Slack, the ``team_id:user_id``
+    # compound); only the storage representation is pseudonymized. If the
+    # helper drifts between create and forget, /forget-me silently fails
+    # to find rows — locked down by the parity contract test in
     # tests/api/test_internal_routes.py.
     pseudo_provider_user_id = pseudonymize_provider_user_id(
-        discord_user_id, pepper=settings.USER_ID_PEPPER
+        raw_user_id, pepper=settings.USER_ID_PEPPER
     )
     pseudo_canonical_user_id = canonical_user_id(
-        "discord", discord_user_id, pepper=settings.USER_ID_PEPPER
+        provider, raw_user_id, pepper=settings.USER_ID_PEPPER
     )
     # Order matters: every child table has FK user_id → users(user_id)
     # ON DELETE RESTRICT (see ``application/storage/db/models.py`` header
@@ -326,8 +394,8 @@ def forget_discord_user():
     # user-keyed AND cascade from ``user_tools`` — listed under their
     # user_id so the delete works whether or not the user has tools.
     delete_specs = (
-        ("agents", "mcp_provider = 'discord' AND mcp_provider_user_id = :did",
-            {"did": pseudo_provider_user_id}),
+        ("agents", "mcp_provider = :prov AND mcp_provider_user_id = :did",
+            {"prov": provider, "did": pseudo_provider_user_id}),
         ("conversations", "user_id = :uid", {"uid": pseudo_canonical_user_id}),
         ("attachments", "user_id = :uid", {"uid": pseudo_canonical_user_id}),
         ("memories", "user_id = :uid", {"uid": pseudo_canonical_user_id}),

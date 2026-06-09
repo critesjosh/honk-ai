@@ -152,6 +152,40 @@ services:
     depends_on:
       - backend
 
+  # Slack bot (Honk AI for Slack). Same internal-only model as the
+  # Discord bot: Socket Mode (outbound websocket, no ingress), reaches
+  # backend:7091 directly. Calls /stream for chat (with its own
+  # surface='slack' agent key) and /api/internal/create_mcp_key for the
+  # /aztec-mcp-key slash command (self-auth via MCP_PROVISIONING_KEY).
+  # NOTE: API_KEY here is the Slack chat agent's key (provision it with
+  # scripts/db/create_slack_chat_agent.py), NOT the same agent as the
+  # Discord bot — keep per-surface analytics clean.
+  slack-bot:
+    build:
+      context: ../extensions/slack
+    image: aztec/docsgpt-slack-bot:${IMAGE_TAG:-0.17.0-aztec.1}
+    restart: unless-stopped
+    environment:
+      - SLACK_BOT_TOKEN=${SLACK_BOT_TOKEN:?SLACK_BOT_TOKEN must be set in .env}
+      - SLACK_APP_TOKEN=${SLACK_APP_TOKEN:?SLACK_APP_TOKEN must be set in .env}
+      - API_BASE=http://backend:7091
+      - PUBLIC_HOSTNAME=${PUBLIC_HOSTNAME}
+      - API_KEY=${SLACK_API_KEY:?SLACK_API_KEY (the surface=slack chat agent key) must be set in .env}
+      - MCP_PROVISIONING_KEY=${MCP_PROVISIONING_KEY}
+      - SLACK_TEAM_IDS=${SLACK_TEAM_IDS:-}
+      # Per-workspace daily USD spend cap (mirrors the Discord guild cap).
+      # bot.py reads these via os.getenv — compose must pass them through
+      # explicitly or the cap silently no-ops. All have code defaults.
+      - SLACK_TEAM_DAILY_USD_CAPS=${SLACK_TEAM_DAILY_USD_CAPS:-}
+      - SLACK_USD_PER_PROMPT_MTOK=${SLACK_USD_PER_PROMPT_MTOK:-}
+      - SLACK_USD_PER_COMPLETION_MTOK=${SLACK_USD_PER_COMPLETION_MTOK:-}
+      - SLACK_PRE_CALL_RESERVE_USD=${SLACK_PRE_CALL_RESERVE_USD:-}
+      # Thread-context knobs.
+      - SLACK_THREAD_CONTEXT_LIMIT=${SLACK_THREAD_CONTEXT_LIMIT:-}
+      - SLACK_THREAD_CONTEXT_MAX_CHARS=${SLACK_THREAD_CONTEXT_MAX_CHARS:-}
+    depends_on:
+      - backend
+
   # MCP server (honk-ai-host MCP). Read-only SQL / RAG / logs surface
   # for remote claudebox sessions. Current production runs in network-
   # trust mode: no CF Access app, no Caddy /mcp route, MCP_AUTH_REQUIRED
