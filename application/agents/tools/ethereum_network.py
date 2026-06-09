@@ -284,7 +284,11 @@ class EthereumNetworkTool(Tool):
             "description": (
                 "Which Ethereum network to query. 'mainnet' (chain id 1) "
                 "or 'sepolia' (chain id 11155111 — the L1 the Aztec "
-                "testnet anchors to). Defaults to mainnet."
+                "testnet anchors to). Defaults to mainnet. If the user is "
+                "asking in the context of the Aztec testnet — established "
+                "now OR earlier in the conversation — use 'sepolia'. An "
+                "explicit 'mainnet' / 'live' reference in the current "
+                "request overrides earlier testnet context."
             ),
         }
         base_props = {"network": network_param}

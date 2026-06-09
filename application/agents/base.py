@@ -502,8 +502,8 @@ class BaseAgent(ABC):
             gen_kwargs["_usage_attachments"] = self.attachments
 
         if (
-            hasattr(self.llm, "supports_tools")
-            and self.llm.supports_tools()
+            hasattr(self.llm, "_supports_tools")
+            and self.llm._supports_tools
             and self.tools
         ):
             gen_kwargs["tools"] = self.tools

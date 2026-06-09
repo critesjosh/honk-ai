@@ -546,9 +546,17 @@ class AztecNetworkTool(Tool):
                 "Which Aztec network to query. 'mainnet' (the live "
                 "network, anchored to Ethereum mainnet / l1ChainId 1) or "
                 "'testnet' (pre-production, anchored to Sepolia / "
-                "l1ChainId 11155111). Defaults to mainnet — only pass "
-                "'testnet' when the user explicitly asks about the Aztec "
-                "testnet."
+                "l1ChainId 11155111). Defaults to mainnet. Pass 'testnet' "
+                "whenever the user is asking about the Aztec testnet — "
+                "INCLUDING when the testnet context was established earlier "
+                "in the conversation rather than repeated in the current "
+                "message. Example: the user asks for the testnet block "
+                "number, then pastes a transaction hash to look up — that "
+                "lookup is still testnet, so pass network='testnet'. When "
+                "the conversation has been about testnet and the network "
+                "isn't restated, prefer 'testnet' over the mainnet default. "
+                "An explicit 'mainnet' / 'live' / 'production' reference in "
+                "the current request overrides earlier testnet context."
             ),
         }
 
