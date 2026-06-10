@@ -60,12 +60,18 @@ from sqlalchemy import text
 # root (scripts/db/<file> → root), mirroring scripts/db/init_postgres.py.
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
+import application  # noqa: E402
 from application.core.settings import settings  # noqa: E402
 from application.storage.db.session import db_session  # noqa: E402
 
 
 AGENT_USER_ID = "local"
 AGENT_NAME = "Honk AI — Slack"
+SLACK_PROMPT_NAME = "Honk AI (Slack bot) — Aztec 4.3.0 grounded"
+# Audit copy used to SEED the prompt row when it's missing. Postgres stays
+# the source of truth (CLAUDE.md): an existing row is never overwritten
+# from this file — roll prompt edits with the docker cp + UPDATE flow.
+SLACK_PROMPT_AUDIT_COPY = Path(application.__file__).resolve().parent / "prompts" / "aztec_4_3_0_grounded_slack.txt"
 
 
 def _parse_source_ids(raw: str | None) -> list[str]:
@@ -88,15 +94,49 @@ def _parse_source_ids(raw: str | None) -> list[str]:
     return ids
 
 
+def _resolve_prompt_id(conn) -> str | None:
+    """Resolve the prompt FK for the Slack chat agent.
+
+    ``SLACK_PROMPT_ID`` (explicit operator override) wins. Otherwise use
+    the Slack-grounded prompt row, seeding it from the audit copy on
+    first run. The early MVP reused the Discord prompt, which made the
+    bot introduce itself as a Discord bot — never default to it again.
+    """
+    explicit = os.environ.get("SLACK_PROMPT_ID")
+    if explicit:
+        return explicit
+    row = conn.execute(
+        text(
+            "SELECT id FROM prompts WHERE user_id = :uid AND name = :name "
+            "ORDER BY created_at LIMIT 1"
+        ),
+        {"uid": AGENT_USER_ID, "name": SLACK_PROMPT_NAME},
+    ).fetchone()
+    if row:
+        return str(row[0])
+    if not SLACK_PROMPT_AUDIT_COPY.is_file():
+        print(
+            f"WARNING: prompt row {SLACK_PROMPT_NAME!r} not found and the audit copy "
+            f"{SLACK_PROMPT_AUDIT_COPY} is missing — leaving prompt_id unchanged.",
+            file=sys.stderr,
+        )
+        return None
+    new_id = conn.execute(
+        text("INSERT INTO prompts (name, content, user_id) VALUES (:name, :content, :uid) RETURNING id"),
+        {
+            "name": SLACK_PROMPT_NAME,
+            "content": SLACK_PROMPT_AUDIT_COPY.read_text(encoding="utf-8"),
+            "uid": AGENT_USER_ID,
+        },
+    ).scalar_one()
+    print(f"Seeded Slack prompt row {new_id} from {SLACK_PROMPT_AUDIT_COPY.name}")
+    return str(new_id)
+
+
 def main() -> int:
     source_ids = _parse_source_ids(settings.AZTEC_SOURCE_IDS)
     primary, *extras = source_ids
 
-    # Reuse the Discord-grounded prompt for the MVP unless an operator
-    # points SLACK_PROMPT_ID at a Slack-specific (mrkdwn) variant. Note
-    # the prompt body lives in Postgres (CLAUDE.md) — this only sets the
-    # FK.
-    prompt_id = os.environ.get("SLACK_PROMPT_ID") or None
     default_model_id = os.environ.get("SLACK_DEFAULT_MODEL_ID") or None
     fresh_key = os.environ.get("SLACK_AGENT_KEY") or None
 
@@ -109,6 +149,7 @@ def main() -> int:
     limited_token = bool(token_limit)
 
     with db_session() as conn:
+        prompt_id = _resolve_prompt_id(conn)
         existing = conn.execute(
             text(
                 "SELECT id, key FROM agents WHERE user_id = :uid AND name = :name "

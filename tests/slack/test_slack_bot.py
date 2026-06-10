@@ -552,6 +552,36 @@ class _RecordingClient:
         return {"ok": True}
 
 
+class TestFeedbackHandler:
+    def test_feedback_submits_silently(self, bot_module, monkeypatch):
+        """A 👍 click acks + submits but posts NO visible confirmation —
+        the old ephemeral "Thanks for the feedback" was channel noise."""
+        calls = []
+
+        async def fake_submit(conversation_id, question_index, feedback):
+            calls.append((conversation_id, question_index, feedback))
+            return True
+
+        monkeypatch.setattr(bot_module, "submit_feedback", fake_submit)
+        client = _RecordingClient()
+        acked = []
+
+        async def ack():
+            acked.append(True)
+
+        body = {
+            "actions": [{"action_id": bot_module._LIKE_ACTION, "value": "conv-1:2"}],
+            "user": {"id": "U1"},
+            "channel": {"id": "C1"},
+        }
+        asyncio.run(bot_module._handle_feedback(ack, body, client, "conv-1:2"))
+        assert acked
+        assert calls == [("conv-1", 2, "LIKE")]
+        assert client.posts == []
+        assert client.updates == []
+        assert client.ephemerals == []
+
+
 class TestAnswerQuestionErrorPaths:
     def _run(self, bot_module, monkeypatch, fake_generate):
         monkeypatch.setattr(bot_module, "generate_answer", fake_generate)

@@ -32,13 +32,13 @@ The upstream React admin SPA at `frontend/` was removed (`chore/remove-unused-co
 
 These are gotchas that change what code Claude should produce. None are visible from the code alone.
 
-- **Postgres is the source of truth for prompts.** `application/prompts/aztec_4_3_0_grounded{,_discord}.txt` are audit copies, not the live prompt. To roll an edit:
+- **Postgres is the source of truth for prompts.** `application/prompts/aztec_4_3_0_grounded{,_discord,_slack}.txt` are audit copies, not the live prompt. To roll an edit:
   ```bash
   docker cp application/prompts/<file>.txt docsgpt-aztec-postgres-1:/tmp/<file>.txt
   docker exec docsgpt-aztec-postgres-1 psql -U docsgpt -d docsgpt \
     -c "UPDATE prompts SET content = pg_read_file('/tmp/<file>.txt') WHERE id = '<prompt_id>';"
   ```
-  Widget + `/ask`: prompt `0780959b-3c18-4ad9-8284-691665233a6f`. Discord: `4bfa9ddf-5d8e-4d5d-a94e-c9e52e1a9ba2`. Run `scripts/eval/eval_retrieval.py --mode stream` against the affected agent before considering the change shipped.
+  Widget + `/ask`: prompt `0780959b-3c18-4ad9-8284-691665233a6f`. Discord: `4bfa9ddf-5d8e-4d5d-a94e-c9e52e1a9ba2`. Slack: `aed05256-9667-4ce2-bcc2-4ba5204c4af6` (NEVER point the Slack agent at the Discord prompt — it makes the bot introduce itself as a Discord bot). Run `scripts/eval/eval_retrieval.py --mode stream` against the affected agent before considering the change shipped.
 - **`USER_ID_PEPPER` is required at boot AND unrotatable.** Rotation orphans every pseudonym. Settings validator + migration `0005_pseudonymize_user_ids` both fail-closed if missing / non-hex / `<16`-byte. See `application/pseudonyms.py`.
 - **Use `agents.surface`, not `agents.name`, for attribution.** Three of four prod agents have display names that don't match their deployment surface. Canonical mapping (`discord` / `widget` / `web_ask` / `mcp` / `eval`) is enforced by the CHECK constraint in migration `0009_agents_surface`. Per-surface analytics example:
   ```sql

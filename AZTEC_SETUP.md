@@ -261,7 +261,7 @@ The Slack bot (`extensions/slack/`, service `slack-bot`) is the Slack sibling of
      -e SLACK_AGENT_KEY="$(uuidgen)" \
      backend python scripts/db/create_slack_chat_agent.py
    ```
-   Put the printed key in `.env` as `SLACK_API_KEY` (NOT the Discord agent's key — keep per-surface analytics clean). Optionally reuse the Discord-grounded prompt with `-e SLACK_PROMPT_ID=4bfa9ddf-5d8e-4d5d-a94e-c9e52e1a9ba2`.
+   Put the printed key in `.env` as `SLACK_API_KEY` (NOT the Discord agent's key — keep per-surface analytics clean). The script wires the agent to the Slack-grounded prompt (seeding the row from `application/prompts/aztec_4_3_0_grounded_slack.txt` if missing); pass `-e SLACK_PROMPT_ID=<uuid>` only to override with a different prompt row.
 
 4. **Build + start** the service:
    ```bash

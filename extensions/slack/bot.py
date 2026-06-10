@@ -1159,14 +1159,12 @@ async def _handle_feedback(ack, body, client, value: str):
         return
     action_id = body["actions"][0]["action_id"]
     feedback_value = "LIKE" if action_id == _LIKE_ACTION else "DISLIKE"
+    # Deliberately no user-visible confirmation — a "Thanks for the
+    # feedback" message is channel noise; ack() above is the only
+    # response Slack needs.
     ok = await submit_feedback(conversation_id, question_index, feedback_value)
-    user = body.get("user", {}).get("id")
-    channel = body.get("channel", {}).get("id")
-    if ok and channel and user:
-        try:
-            await client.chat_postEphemeral(channel=channel, user=user, text="Thanks for the feedback! 🪿")
-        except Exception as exc:
-            logger.debug("Feedback-thanks ephemeral to %s failed: %s", channel, _slack_error_detail(exc))
+    if not ok:
+        logger.warning("Feedback submit failed for conversation %s idx %s", conversation_id, question_index)
 
 
 async def on_like(ack, body, client):

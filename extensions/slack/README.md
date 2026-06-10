@@ -51,7 +51,7 @@ Thread context is fetched best-effort via `conversations.replies` (bounded by `S
 
 ## Feedback — Block Kit buttons
 
-Each answer is followed by a small "Was this helpful?" message with 👍/👎 **buttons** (not reactions). The `conversation_id:question_index` is encoded in each button's `value`, so the mapping **survives a bot restart** (no in-memory `ts→conversation` LRU to lose). The action handler parses the value, POSTs `/api/feedback` (`LIKE`/`DISLIKE`), and confirms with an ephemeral "Thanks". Position counter (`answer_count`) is advanced once per successful `/stream`, mirroring the Discord eager-persist discipline.
+Each answer is followed by a small "Was this helpful?" message with 👍/👎 **buttons** (not reactions). The `conversation_id:question_index` is encoded in each button's `value`, so the mapping **survives a bot restart** (no in-memory `ts→conversation` LRU to lose). The action handler parses the value and POSTs `/api/feedback` (`LIKE`/`DISLIKE`) silently — no visible confirmation (a "Thanks for the feedback" reply is channel noise; the interaction `ack()` is the only response). Position counter (`answer_count`) is advanced once per successful `/stream`, mirroring the Discord eager-persist discipline.
 
 ## Rate limiting — no bespoke breaker
 
@@ -67,7 +67,7 @@ Bot-side soft brake on OpenRouter spend, scoped per Slack **workspace** (`team_i
 
 ## The Slack chat agent
 
-The bot's `API_KEY` is a dedicated agent with `surface='slack'` (NOT shared with Discord, so per-surface analytics stay clean). Provision it once with `scripts/db/create_slack_chat_agent.py` (bind-mount `scripts/`, see CLAUDE.md) and put the printed key in `.env` as `SLACK_API_KEY`. Adding `slack` to the `agents.surface` enum is migration `0010_agents_surface_slack`. Per-user MCP keys remain `surface='mcp'` with `mcp_provider='slack'`.
+The bot's `API_KEY` is a dedicated agent with `surface='slack'` (NOT shared with Discord, so per-surface analytics stay clean). Provision it once with `scripts/db/create_slack_chat_agent.py` (bind-mount `scripts/`, see CLAUDE.md) and put the printed key in `.env` as `SLACK_API_KEY`. The provisioner wires the agent to the **Slack-grounded prompt** ("Honk AI (Slack bot) — Aztec 4.3.0 grounded"), seeding the row from `application/prompts/aztec_4_3_0_grounded_slack.txt` on first run; `SLACK_PROMPT_ID` overrides. Don't point it at the Discord prompt — that made the bot introduce itself as a Discord bot. Adding `slack` to the `agents.surface` enum is migration `0010_agents_surface_slack`. Per-user MCP keys remain `surface='mcp'` with `mcp_provider='slack'`.
 
 ## Env vars summary
 
