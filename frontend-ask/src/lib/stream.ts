@@ -3,7 +3,11 @@
 // Backend contract (see application/api/answer/routes/base.py):
 //   * POST /stream  →  text/event-stream of `data: <json>\n\n` frames.
 //   * Frame types: answer | source | id | end | error | thought |
-//     tool_calls | tool_calls_pending | structured_answer | retry.
+//     tool_calls | tool_calls_pending | structured_answer.
+//   * Successful streams ALWAYS terminate with an `end` frame; a reader
+//     close without `end`/`error` means the answer was truncated
+//     mid-stream (proxy disconnect, idle timeout) and must not be
+//     presented as complete.
 //   * Inter-frame keepalive lines (": ping\n\n") are emitted on silence.
 //
 // We only consume answer/source/id/end/error here; everything else is
@@ -42,7 +46,6 @@ if (!AGENT_KEY) {
   // Hard-fail at module init in dev so a misconfigured build is loud
   // instead of producing 401s at runtime. In prod this would fire on
   // first script eval, before render.
-  // eslint-disable-next-line no-console
   console.error(
     "VITE_ASK_AZTEC_AGENT_KEY is unset — /stream will return 401. " +
       "Did you build with --build-arg VITE_ASK_AZTEC_AGENT_KEY=...?",
@@ -82,6 +85,26 @@ export async function streamAnswer(
   const decoder = new TextDecoder("utf-8");
   let buf = "";
 
+  // The backend always terminates a stream with an `end` (success) or
+  // `error` frame. Guard the terminal callbacks so they fire exactly
+  // once, and remember whether one arrived — a reader close without
+  // either means the connection dropped mid-answer, which the caller
+  // must surface as an error, not a finished response.
+  let settled = false;
+  const guarded: StreamEvents = {
+    ...events,
+    onEnd: () => {
+      if (settled) return;
+      settled = true;
+      events.onEnd?.();
+    },
+    onError: (message) => {
+      if (settled) return;
+      settled = true;
+      events.onError?.(message);
+    },
+  };
+
   // Frames are separated by a blank line. SSE comments (lines starting
   // with ":") are keepalives — drop them.
   while (true) {
@@ -101,7 +124,7 @@ export async function streamAnswer(
       const payload = dataLines.join("\n");
       try {
         const event = JSON.parse(payload);
-        dispatch(event, events);
+        dispatch(event, guarded);
       } catch {
         // Drop malformed frames — keepalives also reach here if the
         // backend ever changes form. Not worth surfacing.
@@ -109,7 +132,9 @@ export async function streamAnswer(
     }
   }
 
-  events.onEnd?.();
+  if (!settled) {
+    guarded.onError?.("The answer was interrupted — the connection dropped.");
+  }
 }
 
 async function readErrorMessage(res: Response): Promise<string> {
@@ -160,8 +185,8 @@ function dispatch(event: { type?: string } & Record<string, unknown>, events: St
       events.onError?.(typeof event.error === "string" ? event.error : "Stream error");
       break;
     default:
-      // thought / tool_calls / structured_answer / retry — ignored by
-      // the public surface (the public agent has no tools and the
+      // thought / tool_calls / structured_answer — ignored by the
+      // public surface (the public agent has no tools and the
       // canonical Aztec prompt is unstructured).
       break;
   }

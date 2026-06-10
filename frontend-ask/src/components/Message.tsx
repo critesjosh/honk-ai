@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { memo, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Highlight, themes } from "prism-react-renderer";
@@ -50,7 +50,19 @@ export type ChatMessage =
       error?: string;
     };
 
-export function MessageView({ msg }: { msg: ChatMessage }) {
+// Memoized so a streaming token only re-renders the message it lands
+// in: ChatSurface's `updateBot`/map pattern preserves object identity
+// for untouched messages, so every settled answer skips its (full
+// ReactMarkdown parse) re-render instead of re-running it per token.
+// `onRetry` must be referentially stable for the memo to hold.
+export const MessageView = memo(function MessageView({
+  msg,
+  onRetry,
+}: {
+  msg: ChatMessage;
+  // Called with the failed bot message's id; stable across renders.
+  onRetry?: (botId: number) => void;
+}) {
   if (msg.role === "user") {
     return (
       <div className="msg msg--user">
@@ -64,7 +76,7 @@ export function MessageView({ msg }: { msg: ChatMessage }) {
 
   const canCopy = !msg.streaming && !msg.error && msg.text.length > 0;
   return (
-    <div className="msg msg--bot">
+    <div className="msg msg--bot" aria-busy={msg.streaming || undefined}>
       <div className="msg__role">
         <span className="dot"></span>Ask Aztec
         {canCopy && (
@@ -79,9 +91,23 @@ export function MessageView({ msg }: { msg: ChatMessage }) {
             <span></span>
             <span></span>
             <span></span>
+            <span className="sr-only">Generating answer…</span>
           </span>
         ) : msg.error ? (
-          <p style={{ color: "var(--vermillion-shade-1)" }}>{msg.error}</p>
+          <>
+            <p role="alert" style={{ color: "var(--vermillion-shade-1)" }}>
+              {msg.error}
+            </p>
+            {onRetry && (
+              <button
+                type="button"
+                className="msg__retry"
+                onClick={() => onRetry(msg.id)}
+              >
+                Retry <span className="mono">↻</span>
+              </button>
+            )}
+          </>
         ) : (
           <>
             <BotProse text={msg.text} />
@@ -94,7 +120,7 @@ export function MessageView({ msg }: { msg: ChatMessage }) {
       </div>
     </div>
   );
-}
+});
 
 // Copies the raw markdown text of the bot reply to the clipboard.
 // Markdown-formatted text is what the user asked for — copying the
@@ -147,7 +173,7 @@ function BotProse({ text }: { text: string }) {
           // Fenced code blocks → prism-react-renderer (Noir → Rust).
           // Inline code (no `language-*` className) falls through to
           // the default <code> rendering, which is styled via .md code
-          // in app.css. react-markdown v9 wraps fenced blocks in
+          // in app.css. react-markdown v10 wraps fenced blocks in
           // <pre><code class="language-foo"> — by handling `code` here
           // and returning the <pre> ourselves, we avoid double <pre>
           // wrappers via the default `pre` component.

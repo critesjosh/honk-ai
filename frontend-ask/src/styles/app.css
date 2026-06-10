@@ -32,34 +32,6 @@ body {
 
 .ask-page > * { position: relative; z-index: 1; }
 
-/* ---------- Top ticker ---------- */
-.ask-ticker {
-  background: var(--ink);
-  color: var(--chartreuse);
-  font-family: var(--font-mono);
-  font-size: 11px;
-  text-transform: uppercase;
-  letter-spacing: 0.18em;
-  padding: 7px 0;
-  display: flex;
-  gap: 36px;
-  overflow: hidden;
-  white-space: nowrap;
-  border-bottom: 1px solid var(--ink);
-}
-.ask-ticker__inner {
-  display: flex;
-  gap: 36px;
-  flex: 0 0 auto;
-  animation: ticker 60s linear infinite;
-  padding-left: 36px;
-}
-.ask-ticker span { flex: 0 0 auto; }
-@keyframes ticker {
-  from { transform: translateX(0); }
-  to   { transform: translateX(-50%); }
-}
-
 /* ---------- Header ---------- */
 .ask-header {
   display: flex;
@@ -142,19 +114,6 @@ body {
   gap: 32px;
   align-items: start;
 }
-.ask-main--with-context {
-  grid-template-columns: minmax(0, 1fr) 320px;
-  max-width: 1400px;
-  margin: 0 auto;
-  width: 100%;
-}
-
-@media (max-width: 1100px) {
-  .ask-main--with-context {
-    grid-template-columns: 1fr;
-  }
-}
-
 .ask-hero {
   max-width: 980px;
   margin: 0 auto;
@@ -209,12 +168,6 @@ body {
 }
 .ask-lead b { font-weight: 500; }
 
-/* Compact mode tightens the hero */
-.density-compact .ask-display { font-size: clamp(44px, 6.5vw, 88px); margin-bottom: 14px; }
-.density-compact .ask-lead { font-size: clamp(15px, 1.3vw, 18px); margin-bottom: 24px; }
-.density-compact .ask-main { padding-top: 32px; }
-.density-compact .ask-eyebrow { margin-bottom: 12px; }
-
 /* ---------- Chat surface (poster card) ---------- */
 .ask-chat {
   background: var(--parchment-tint-1);
@@ -226,7 +179,6 @@ body {
   transition: box-shadow var(--dur-2) var(--ease-standard);
 }
 .brand-quiet .ask-chat { box-shadow: 4px 4px 0 var(--ink); }
-.brand-loud  .ask-chat { box-shadow: 8px 8px 0 var(--chartreuse), 8px 8px 0 1.5px var(--ink); }
 
 .ask-chat__head {
   display: flex;
@@ -491,31 +443,6 @@ body {
   font-size: 17px;
   line-height: 1.55;
 }
-
-/* Inline footnote marker [n] */
-.cite {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-width: 22px;
-  height: 18px;
-  padding: 0 5px;
-  margin: 0 1px 0 2px;
-  font-family: var(--font-mono);
-  font-size: 10px;
-  font-weight: 500;
-  letter-spacing: 0;
-  background: var(--chartreuse);
-  color: var(--ink);
-  border: 1px solid var(--ink);
-  border-radius: 3px;
-  cursor: pointer;
-  vertical-align: 1px;
-  transition: transform var(--dur-1) var(--ease-standard), background-color var(--dur-1) var(--ease-standard);
-  position: relative;
-}
-.cite:hover { transform: translateY(-1px); background: var(--chartreuse-shade-2); }
-.cite--active { background: var(--ink); color: var(--chartreuse); }
 
 /* Citation popover */
 .cite-pop {
@@ -794,22 +721,9 @@ body {
   background: var(--chartreuse);
 }
 
-/* ---------- Context column (right rail) ---------- */
-.ask-context {
-  display: flex;
-  flex-direction: column;
-  gap: 18px;
-  position: sticky;
-  top: 100px;
-}
-.ctx-card {
-  border: 1.25px solid var(--ink);
-  background: var(--parchment-tint-1);
-  padding: 18px;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
+/* Eyebrow label — survives the context-column removal because the
+   age-gate card (AgeGate.tsx) reuses it for its "Before you continue"
+   kicker. */
 .ctx-card__eyebrow {
   font-family: var(--font-mono);
   font-size: 10px;
@@ -817,62 +731,6 @@ body {
   letter-spacing: 0.16em;
   color: var(--fg2);
 }
-.ctx-card__title {
-  font-family: var(--font-display);
-  font-weight: 300;
-  font-size: 22px;
-  line-height: 1.05;
-  letter-spacing: -0.03em;
-  margin: 0;
-  color: var(--fg1);
-}
-.ctx-card__title i {
-  font-family: var(--font-serif-alt);
-  font-style: italic;
-}
-.ctx-card__body {
-  font-family: var(--font-sans);
-  font-weight: 500;
-  font-size: 13px;
-  line-height: 1.5;
-  color: var(--fg2);
-  margin: 0;
-}
-.ctx-card__list {
-  list-style: none;
-  padding: 0;
-  margin: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-.ctx-card__list li {
-  font-family: var(--font-sans);
-  font-weight: 500;
-  font-size: 13px;
-  line-height: 1.4;
-  color: var(--fg1);
-  display: flex;
-  gap: 10px;
-}
-.ctx-card__list .num {
-  font-family: var(--font-mono);
-  font-size: 10px;
-  color: var(--fg2);
-  flex: 0 0 22px;
-  padding-top: 2px;
-}
-.ctx-card__list a { color: inherit; text-decoration: none; border-bottom: 1px solid var(--ink-tint-1); }
-.ctx-card__list a:hover { border-color: var(--ink); }
-
-.ctx-card--accent {
-  background: var(--ink);
-  color: var(--parchment);
-  border-color: var(--ink);
-}
-.ctx-card--accent .ctx-card__eyebrow { color: var(--chartreuse); }
-.ctx-card--accent .ctx-card__title { color: var(--parchment); }
-.ctx-card--accent .ctx-card__body { color: var(--ink-tint-1); }
 
 /* ---------- Page footer ---------- */
 .ask-pagefoot {
@@ -900,31 +758,12 @@ body {
   white-space: nowrap; border: 0;
 }
 
-/* Diamond accent decoration */
-.diamond-row {
-  display: flex;
-  gap: 6px;
-  margin-bottom: 28px;
-}
-.diamond-row .d {
-  width: 10px;
-  height: 10px;
-  background: var(--ink);
-  transform: rotate(45deg);
-}
-.diamond-row .d.accent { background: var(--chartreuse); border: 1px solid var(--ink); }
-
 /* When chat is active, hide hero copy gracefully on small viewports */
 .ask-chat--active + .ask-foot { opacity: 1; }
 
 /* Brand intensity variants */
 .brand-quiet .ask-display { font-size: clamp(40px, 5.5vw, 72px); }
-.brand-quiet .ask-ticker { display: none; }
-.brand-quiet .diamond-row { display: none; }
 .brand-quiet .ask-page::before { display: none; }
-
-.brand-loud .ask-display { font-size: clamp(64px, 11vw, 152px); }
-.brand-loud .ask-page::before { opacity: 0.04; }
 
 /* ============================================================
    Frontend-ask additions (not in the original design bundle)
@@ -942,6 +781,31 @@ body {
   letter-spacing: -0.04em;
   color: var(--fg1);
 }
+
+/* Retry button under a failed bot reply — same mono/uppercase chrome
+   as .msg__copy, sized up slightly since it's the turn's primary
+   recovery action. */
+.msg__retry {
+  margin-top: 10px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  padding: 5px 12px;
+  background: var(--parchment);
+  border: 1px solid var(--ink);
+  color: var(--ink);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  line-height: 1.4;
+}
+.msg__retry:hover {
+  background: var(--ink);
+  color: var(--parchment);
+}
+.msg__retry .mono { font-family: var(--font-mono); }
 
 /* Age-gate modal — first-render compliance gate. */
 .age-gate__backdrop {

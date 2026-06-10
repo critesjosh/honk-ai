@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 
 // First-run age gate. Persists acknowledgement in localStorage under
 // the SHARED key `aztecDocsGPTAgeAck` — same key the docs widget
@@ -20,11 +20,6 @@ function readAck(): boolean {
 
 export function AgeGate({ children }: { children: React.ReactNode }) {
   const [acknowledged, setAcknowledged] = useState(readAck);
-
-  // Re-read on mount in case storage changed in another tab.
-  useEffect(() => {
-    setAcknowledged(readAck());
-  }, []);
 
   function accept() {
     try {

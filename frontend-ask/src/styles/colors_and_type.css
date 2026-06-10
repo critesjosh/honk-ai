@@ -3,11 +3,12 @@
    Colors + Typography foundation
    ============================================================ */
 
-/* -- Google Font imports (open-source stand-ins for the licensed Aztec typefaces).
+/* -- Google Fonts (open-source stand-ins for the licensed Aztec typefaces)
+   are loaded via <link rel="preconnect">/<link rel="stylesheet"> in
+   index.html — a CSS @import here would serialize behind this stylesheet.
    Licensed set: Arizona Serif/Text, Oracle, MD Thermochrome, Francesco.
-   Stand-ins:    Martel, Geist + Geist Mono, Workbench, EB Garamond.
+   Stand-ins:    Martel, Geist + Geist Mono, EB Garamond.
    Swap these to the real foundry files when available.            */
-@import url('https://fonts.googleapis.com/css2?family=Martel:wght@300;400;700&family=EB+Garamond:ital,wght@0,400;0,500;1,400;1,500&family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500;700&family=Workbench&display=swap');
 
 :root {
   /* ---------- Neutral colors ---------- */
@@ -105,7 +106,6 @@
   --font-mono:    'Geist Mono', 'MD Thermochrome', ui-monospace, monospace;          /* H3 — licensed: MD Thermochrome */
   --font-serif-alt:'EB Garamond', 'Francesco', Georgia, serif;                       /* H4 — licensed: Francesco */
   --font-display-body: 'Martel', 'Arizona Text', Georgia, serif;                     /* Long-form body serif */
-  --font-techno:  'Workbench', 'MD Thermochrome', monospace;                         /* Variable display accent */
 
   /* Sizes — fluid-ish; override per context */
   --fs-display: clamp(56px, 9vw, 128px);
@@ -224,7 +224,7 @@ h2, .h2 {
   text-wrap: balance;
 }
 
-/* H3 — MD Thermochrome Regular (stand-in: Geist Mono / Workbench).
+/* H3 — MD Thermochrome Regular (stand-in: Geist Mono).
    Used for eyebrows, section labels, technical headers. */
 h3, .h3 {
   font-family: var(--font-mono);

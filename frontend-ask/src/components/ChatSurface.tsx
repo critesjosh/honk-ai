@@ -26,11 +26,19 @@ const STARTERS = [
 // reader just acted, so showing their action is correct UX).
 const STICKY_THRESHOLD_PX = 80;
 
+type BotMessage = Extract<ChatMessage, { role: "bot" }>;
+type BotPatch = Partial<BotMessage> | ((m: BotMessage) => Partial<BotMessage>);
+
 export function ChatSurface() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
   const [shareState, setShareState] = useState<"idle" | "ok" | "fail">("idle");
+  // Screen-reader announcement, rendered into a visually-hidden
+  // aria-live="polite" region. Set on successful settle only — errors
+  // are announced by the role="alert" paragraph in MessageView, and the
+  // token stream itself is deliberately NOT live (per-token chatter).
+  const [announcement, setAnnouncement] = useState("");
   // True while the surface is showing a conversation loaded from a
   // `#share=...` URL — used to render a small banner so the recipient
   // knows what they're looking at. Cleared on `reset()` or after the
@@ -117,6 +125,9 @@ export function ChatSurface() {
       userInteractedRef.current = true;
       setInput("");
       setBusy(true);
+      // Clear the live region so a later identical announcement (two
+      // settles in a row) is re-announced by screen readers.
+      setAnnouncement("");
       // Once the recipient continues the conversation it's no longer
       // "the shared view"; drop the banner + scrub the hash so an
       // accidental refresh doesn't reload the old transcript over the
@@ -168,23 +179,25 @@ export function ChatSurface() {
         abortRef.current = null;
       };
 
-      const updateBot = (patch: Partial<Extract<ChatMessage, { role: "bot" }>>) =>
+      // Accepts either a plain patch or a function of the current bot
+      // message, so delta appends can derive from the latest state.
+      const updateBot = (patch: BotPatch) =>
         setMessages((ms) =>
-          ms.map((m) => (m.id === botId && m.role === "bot" ? { ...m, ...patch } : m)),
+          ms.map((m) =>
+            m.id === botId && m.role === "bot"
+              ? { ...m, ...(typeof patch === "function" ? patch(m) : patch) }
+              : m,
+          ),
         );
 
       streamAnswer(
         { question: q, history, signal: controller.signal },
         {
-          onAnswerDelta: (delta) =>
-            setMessages((ms) =>
-              ms.map((m) =>
-                m.id === botId && m.role === "bot" ? { ...m, text: m.text + delta } : m,
-              ),
-            ),
+          onAnswerDelta: (delta) => updateBot((m) => ({ text: m.text + delta })),
           onSources: (sources: StreamSource[]) => updateBot({ sources }),
           onEnd: () => {
             updateBot({ streaming: false });
+            if (isCurrent()) setAnnouncement("Answer complete");
             finishIfCurrent();
           },
           onError: (message) => {
@@ -205,6 +218,35 @@ export function ChatSurface() {
     },
     [busy, input, messages],
   );
+
+  // Retry a failed turn: the input was cleared at send, so the question
+  // only survives in the failed user message. The user+bot pair is
+  // adjacent by construction (`send` appends them together); drop both
+  // and re-send the user text. `send` builds history from the closure's
+  // `messages`, which still contains the errored pair — harmless, since
+  // history-building already skips errored turns — and appends the new
+  // pair via a functional update, so it lands on the filtered list.
+  //
+  // `retry` is handed to every memoized MessageView, so its identity
+  // must never change — a per-render closure (it reads `messages`,
+  // `busy`, `send`) would invalidate the memo and re-render every
+  // settled message on each streamed token. Latest-ref pattern: the
+  // effect refreshes the implementation after every render, the stable
+  // wrapper is what MessageView sees.
+  const retryImplRef = useRef<(botId: number) => void>(() => {});
+  useEffect(() => {
+    retryImplRef.current = (botId: number) => {
+      if (busy) return;
+      const idx = messages.findIndex((m) => m.id === botId);
+      if (idx < 1) return;
+      const failed = messages[idx];
+      const paired = messages[idx - 1];
+      if (failed.role !== "bot" || !failed.error || paired.role !== "user") return;
+      setMessages((ms) => ms.filter((m) => m.id !== failed.id && m.id !== paired.id));
+      send(paired.text);
+    };
+  });
+  const retry = useCallback((botId: number) => retryImplRef.current(botId), []);
 
   const onKey = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === "Enter" && !e.shiftKey) {
@@ -368,16 +410,24 @@ export function ChatSurface() {
       {hasMessages && (
         <div className="ask-chat__messages" ref={scrollRef} onScroll={onScroll}>
           {messages.map((m) => (
-            <MessageView key={m.id} msg={m} />
+            <MessageView key={m.id} msg={m} onRetry={retry} />
           ))}
         </div>
       )}
+
+      {/* Settle announcements for screen readers. Errors are announced
+          via role="alert" on the message itself; the token stream is
+          intentionally not in a live region. */}
+      <div aria-live="polite" className="sr-only">
+        {announcement}
+      </div>
 
       <div className="ask-chat__input-wrap">
         <div className="ask-chat__input">
           <textarea
             ref={taRef}
             rows={1}
+            aria-label="Ask a question about Aztec"
             placeholder={
               hasMessages
                 ? "Ask a follow-up…"
