@@ -1,7 +1,6 @@
 import base64
 import json
 import logging
-import os
 
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives import hashes
@@ -27,30 +26,6 @@ def _derive_key(user_id: str, salt: bytes) -> bytes:
     )
 
     return kdf.derive(password)
-
-
-def encrypt_credentials(credentials: dict, user_id: str) -> str:
-    if not credentials:
-        return ""
-    try:
-        salt = os.urandom(16)
-        iv = os.urandom(16)
-        key = _derive_key(user_id, salt)
-
-        json_str = json.dumps(credentials)
-
-        cipher = Cipher(algorithms.AES(key), modes.CBC(iv), backend=default_backend())
-        encryptor = cipher.encryptor()
-
-        padded_data = _pad_data(json_str.encode())
-        encrypted_data = encryptor.update(padded_data) + encryptor.finalize()
-
-        result = salt + iv + encrypted_data
-        return base64.b64encode(result).decode()
-    except Exception as e:
-        # Exception class only — the message could embed key/plaintext bytes.
-        logger.warning("Failed to encrypt credentials (%s); returning empty string", type(e).__name__)
-        return ""
 
 
 def decrypt_credentials(encrypted_data: str, user_id: str) -> dict:

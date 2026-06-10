@@ -7,17 +7,11 @@ def get_api_key_for_provider(provider: str) -> Optional[str]:
     """Get the appropriate API key for a provider"""
     from application.core.settings import settings
 
+    # Mirrors LLMCreator.llms — the only providers this fork can build.
     provider_key_map = {
         "openai": settings.OPENAI_API_KEY,
         "openrouter": settings.OPEN_ROUTER_API_KEY,
-        "novita": settings.NOVITA_API_KEY,
-        "anthropic": settings.ANTHROPIC_API_KEY,
-        "google": settings.GOOGLE_API_KEY,
-        "groq": settings.GROQ_API_KEY,
-        "huggingface": settings.HUGGINGFACE_API_KEY,
         "azure_openai": settings.API_KEY,
-        "docsgpt": None,
-        "llama.cpp": None,
     }
 
     provider_key = provider_key_map.get(provider)
@@ -52,8 +46,8 @@ def get_model_capabilities(model_id: str) -> Optional[Dict[str, Any]]:
     return None
 
 
-def get_default_model_id() -> str:
-    """Get the system default model ID"""
+def get_default_model_id() -> Optional[str]:
+    """Get the system default model ID (None when the registry is empty)."""
     registry = ModelRegistry.get_instance()
     return registry.default_model_id
 

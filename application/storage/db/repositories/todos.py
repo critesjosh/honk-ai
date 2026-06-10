@@ -1,6 +1,7 @@
 """Repository for the ``todos`` table.
 
-Covers the operations in ``application/agents/tools/todo_list.py``.
+Kept for the forget-me eraser and scripts/db/backfill.py; the upstream
+todo-list agent tool was removed from this fork.
 
 The Mongo schema uses ``todo_id`` (a per-tool monotonic integer that the
 LLM uses as its handle) and ``status`` ("open"/"completed"). The Postgres

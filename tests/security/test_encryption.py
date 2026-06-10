@@ -1,21 +1,34 @@
+"""Tests for application/security/encryption.py.
+
+The fork only ever *reads* stored credentials (tool_executor / mcp_tool);
+``encrypt_credentials`` was removed with the admin SPA. ``_encrypt`` below
+re-creates the on-disk format (salt + iv + AES-CBC(PKCS7-padded JSON),
+base64-encoded) so ``decrypt_credentials`` keeps real round-trip coverage.
+"""
+
 import base64
+import json
 
 import pytest
 from application.security import encryption
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.ciphers import algorithms, Cipher, modes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 
 
-def _fake_os_urandom_factory(values):
-    values_iter = iter(values)
+def _encrypt(credentials: dict, user_id: str, salt: bytes = None, iv: bytes = None) -> str:
+    """Produce a payload in the format decrypt_credentials expects."""
+    salt = salt if salt is not None else bytes(range(16))
+    iv = iv if iv is not None else bytes(range(16, 32))
+    key = encryption._derive_key(user_id, salt)
 
-    def _fake(length):
-        value = next(values_iter)
-        assert len(value) == length
-        return value
+    cipher = Cipher(algorithms.AES(key), modes.CBC(iv), backend=default_backend())
+    encryptor = cipher.encryptor()
+    padded = encryption._pad_data(json.dumps(credentials).encode())
+    encrypted = encryptor.update(padded) + encryptor.finalize()
 
-    return _fake
+    return base64.b64encode(salt + iv + encrypted).decode()
 
 
 @pytest.mark.unit
@@ -38,44 +51,17 @@ def test_derive_key_uses_secret_and_user(monkeypatch):
 
 
 @pytest.mark.unit
-def test_encrypt_and_decrypt_round_trip(monkeypatch):
+def test_decrypt_round_trip(monkeypatch):
     monkeypatch.setattr(encryption.settings, "ENCRYPTION_SECRET_KEY", "test-secret")
-    salt = bytes(range(16))
-    iv = bytes(range(16, 32))
-    monkeypatch.setattr(encryption.os, "urandom", _fake_os_urandom_factory([salt, iv]))
 
     credentials = {"token": "abc123", "refresh": "xyz789"}
-
-    encrypted = encryption.encrypt_credentials(credentials, "user-123")
+    encrypted = _encrypt(credentials, "user-123")
 
     decoded = base64.b64decode(encrypted)
-    assert decoded[:16] == salt
-    assert decoded[16:32] == iv
+    assert decoded[:16] == bytes(range(16))
+    assert decoded[16:32] == bytes(range(16, 32))
 
-    decrypted = encryption.decrypt_credentials(encrypted, "user-123")
-
-    assert decrypted == credentials
-
-
-@pytest.mark.unit
-def test_encrypt_credentials_returns_empty_for_empty_input(monkeypatch):
-    monkeypatch.setattr(encryption.settings, "ENCRYPTION_SECRET_KEY", "test-secret")
-
-    assert encryption.encrypt_credentials({}, "user-123") == ""
-    assert encryption.encrypt_credentials(None, "user-123") == ""
-
-
-@pytest.mark.unit
-def test_encrypt_credentials_returns_empty_on_serialization_error(monkeypatch):
-    monkeypatch.setattr(encryption.settings, "ENCRYPTION_SECRET_KEY", "test-secret")
-    monkeypatch.setattr(encryption.os, "urandom", lambda length: b"\x00" * length)
-
-    class NonSerializable:
-        pass
-
-    credentials = {"bad": NonSerializable()}
-
-    assert encryption.encrypt_credentials(credentials, "user-123") == ""
+    assert encryption.decrypt_credentials(encrypted, "user-123") == credentials
 
 
 @pytest.mark.unit
@@ -111,22 +97,6 @@ def test_decrypt_failure_logs_warning_without_payload_details(monkeypatch):
 
 
 @pytest.mark.unit
-def test_encrypt_failure_logs_warning(monkeypatch):
-    from unittest.mock import patch
-
-    monkeypatch.setattr(encryption.settings, "ENCRYPTION_SECRET_KEY", "test-secret")
-
-    class NonSerializable:
-        pass
-
-    with patch.object(encryption.logger, "warning") as mock_warning:
-        assert encryption.encrypt_credentials({"bad": NonSerializable()}, "u") == ""
-
-    mock_warning.assert_called_once()
-    assert "Failed to encrypt credentials" in str(mock_warning.call_args[0][0])
-
-
-@pytest.mark.unit
 def test_pad_and_unpad_are_inverse():
     original = b"secret-data"
 
@@ -159,7 +129,7 @@ def test_pad_data_various_sizes():
 
 
 @pytest.mark.unit
-def test_encrypt_decrypt_complex_credentials(monkeypatch):
+def test_decrypt_complex_credentials(monkeypatch):
     monkeypatch.setattr(encryption.settings, "ENCRYPTION_SECRET_KEY", "complex-secret")
 
     credentials = {
@@ -167,50 +137,37 @@ def test_encrypt_decrypt_complex_credentials(monkeypatch):
         "refresh": "xyz789",
         "nested": {"key": "value"},
         "list_field": [1, 2, 3],
-        "unicode": "\u4f60\u597d\u4e16\u754c",
+        "unicode": "你好世界",
     }
 
-    encrypted = encryption.encrypt_credentials(credentials, "user-456")
-    decrypted = encryption.decrypt_credentials(encrypted, "user-456")
+    encrypted = _encrypt(credentials, "user-456")
 
-    assert decrypted == credentials
+    assert encryption.decrypt_credentials(encrypted, "user-456") == credentials
 
 
 @pytest.mark.unit
 def test_decrypt_with_wrong_user_returns_empty(monkeypatch):
     monkeypatch.setattr(encryption.settings, "ENCRYPTION_SECRET_KEY", "test-secret")
 
-    credentials = {"token": "abc123"}
-    encrypted = encryption.encrypt_credentials(credentials, "user-1")
+    encrypted = _encrypt({"token": "abc123"}, "user-1")
 
     # Decrypting with wrong user should fail gracefully
-    result = encryption.decrypt_credentials(encrypted, "user-2")
-    assert result == {}
+    assert encryption.decrypt_credentials(encrypted, "user-2") == {}
 
 
 @pytest.mark.unit
 def test_decrypt_with_wrong_secret_returns_empty(monkeypatch):
     monkeypatch.setattr(encryption.settings, "ENCRYPTION_SECRET_KEY", "secret-1")
-    credentials = {"token": "abc123"}
-    encrypted = encryption.encrypt_credentials(credentials, "user-1")
+    encrypted = _encrypt({"token": "abc123"}, "user-1")
 
     # Change the secret key
     monkeypatch.setattr(encryption.settings, "ENCRYPTION_SECRET_KEY", "secret-2")
-    result = encryption.decrypt_credentials(encrypted, "user-1")
-    assert result == {}
-
-
-@pytest.mark.unit
-def test_encrypt_credentials_empty_dict(monkeypatch):
-    monkeypatch.setattr(encryption.settings, "ENCRYPTION_SECRET_KEY", "test-secret")
-    assert encryption.encrypt_credentials({}, "user-1") == ""
+    assert encryption.decrypt_credentials(encrypted, "user-1") == {}
 
 
 @pytest.mark.unit
 def test_decrypt_credentials_truncated_payload(monkeypatch):
     monkeypatch.setattr(encryption.settings, "ENCRYPTION_SECRET_KEY", "test-secret")
     # base64 of only 10 bytes - not enough for salt+iv
-    import base64
-
     short = base64.b64encode(b"0123456789").decode()
     assert encryption.decrypt_credentials(short, "user-1") == {}

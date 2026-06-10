@@ -59,45 +59,10 @@ class TestGetApiKeyForProvider:
             mock_settings.OPENAI_API_KEY = "sk-openai"
             mock_settings.API_KEY = "sk-fallback"
             mock_settings.OPEN_ROUTER_API_KEY = None
-            mock_settings.NOVITA_API_KEY = None
-            mock_settings.ANTHROPIC_API_KEY = None
-            mock_settings.GOOGLE_API_KEY = None
-            mock_settings.GROQ_API_KEY = None
-            mock_settings.HUGGINGFACE_API_KEY = None
 
             from application.core.model_utils import get_api_key_for_provider
 
             assert get_api_key_for_provider("openai") == "sk-openai"
-
-    @pytest.mark.unit
-    def test_anthropic_key(self):
-        with patch("application.core.settings.settings") as mock_settings:
-            mock_settings.ANTHROPIC_API_KEY = "sk-anthropic"
-            mock_settings.API_KEY = "sk-fallback"
-
-            from application.core.model_utils import get_api_key_for_provider
-
-            assert get_api_key_for_provider("anthropic") == "sk-anthropic"
-
-    @pytest.mark.unit
-    def test_google_key(self):
-        with patch("application.core.settings.settings") as mock_settings:
-            mock_settings.GOOGLE_API_KEY = "sk-google"
-            mock_settings.API_KEY = "sk-fallback"
-
-            from application.core.model_utils import get_api_key_for_provider
-
-            assert get_api_key_for_provider("google") == "sk-google"
-
-    @pytest.mark.unit
-    def test_groq_key(self):
-        with patch("application.core.settings.settings") as mock_settings:
-            mock_settings.GROQ_API_KEY = "sk-groq"
-            mock_settings.API_KEY = "sk-fallback"
-
-            from application.core.model_utils import get_api_key_for_provider
-
-            assert get_api_key_for_provider("groq") == "sk-groq"
 
     @pytest.mark.unit
     def test_openrouter_key(self):
@@ -110,42 +75,14 @@ class TestGetApiKeyForProvider:
             assert get_api_key_for_provider("openrouter") == "sk-or"
 
     @pytest.mark.unit
-    def test_novita_key(self):
-        with patch("application.core.settings.settings") as mock_settings:
-            mock_settings.NOVITA_API_KEY = "sk-novita"
-            mock_settings.API_KEY = "sk-fallback"
-
-            from application.core.model_utils import get_api_key_for_provider
-
-            assert get_api_key_for_provider("novita") == "sk-novita"
-
-    @pytest.mark.unit
-    def test_huggingface_key(self):
-        with patch("application.core.settings.settings") as mock_settings:
-            mock_settings.HUGGINGFACE_API_KEY = "hf-key"
-            mock_settings.API_KEY = "sk-fallback"
-
-            from application.core.model_utils import get_api_key_for_provider
-
-            assert get_api_key_for_provider("huggingface") == "hf-key"
-
-    @pytest.mark.unit
-    def test_docsgpt_returns_fallback(self):
+    def test_removed_provider_returns_fallback(self):
+        """Providers without an LLM class fall through to settings.API_KEY."""
         with patch("application.core.settings.settings") as mock_settings:
             mock_settings.API_KEY = "sk-fallback"
 
             from application.core.model_utils import get_api_key_for_provider
 
-            assert get_api_key_for_provider("docsgpt") == "sk-fallback"
-
-    @pytest.mark.unit
-    def test_llama_cpp_returns_fallback(self):
-        with patch("application.core.settings.settings") as mock_settings:
-            mock_settings.API_KEY = "sk-fallback"
-
-            from application.core.model_utils import get_api_key_for_provider
-
-            assert get_api_key_for_provider("llama.cpp") == "sk-fallback"
+            assert get_api_key_for_provider("anthropic") == "sk-fallback"
 
     @pytest.mark.unit
     def test_unknown_provider_returns_fallback(self):

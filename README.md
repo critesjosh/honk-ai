@@ -6,8 +6,12 @@ Corpus pinned to [`aztec-packages@v4.3.0`](https://github.com/AztecProtocol/azte
 
 This repo is a heavily-modified fork of [`arc53/DocsGPT`](https://github.com/arc53/DocsGPT)
 starting from tag `0.17.0`; the upstream admin SPA, OAuth connectors,
-STT/TTS, and the FAISS/Mongo/Qdrant/Elasticsearch vector backends were
-removed. See [`CLAUDE.md`](./CLAUDE.md) for the architectural diff and
+STT/TTS, the FAISS/Mongo/Qdrant/Elasticsearch/LanceDB vector backends,
+local SentenceTransformer embeddings, the docling parsers, the
+never-provisioned agent tools (web search, telegram, notes/todos/memory,
+etc.), and the LLM providers `LLMCreator` can't build (anthropic, google,
+groq, novita, …) were removed. See [`CLAUDE.md`](./CLAUDE.md) for the
+architectural diff and
 [`AZTEC_SETUP.md`](./AZTEC_SETUP.md) for the production deploy walkthrough.
 
 ## Overview

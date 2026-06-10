@@ -142,20 +142,23 @@ class TestToolManager:
                     mock_load.assert_called_once_with("mcp_tool", {}, "user123")
 
     @patch("application.agents.tools.tool_manager.importlib.import_module")
-    def test_execute_action_with_user_id_for_memory_tool(self, mock_import):
+    def test_execute_action_user_id_ignored_for_regular_tool(self, mock_import):
+        """Only mcp_tool gets a fresh per-user instance; everything else
+        executes on the eagerly loaded singleton."""
         mock_tool = MockTool({})
 
         with patch("inspect.getmembers", return_value=[("MockTool", MockTool)]):
             with patch("inspect.isclass", return_value=True):
-                manager = ToolManager({"memory": {}})
-                manager.tools["memory"] = mock_tool
+                manager = ToolManager({"aztec_network": {}})
+                manager.tools["aztec_network"] = mock_tool
 
-                with patch.object(
-                    manager, "load_tool", return_value=mock_tool
-                ) as mock_load:
-                    manager.execute_action("memory", "view", user_id="user456")
+                with patch.object(manager, "load_tool") as mock_load:
+                    result = manager.execute_action(
+                        "aztec_network", "get_block", user_id="user456"
+                    )
 
-                    mock_load.assert_called_once_with("memory", {}, "user456")
+                    mock_load.assert_not_called()
+                    assert "Executed get_block" in result
 
     @patch("application.agents.tools.tool_manager.pkgutil.iter_modules")
     @patch("application.agents.tools.tool_manager.importlib.import_module")

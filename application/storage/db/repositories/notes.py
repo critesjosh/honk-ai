@@ -1,6 +1,7 @@
 """Repository for the ``notes`` table.
 
-Covers the operations in ``application/agents/tools/notes.py``.
+Kept for the forget-me eraser and scripts/db/backfill.py; the upstream
+notes agent tool was removed from this fork.
 Note: the Mongo schema stores a single ``note`` text field per (user_id, tool_id),
 while the Postgres schema has ``title`` + ``content``. During dual-write,
 title is set to a default and content holds the note text.

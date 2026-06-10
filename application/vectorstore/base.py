@@ -21,7 +21,11 @@ class RemoteEmbeddings:
         self.headers = {"Content-Type": "application/json"}
         if api_key:
             self.headers["Authorization"] = f"Bearer {api_key}"
-        self.dimension = 768
+        # Unknown until the first embedding call returns; auto-detected in
+        # embed_query / embed_documents. Hardcoding a value here would
+        # misreport the dimension for any non-768 model (e.g. OpenAI
+        # text-embedding-3-large at 3072) to callers that introspect it.
+        self.dimension = None
 
     def _embed(self, inputs):
         """Send embedding request to remote API in OpenAI-compatible format."""
@@ -83,13 +87,6 @@ class RemoteEmbeddings:
             raise ValueError("Input must be a string or a list of strings")
 
 
-def _get_embeddings_wrapper():
-    """Lazy import of EmbeddingsWrapper to avoid loading SentenceTransformer when using remote embeddings."""
-    from application.vectorstore.embeddings_local import EmbeddingsWrapper
-
-    return EmbeddingsWrapper
-
-
 class EmbeddingsSingleton:
     _instances = {}
 
@@ -105,26 +102,12 @@ class EmbeddingsSingleton:
     def _create_instance(embeddings_name, *args, **kwargs):
         if embeddings_name == "openai_text-embedding-ada-002":
             return OpenAIEmbeddings(*args, **kwargs)
-
-        # Lazy import EmbeddingsWrapper only when needed (avoids loading SentenceTransformer)
-        EmbeddingsWrapper = _get_embeddings_wrapper()
-
-        embeddings_factory = {
-            "huggingface_sentence-transformers/all-mpnet-base-v2": lambda: EmbeddingsWrapper(
-                "sentence-transformers/all-mpnet-base-v2"
-            ),
-            "huggingface_sentence-transformers-all-mpnet-base-v2": lambda: EmbeddingsWrapper(
-                "sentence-transformers/all-mpnet-base-v2"
-            ),
-            "huggingface_hkunlp/instructor-large": lambda: EmbeddingsWrapper(
-                "hkunlp/instructor-large"
-            ),
-        }
-
-        if embeddings_name in embeddings_factory:
-            return embeddings_factory[embeddings_name](*args, **kwargs)
-        else:
-            return EmbeddingsWrapper(embeddings_name, *args, **kwargs)
+        raise ValueError(
+            f"No embeddings backend for {embeddings_name!r}: local "
+            "(SentenceTransformer) embeddings were removed from this fork. "
+            "Set EMBEDDINGS_BASE_URL to use a remote OpenAI-compatible "
+            "embeddings API."
+        )
 
 
 class BaseVectorStore(ABC):
@@ -186,37 +169,15 @@ class BaseVectorStore(ABC):
         if embeddings_name == "openai_text-embedding-ada-002":
             if self.is_azure_configured():
                 os.environ["OPENAI_API_TYPE"] = "azure"
-                embedding_instance = EmbeddingsSingleton.get_instance(
+                return EmbeddingsSingleton.get_instance(
                     embeddings_name, model=settings.AZURE_EMBEDDINGS_DEPLOYMENT_NAME
                 )
-            else:
-                embedding_instance = EmbeddingsSingleton.get_instance(
-                    embeddings_name, openai_api_key=embeddings_key
-                )
-        elif embeddings_name == "huggingface_sentence-transformers/all-mpnet-base-v2":
-            possible_paths = [
-                "/app/models/all-mpnet-base-v2",  # Docker absolute path
-                "./models/all-mpnet-base-v2",  # Relative path
-            ]
-            local_model_path = None
-            for path in possible_paths:
-                if os.path.exists(path):
-                    local_model_path = path
-                    logging.info(f"Found local model at path: {path}")
-                    break
-                else:
-                    logging.info(f"Path does not exist: {path}")
-            if local_model_path:
-                embedding_instance = EmbeddingsSingleton.get_instance(
-                    local_model_path,
-                )
-            else:
-                logging.warning(
-                    f"Local model not found in any of the paths: {possible_paths}. Falling back to HuggingFace download."
-                )
-                embedding_instance = EmbeddingsSingleton.get_instance(
-                    embeddings_name,
-                )
-        else:
-            embedding_instance = EmbeddingsSingleton.get_instance(embeddings_name)
-        return embedding_instance
+            return EmbeddingsSingleton.get_instance(
+                embeddings_name, openai_api_key=embeddings_key
+            )
+        raise ValueError(
+            f"No embeddings backend for {embeddings_name!r}: local "
+            "(SentenceTransformer) embeddings were removed from this fork. "
+            "Set EMBEDDINGS_BASE_URL to use a remote OpenAI-compatible "
+            "embeddings API."
+        )

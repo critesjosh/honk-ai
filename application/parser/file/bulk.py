@@ -16,7 +16,6 @@ from application.parser.file.pptx_parser import PPTXParser
 from application.parser.file.image_parser import ImageParser
 from application.parser.schema.base import Document
 from application.utils import num_tokens_from_string
-from application.core.settings import settings
 
 
 # Aztec-fork ingest guard. Skip directories whose entire contents are blob /
@@ -43,84 +42,29 @@ _IGNORED_PATH_SEGMENTS = frozenset(
 )
 
 
-def get_default_file_extractor(
-    ocr_enabled: Optional[bool] = None,
-) -> Dict[str, BaseParser]:
-    """Get the default file extractor.
+def get_default_file_extractor() -> Dict[str, BaseParser]:
+    """Get the default file extractor map (extension -> parser).
 
-    Uses docling parsers by default for advanced document processing.
-    Falls back to standard parsers if docling is not installed.
+    Docling (and its torch/CUDA dependency train) was removed from this
+    fork — the corpus is markdown + source code, so the stock parsers
+    cover everything that gets ingested.
     """
-    try:
-        from application.parser.file.docling_parser import (
-            DoclingPDFParser,
-            DoclingDocxParser,
-            DoclingPPTXParser,
-            DoclingXLSXParser,
-            DoclingHTMLParser,
-            DoclingImageParser,
-            DoclingCSVParser,
-            DoclingAsciiDocParser,
-            DoclingVTTParser,
-            DoclingXMLParser,
-        )
-        if ocr_enabled is None:
-            ocr_enabled = settings.DOCLING_OCR_ENABLED
-        return {
-            # Documents
-            ".pdf": DoclingPDFParser(ocr_enabled=ocr_enabled),
-            ".docx": DoclingDocxParser(),
-            ".pptx": DoclingPPTXParser(),
-            ".xlsx": DoclingXLSXParser(),
-            # Web formats
-            ".html": DoclingHTMLParser(),
-            ".xhtml": DoclingHTMLParser(),
-            # Data formats
-            ".csv": DoclingCSVParser(),
-            ".json": JSONParser(),  # Keep JSON parser (specialized handling)
-            # Text/markup formats
-            ".md": MarkdownParser(),  # Keep markdown parser (specialized handling)
-            ".mdx": MarkdownParser(),
-            ".rst": RstParser(),
-            ".adoc": DoclingAsciiDocParser(),
-            ".asciidoc": DoclingAsciiDocParser(),
-            # Images (with OCR) - only use Docling when OCR is enabled
-            ".png": DoclingImageParser(ocr_enabled=ocr_enabled) if ocr_enabled else ImageParser(),
-            ".jpg": DoclingImageParser(ocr_enabled=ocr_enabled) if ocr_enabled else ImageParser(),
-            ".jpeg": DoclingImageParser(ocr_enabled=ocr_enabled) if ocr_enabled else ImageParser(),
-            ".tiff": DoclingImageParser(ocr_enabled=ocr_enabled) if ocr_enabled else ImageParser(),
-            ".tif": DoclingImageParser(ocr_enabled=ocr_enabled) if ocr_enabled else ImageParser(),
-            ".bmp": DoclingImageParser(ocr_enabled=ocr_enabled) if ocr_enabled else ImageParser(),
-            ".webp": DoclingImageParser(ocr_enabled=ocr_enabled) if ocr_enabled else ImageParser(),
-            # Media/subtitles
-            ".vtt": DoclingVTTParser(),
-            # Specialized XML formats
-            ".xml": DoclingXMLParser(),
-            # Formats docling doesn't support - use standard parsers
-            ".epub": EpubParser(),
-        }
-    except ImportError:
-        logging.warning(
-            "docling is not installed. Using standard parsers. "
-            "For advanced document parsing, install with: pip install docling"
-        )
-        # Fallback to standard parsers
-        return {
-            ".pdf": PDFParser(),
-            ".docx": DocxParser(),
-            ".csv": PandasCSVParser(),
-            ".xlsx": ExcelParser(),
-            ".epub": EpubParser(),
-            ".md": MarkdownParser(),
-            ".rst": RstParser(),
-            ".html": HTMLParser(),
-            ".mdx": MarkdownParser(),
-            ".json": JSONParser(),
-            ".pptx": PPTXParser(),
-            ".png": ImageParser(),
-            ".jpg": ImageParser(),
-            ".jpeg": ImageParser(),
-        }
+    return {
+        ".pdf": PDFParser(),
+        ".docx": DocxParser(),
+        ".csv": PandasCSVParser(),
+        ".xlsx": ExcelParser(),
+        ".epub": EpubParser(),
+        ".md": MarkdownParser(),
+        ".rst": RstParser(),
+        ".html": HTMLParser(),
+        ".mdx": MarkdownParser(),
+        ".json": JSONParser(),
+        ".pptx": PPTXParser(),
+        ".png": ImageParser(),
+        ".jpg": ImageParser(),
+        ".jpeg": ImageParser(),
+    }
 
 
 # For backwards compatibility

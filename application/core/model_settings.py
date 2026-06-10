@@ -7,18 +7,17 @@ logger = logging.getLogger(__name__)
 
 
 class ModelProvider(str, Enum):
+    """Providers the registry may expose.
+
+    Deliberately mirrors ``LLMCreator.llms`` (application/llm/llm_creator.py).
+    Registering a model whose provider has no LLM class turns into a
+    request-time 500 the first time config drifts, so the enum is kept in
+    lock-step with the providers this fork can actually build.
+    """
+
     OPENAI = "openai"
     OPENROUTER = "openrouter"
     AZURE_OPENAI = "azure_openai"
-    ANTHROPIC = "anthropic"
-    GROQ = "groq"
-    GOOGLE = "google"
-    HUGGINGFACE = "huggingface"
-    LLAMA_CPP = "llama.cpp"
-    DOCSGPT = "docsgpt"
-    PREMAI = "premai"
-    SAGEMAKER = "sagemaker"
-    NOVITA = "novita"
 
 
 @dataclass
@@ -85,9 +84,9 @@ class ModelRegistry:
 
         self.models.clear()
 
-        # Skip DocsGPT model if using custom OpenAI-compatible endpoint
-        if not settings.OPENAI_BASE_URL:
-            self._add_docsgpt_models(settings)
+        # Only providers LLMCreator can build (openai / azure_openai /
+        # openrouter) are ever registered, so every model the default
+        # selection below can land on is creatable at request time.
         if (
             settings.OPENAI_API_KEY
             or (settings.LLM_PROVIDER == "openai" and settings.API_KEY)
@@ -98,30 +97,10 @@ class ModelRegistry:
             settings.LLM_PROVIDER == "azure_openai" and settings.API_KEY
         ):
             self._add_azure_openai_models(settings)
-        if settings.ANTHROPIC_API_KEY or (
-            settings.LLM_PROVIDER == "anthropic" and settings.API_KEY
-        ):
-            self._add_anthropic_models(settings)
-        if settings.GOOGLE_API_KEY or (
-            settings.LLM_PROVIDER == "google" and settings.API_KEY
-        ):
-            self._add_google_models(settings)
-        if settings.GROQ_API_KEY or (
-            settings.LLM_PROVIDER == "groq" and settings.API_KEY
-        ):
-            self._add_groq_models(settings)
         if settings.OPEN_ROUTER_API_KEY or (
             settings.LLM_PROVIDER == "openrouter" and settings.API_KEY
         ):
             self._add_openrouter_models(settings)
-        if settings.NOVITA_API_KEY or (
-            settings.LLM_PROVIDER == "novita" and settings.API_KEY
-        ):
-            self._add_novita_models(settings)
-        if settings.HUGGINGFACE_API_KEY or (
-            settings.LLM_PROVIDER == "huggingface" and settings.API_KEY
-        ):
-            self._add_huggingface_models(settings)
         # Default model selection
         if settings.LLM_NAME:
             # Parse LLM_NAME (may be comma-separated)
@@ -189,51 +168,6 @@ class ModelRegistry:
         for model in AZURE_OPENAI_MODELS:
             self.models[model.id] = model
 
-    def _add_anthropic_models(self, settings):
-        from application.core.model_configs import ANTHROPIC_MODELS
-
-        if settings.ANTHROPIC_API_KEY:
-            for model in ANTHROPIC_MODELS:
-                self.models[model.id] = model
-            return
-        if settings.LLM_PROVIDER == "anthropic" and settings.LLM_NAME:
-            for model in ANTHROPIC_MODELS:
-                if model.id == settings.LLM_NAME:
-                    self.models[model.id] = model
-                    return
-        for model in ANTHROPIC_MODELS:
-            self.models[model.id] = model
-
-    def _add_google_models(self, settings):
-        from application.core.model_configs import GOOGLE_MODELS
-
-        if settings.GOOGLE_API_KEY:
-            for model in GOOGLE_MODELS:
-                self.models[model.id] = model
-            return
-        if settings.LLM_PROVIDER == "google" and settings.LLM_NAME:
-            for model in GOOGLE_MODELS:
-                if model.id == settings.LLM_NAME:
-                    self.models[model.id] = model
-                    return
-        for model in GOOGLE_MODELS:
-            self.models[model.id] = model
-
-    def _add_groq_models(self, settings):
-        from application.core.model_configs import GROQ_MODELS
-
-        if settings.GROQ_API_KEY:
-            for model in GROQ_MODELS:
-                self.models[model.id] = model
-            return
-        if settings.LLM_PROVIDER == "groq" and settings.LLM_NAME:
-            for model in GROQ_MODELS:
-                if model.id == settings.LLM_NAME:
-                    self.models[model.id] = model
-                    return
-        for model in GROQ_MODELS:
-            self.models[model.id] = model
-    
     def _add_openrouter_models(self, settings):
         from application.core.model_configs import OPENROUTER_MODELS
 
@@ -248,49 +182,6 @@ class ModelRegistry:
                     return
         for model in OPENROUTER_MODELS:
             self.models[model.id] = model
-
-    def _add_novita_models(self, settings):
-        from application.core.model_configs import NOVITA_MODELS
-
-        if settings.NOVITA_API_KEY:
-            for model in NOVITA_MODELS:
-                self.models[model.id] = model
-            return
-        if settings.LLM_PROVIDER == "novita" and settings.LLM_NAME:
-            for model in NOVITA_MODELS:
-                if model.id == settings.LLM_NAME:
-                    self.models[model.id] = model
-                    return
-        for model in NOVITA_MODELS:
-            self.models[model.id] = model
-
-    def _add_docsgpt_models(self, settings):
-        model_id = "docsgpt-local"
-        model = AvailableModel(
-            id=model_id,
-            provider=ModelProvider.DOCSGPT,
-            display_name="DocsGPT Model",
-            description="Local model",
-            capabilities=ModelCapabilities(
-                supports_tools=False,
-                supported_attachment_types=[],
-            ),
-        )
-        self.models[model_id] = model
-
-    def _add_huggingface_models(self, settings):
-        model_id = "huggingface-local"
-        model = AvailableModel(
-            id=model_id,
-            provider=ModelProvider.HUGGINGFACE,
-            display_name="Hugging Face Model",
-            description="Local Hugging Face model",
-            capabilities=ModelCapabilities(
-                supports_tools=False,
-                supported_attachment_types=[],
-            ),
-        )
-        self.models[model_id] = model
 
     def _parse_model_names(self, llm_name: str) -> List[str]:
         """

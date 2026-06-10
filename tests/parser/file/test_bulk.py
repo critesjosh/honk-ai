@@ -4,7 +4,7 @@ Covers: SimpleDirectoryReader (init, file discovery, load_data, directory
 structure building), get_default_file_extractor.
 """
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -353,15 +353,7 @@ class TestGetDefaultFileExtractor:
     def test_returns_dict(self):
         from application.parser.file.bulk import get_default_file_extractor
 
-        with patch.dict("sys.modules", {"docling": None, "docling.document_converter": None}):
-            result = get_default_file_extractor()
-            assert isinstance(result, dict)
-            assert ".pdf" in result
-
-    def test_fallback_parsers_on_import_error(self):
-        with patch(
-            "application.parser.file.bulk.get_default_file_extractor"
-        ) as mock_fn:
-            mock_fn.return_value = {".pdf": MagicMock(), ".md": MagicMock()}
-            result = mock_fn()
-            assert ".pdf" in result
+        result = get_default_file_extractor()
+        assert isinstance(result, dict)
+        assert ".pdf" in result
+        assert ".md" in result

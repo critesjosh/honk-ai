@@ -4,7 +4,6 @@ Additional coverage beyond tests/api/answer/services/test_conversation_service.p
   - save_conversation: index-based update, metadata persistence, agent key tracking
   - update_compression_metadata
   - append_compression_message
-  - get_compression_metadata
   - Edge cases: None token, empty summary, shared_with access
 """
 
@@ -65,29 +64,6 @@ class TestUpdateCompressionMetadata:
 @pytest.mark.unit
 class TestAppendCompressionMessage:
     pass
-
-@pytest.mark.unit
-class TestGetCompressionMetadata:
-    pass
-
-    def test_returns_none_for_missing_conversation(self, mock_mongo_db):
-        from application.api.answer.services.conversation_service import (
-            ConversationService,
-        )
-
-        service = ConversationService()
-        result = service.get_compression_metadata("507f1f77bcf86cd799439011")
-        assert result is None
-
-    def test_handles_invalid_id(self, mock_mongo_db):
-        from application.api.answer.services.conversation_service import (
-            ConversationService,
-        )
-
-        service = ConversationService()
-        result = service.get_compression_metadata("invalid-id")
-        assert result is None
-
 
 # =====================================================================
 # Coverage gap tests  (lines 233-237, 258, 261)

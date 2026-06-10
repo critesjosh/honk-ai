@@ -406,3 +406,43 @@ class TestPGVectorStoreConnection:
 
         store.__del__()
         mock_conn.close.assert_called_once()
+
+
+@pytest.mark.unit
+class TestEnsureTableDimension:
+    """The vector column width comes from EMBEDDINGS_DIMENSION, then the
+    embedding wrapper's auto-detected dimension, then 768."""
+
+    def _executed_sql(self, mock_cursor):
+        return " ".join(str(call.args[0]) for call in mock_cursor.execute.call_args_list)
+
+    def test_settings_dimension_wins(self):
+        store, _, mock_cursor, mock_emb = _make_store()
+        mock_emb.dimension = 1536
+        with patch("application.vectorstore.pgvector.settings") as mock_settings:
+            mock_settings.EMBEDDINGS_DIMENSION = 3072
+            store._ensure_table_exists()
+        sql = self._executed_sql(mock_cursor)
+        assert "vector(3072)" in sql
+        # >2000 dims: pgvector's ivfflat cap means no ANN index is created
+        assert "ivfflat" not in sql
+
+    def test_falls_back_to_detected_embedding_dimension(self):
+        store, _, mock_cursor, mock_emb = _make_store()
+        mock_emb.dimension = 1536
+        with patch("application.vectorstore.pgvector.settings") as mock_settings:
+            mock_settings.EMBEDDINGS_DIMENSION = None
+            store._ensure_table_exists()
+        sql = self._executed_sql(mock_cursor)
+        assert "vector(1536)" in sql
+        assert "ivfflat" in sql
+
+    def test_falls_back_to_768_when_dimension_unknown(self):
+        """RemoteEmbeddings.dimension is None until the first embed call."""
+        store, _, mock_cursor, mock_emb = _make_store()
+        mock_emb.dimension = None
+        with patch("application.vectorstore.pgvector.settings") as mock_settings:
+            mock_settings.EMBEDDINGS_DIMENSION = None
+            store._ensure_table_exists()
+        sql = self._executed_sql(mock_cursor)
+        assert "vector(768)" in sql

@@ -45,8 +45,6 @@ class Settings(BaseSettings):
     AUTO_MIGRATE: bool = True
     # On app startup, create the target Postgres database if it's missing (requires CREATEDB privilege). Dev-friendly default.
     AUTO_CREATE_DB: bool = True
-    LLM_PATH: str = os.path.join(current_dir, "models/docsgpt-7b-f16.gguf")
-    DEFAULT_MAX_HISTORY: int = 150
     DEFAULT_LLM_TOKEN_LIMIT: int = 128000  # Fallback when model not found in registry
     RESERVED_TOKENS: dict = {
         "system_prompt": 500,
@@ -60,34 +58,16 @@ class Settings(BaseSettings):
     UPLOAD_FOLDER: str = "inputs"
     PARSE_PDF_AS_IMAGE: bool = False
     PARSE_IMAGE_REMOTE: bool = False
-    DOCLING_OCR_ENABLED: bool = False  # Enable OCR for docling parsers (PDF, images)
-    DOCLING_OCR_ATTACHMENTS_ENABLED: bool = False  # Enable OCR for docling when parsing attachments
-    VECTOR_STORE: str = "faiss"  #  "faiss" or "elasticsearch" or "qdrant" or "milvus" or "lancedb" or "pgvector"
-    RETRIEVERS_ENABLED: list = ["classic_rag"]
+    VECTOR_STORE: str = "pgvector"  # pgvector is the only backend in this fork (see vector_creator.py)
     AGENT_NAME: str = "classic"
     FALLBACK_LLM_PROVIDER: Optional[str] = None  # provider for fallback llm
     FALLBACK_LLM_NAME: Optional[str] = None  # model name for fallback llm
     FALLBACK_LLM_API_KEY: Optional[str] = None  # api key for fallback llm
 
-    # Google Drive integration
-    GOOGLE_CLIENT_ID: Optional[str] = None  # Replace with your actual Google OAuth client ID
-    GOOGLE_CLIENT_SECRET: Optional[str] = None  # Replace with your actual Google OAuth client secret
+    # OAuth redirect base for MCP server connections (mcp_tool.py).
     CONNECTOR_REDIRECT_BASE_URI: Optional[str] = (
-        "http://127.0.0.1:7091/api/connectors/callback"  ##add redirect url as it is to your provider's console(gcp)
+        "http://127.0.0.1:7091/api/connectors/callback"
     )
-
-    # Microsoft Entra ID (Azure AD) integration
-    MICROSOFT_CLIENT_ID: Optional[str] = None  # Azure AD Application (client) ID
-    MICROSOFT_CLIENT_SECRET: Optional[str] = None  # Azure AD Application client secret
-    MICROSOFT_TENANT_ID: Optional[str] = "common"  # Azure AD Tenant ID (or 'common' for multi-tenant)
-    MICROSOFT_AUTHORITY: Optional[str] = None  # e.g., "https://login.microsoftonline.com/{tenant_id}"
-
-    # Confluence Cloud integration
-    CONFLUENCE_CLIENT_ID: Optional[str] = None
-    CONFLUENCE_CLIENT_SECRET: Optional[str] = None
-
-    # GitHub source
-    GITHUB_ACCESS_TOKEN: Optional[str] = None  # PAT token with read repo access
 
     # LLM Cache
     CACHE_REDIS_URL: str = "redis://localhost:6379/2"
@@ -126,12 +106,7 @@ class Settings(BaseSettings):
 
     # Provider-specific API keys (for multi-model support)
     OPENAI_API_KEY: Optional[str] = None
-    ANTHROPIC_API_KEY: Optional[str] = None
-    GOOGLE_API_KEY: Optional[str] = None
-    GROQ_API_KEY: Optional[str] = None
-    HUGGINGFACE_API_KEY: Optional[str] = None
     OPEN_ROUTER_API_KEY: Optional[str] = None
-    NOVITA_API_KEY: Optional[str] = None
 
     OPENAI_API_BASE: Optional[str] = None  # azure openai api base url
     OPENAI_API_VERSION: Optional[str] = None  # azure openai api version
@@ -139,71 +114,22 @@ class Settings(BaseSettings):
     AZURE_EMBEDDINGS_DEPLOYMENT_NAME: Optional[str] = None  # azure deployment name for embeddings
     OPENAI_BASE_URL: Optional[str] = None  # openai base url for open ai compatable models
 
-    # elasticsearch
-    ELASTIC_CLOUD_ID: Optional[str] = None  # cloud id for elasticsearch
-    ELASTIC_USERNAME: Optional[str] = None  # username for elasticsearch
-    ELASTIC_PASSWORD: Optional[str] = None  # password for elasticsearch
-    ELASTIC_URL: Optional[str] = None  # url for elasticsearch
-    ELASTIC_INDEX: Optional[str] = "docsgpt"  # index name for elasticsearch
-
-    # SageMaker config
-    SAGEMAKER_ENDPOINT: Optional[str] = None  # SageMaker endpoint name
-    SAGEMAKER_REGION: Optional[str] = None  # SageMaker region name
-    SAGEMAKER_ACCESS_KEY: Optional[str] = None  # SageMaker access key
-    SAGEMAKER_SECRET_KEY: Optional[str] = None  # SageMaker secret key
-
-    # prem ai project id
-    PREMAI_PROJECT_ID: Optional[str] = None
-
-    # Qdrant vectorstore config
-    QDRANT_COLLECTION_NAME: Optional[str] = "docsgpt"
-    QDRANT_LOCATION: Optional[str] = None
-    QDRANT_URL: Optional[str] = None
-    QDRANT_PORT: Optional[int] = 6333
-    QDRANT_GRPC_PORT: int = 6334
-    QDRANT_PREFER_GRPC: bool = False
-    QDRANT_HTTPS: Optional[bool] = None
-    QDRANT_API_KEY: Optional[str] = None
-    QDRANT_PREFIX: Optional[str] = None
-    QDRANT_TIMEOUT: Optional[float] = None
-    QDRANT_HOST: Optional[str] = None
-    QDRANT_PATH: Optional[str] = None
-    QDRANT_DISTANCE_FUNC: str = "Cosine"
-
     # PGVector vectorstore config. Write the URI in whichever form you
     # prefer — ``postgres://``, ``postgresql://``, or even the SQLAlchemy
     # dialect form (``postgresql+psycopg://``) are all accepted and
     # normalized internally for ``psycopg.connect()``.
     PGVECTOR_CONNECTION_STRING: Optional[str] = None
-    # Milvus vectorstore config
-    MILVUS_COLLECTION_NAME: Optional[str] = "docsgpt"
-    MILVUS_URI: Optional[str] = "./milvus_local.db"  # milvus lite version as default
-    MILVUS_TOKEN: Optional[str] = ""
-
-    # LanceDB vectorstore config
-    LANCEDB_PATH: str = "./data/lancedb"  # Path where LanceDB stores its local data
-    LANCEDB_TABLE_NAME: Optional[str] = "docsgpts"  # Name of the table to use for storing vectors
 
     FLASK_DEBUG_MODE: bool = False
     STORAGE_TYPE: str = "local"  # local or s3
 
     # Anonymous startup version check for security issues.
     VERSION_CHECK: bool = True
-    URL_STRATEGY: str = "backend"  # backend or s3
 
     JWT_SECRET_KEY: str = ""
 
     # Encryption settings
     ENCRYPTION_SECRET_KEY: str = "default-docsgpt-encryption-key"
-
-    TTS_PROVIDER: str = "google_tts"  # google_tts or elevenlabs
-    ELEVENLABS_API_KEY: Optional[str] = None
-    STT_PROVIDER: str = "openai"  # openai or faster_whisper
-    OPENAI_STT_MODEL: str = "gpt-4o-mini-transcribe"
-    STT_LANGUAGE: Optional[str] = None
-    STT_MAX_FILE_SIZE_MB: int = 50
-    STT_ENABLE_TIMESTAMPS: bool = False
-    STT_ENABLE_DIARIZATION: bool = False
 
     # Tool pre-fetch settings
     ENABLE_TOOL_PREFETCH: bool = True
@@ -255,15 +181,8 @@ class Settings(BaseSettings):
     @field_validator(
         "API_KEY",
         "OPENAI_API_KEY",
-        "ANTHROPIC_API_KEY",
-        "GOOGLE_API_KEY",
-        "GROQ_API_KEY",
-        "HUGGINGFACE_API_KEY",
-        "NOVITA_API_KEY",
         "EMBEDDINGS_KEY",
         "FALLBACK_LLM_API_KEY",
-        "QDRANT_API_KEY",
-        "ELEVENLABS_API_KEY",
         "INTERNAL_KEY",
         "MCP_PROVISIONING_KEY",
         mode="before",

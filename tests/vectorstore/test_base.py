@@ -26,6 +26,10 @@ class TestRemoteEmbeddings:
         emb = RemoteEmbeddings(api_url="http://host", model_name="m")
         assert "Authorization" not in emb.headers
 
+    def test_init_dimension_unknown_until_first_embed(self):
+        emb = RemoteEmbeddings(api_url="http://host", model_name="m")
+        assert emb.dimension is None
+
     @patch("application.vectorstore.base.requests.post")
     def test_embed_sends_correct_payload(self, mock_post):
         mock_resp = Mock()
@@ -103,7 +107,6 @@ class TestRemoteEmbeddings:
         mock_post.return_value = mock_resp
 
         emb = RemoteEmbeddings("http://host", "m")
-        emb.dimension = None  # Reset so it gets set from response
         result = emb.embed_query("hello")
         assert result == [0.1, 0.2, 0.3]
         assert emb.dimension == 3
@@ -138,7 +141,6 @@ class TestRemoteEmbeddings:
         mock_post.return_value = mock_resp
 
         emb = RemoteEmbeddings("http://host", "m")
-        emb.dimension = None  # Reset so it gets set from response
         result = emb.embed_documents(["doc1", "doc2"])
         assert result == [[0.1, 0.2], [0.3, 0.4]]
         assert emb.dimension == 2
@@ -205,28 +207,15 @@ class TestEmbeddingsSingleton:
         assert r1 is r2
         mock_openai_cls.assert_called_once()
 
-    @patch("application.vectorstore.base._get_embeddings_wrapper")
-    def test_get_instance_huggingface(self, mock_get_wrapper):
-        mock_wrapper_cls = Mock()
-        mock_instance = Mock()
-        mock_wrapper_cls.return_value = mock_instance
-        mock_get_wrapper.return_value = mock_wrapper_cls
+    def test_get_instance_local_embeddings_removed(self):
+        with pytest.raises(ValueError, match="removed from this fork"):
+            EmbeddingsSingleton.get_instance(
+                "huggingface_sentence-transformers/all-mpnet-base-v2"
+            )
 
-        result = EmbeddingsSingleton.get_instance(
-            "huggingface_sentence-transformers/all-mpnet-base-v2"
-        )
-        assert result is mock_instance
-
-    @patch("application.vectorstore.base._get_embeddings_wrapper")
-    def test_get_instance_unknown_falls_back_to_wrapper(self, mock_get_wrapper):
-        mock_wrapper_cls = Mock()
-        mock_instance = Mock()
-        mock_wrapper_cls.return_value = mock_instance
-        mock_get_wrapper.return_value = mock_wrapper_cls
-
-        result = EmbeddingsSingleton.get_instance("custom_model_name")
-        mock_wrapper_cls.assert_called_once_with("custom_model_name")
-        assert result is mock_instance
+    def test_get_instance_unknown_name_raises(self):
+        with pytest.raises(ValueError, match="EMBEDDINGS_BASE_URL"):
+            EmbeddingsSingleton.get_instance("custom_model_name")
 
 
 # --- BaseVectorStore ---
@@ -315,47 +304,20 @@ class TestBaseVectorStore:
         assert result is mock_emb
 
     @patch("application.vectorstore.base.settings")
-    @patch("application.vectorstore.base.EmbeddingsSingleton.get_instance")
-    @patch("os.path.exists", return_value=False)
-    def test_get_embeddings_huggingface_no_local_model(
-        self, mock_exists, mock_get_instance, mock_settings
-    ):
+    def test_get_embeddings_local_fallback_raises(self, mock_settings):
+        """Local (SentenceTransformer) embeddings were removed from this fork."""
         mock_settings.EMBEDDINGS_BASE_URL = None
-        mock_emb = Mock()
-        mock_get_instance.return_value = mock_emb
 
         store = ConcreteVectorStore()
-        result = store._get_embeddings(
-            "huggingface_sentence-transformers/all-mpnet-base-v2"
-        )
-        assert result is mock_emb
+        with pytest.raises(ValueError, match="EMBEDDINGS_BASE_URL"):
+            store._get_embeddings(
+                "huggingface_sentence-transformers/all-mpnet-base-v2"
+            )
 
     @patch("application.vectorstore.base.settings")
-    @patch("application.vectorstore.base.EmbeddingsSingleton.get_instance")
-    @patch("os.path.exists")
-    def test_get_embeddings_huggingface_local_model(
-        self, mock_exists, mock_get_instance, mock_settings
-    ):
+    def test_get_embeddings_generic_name_raises(self, mock_settings):
         mock_settings.EMBEDDINGS_BASE_URL = None
-        mock_exists.side_effect = lambda p: p == "/app/models/all-mpnet-base-v2"
-        mock_emb = Mock()
-        mock_get_instance.return_value = mock_emb
 
         store = ConcreteVectorStore()
-        result = store._get_embeddings(
-            "huggingface_sentence-transformers/all-mpnet-base-v2"
-        )
-        assert result is mock_emb
-        mock_get_instance.assert_called_with("/app/models/all-mpnet-base-v2")
-
-    @patch("application.vectorstore.base.settings")
-    @patch("application.vectorstore.base.EmbeddingsSingleton.get_instance")
-    def test_get_embeddings_generic(self, mock_get_instance, mock_settings):
-        mock_settings.EMBEDDINGS_BASE_URL = None
-        mock_emb = Mock()
-        mock_get_instance.return_value = mock_emb
-
-        store = ConcreteVectorStore()
-        result = store._get_embeddings("some_custom_embedding")
-        assert result is mock_emb
-        mock_get_instance.assert_called_with("some_custom_embedding")
+        with pytest.raises(ValueError, match="removed from this fork"):
+            store._get_embeddings("some_custom_embedding")

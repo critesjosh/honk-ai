@@ -5,23 +5,16 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from application.utils import (
-    calculate_compression_threshold,
     calculate_doc_token_budget,
     check_required_fields,
-    clean_text_for_tts,
     convert_pdf_to_images,
     get_encoding,
-    get_field_validation_errors,
-    get_gpt_model,
     get_hash,
     get_missing_fields,
-    generate_image_url,
     limit_chat_history,
     num_tokens_from_object_or_list,
     num_tokens_from_string,
     safe_filename,
-    validate_function_name,
-    validate_required_fields,
 )
 
 
@@ -37,30 +30,6 @@ class TestGetEncoding:
         enc1 = get_encoding()
         enc2 = get_encoding()
         assert enc1 is enc2
-
-
-class TestGetGptModel:
-
-    @pytest.mark.unit
-    def test_returns_llm_name_when_set(self):
-        with patch("application.utils.settings") as s:
-            s.LLM_NAME = "my-model"
-            s.LLM_PROVIDER = "openai"
-            assert get_gpt_model() == "my-model"
-
-    @pytest.mark.unit
-    def test_falls_back_to_provider_map(self):
-        with patch("application.utils.settings") as s:
-            s.LLM_NAME = ""
-            s.LLM_PROVIDER = "openai"
-            assert get_gpt_model() == "gpt-4o-mini"
-
-    @pytest.mark.unit
-    def test_unknown_provider_returns_empty(self):
-        with patch("application.utils.settings") as s:
-            s.LLM_NAME = ""
-            s.LLM_PROVIDER = "unknown"
-            assert get_gpt_model() == ""
 
 
 class TestSafeFilename:
@@ -199,53 +168,6 @@ class TestFieldValidation:
             assert result is not None
             assert result.status_code == 400
 
-    @pytest.mark.unit
-    def test_get_field_validation_errors_none_when_valid(self):
-        assert get_field_validation_errors({"a": 1}, ["a"]) is None
-
-    @pytest.mark.unit
-    def test_get_field_validation_errors_missing(self):
-        result = get_field_validation_errors({}, ["a"])
-        assert result["missing_fields"] == ["a"]
-
-    @pytest.mark.unit
-    def test_get_field_validation_errors_empty(self):
-        result = get_field_validation_errors({"a": ""}, ["a"])
-        assert result["empty_fields"] == ["a"]
-
-    @pytest.mark.unit
-    def test_validate_required_fields_pass(self):
-        from flask import Flask
-        app = Flask(__name__)
-        with app.app_context():
-            result = validate_required_fields({"a": "v"}, ["a"])
-            assert result is None
-
-    @pytest.mark.unit
-    def test_validate_required_fields_missing(self):
-        from flask import Flask
-        app = Flask(__name__)
-        with app.app_context():
-            result = validate_required_fields({}, ["a"])
-            assert result is not None
-            assert result.status_code == 400
-
-    @pytest.mark.unit
-    def test_validate_required_fields_empty(self):
-        from flask import Flask
-        app = Flask(__name__)
-        with app.app_context():
-            result = validate_required_fields({"a": ""}, ["a"])
-            assert result is not None
-
-    @pytest.mark.unit
-    def test_validate_required_fields_both_missing_and_empty(self):
-        from flask import Flask
-        app = Flask(__name__)
-        with app.app_context():
-            result = validate_required_fields({"a": ""}, ["a", "b"])
-            assert result is not None
-
 
 class TestGetHash:
 
@@ -305,62 +227,6 @@ class TestLimitChatHistory:
         ]
         result = limit_chat_history(history, max_token_limit=10000)
         assert len(result) == 1
-
-
-class TestValidateFunctionName:
-
-    @pytest.mark.unit
-    def test_valid_names(self):
-        assert validate_function_name("hello") is True
-        assert validate_function_name("hello_world") is True
-        assert validate_function_name("hello-world") is True
-        assert validate_function_name("test123") is True
-
-    @pytest.mark.unit
-    def test_invalid_names(self):
-        assert validate_function_name("hello world") is False
-        assert validate_function_name("hello!") is False
-        assert validate_function_name("") is False
-
-
-class TestGenerateImageUrl:
-
-    @pytest.mark.unit
-    def test_http_url_passthrough(self):
-        assert generate_image_url("https://example.com/img.png") == "https://example.com/img.png"
-        assert generate_image_url("http://example.com/img.png") == "http://example.com/img.png"
-
-    @pytest.mark.unit
-    def test_s3_strategy(self):
-        with patch("application.utils.settings") as s:
-            s.URL_STRATEGY = "s3"
-            s.S3_BUCKET_NAME = "my-bucket"
-            s.SAGEMAKER_REGION = "us-west-2"
-            result = generate_image_url("path/to/img.png")
-            assert "my-bucket.s3.us-west-2" in result
-
-    @pytest.mark.unit
-    def test_backend_strategy(self):
-        with patch("application.utils.settings") as s:
-            s.URL_STRATEGY = "backend"
-            s.API_URL = "http://localhost:7091"
-            result = generate_image_url("path/to/img.png")
-            assert result == "http://localhost:7091/api/images/path/to/img.png"
-
-
-class TestCalculateCompressionThreshold:
-
-    @pytest.mark.unit
-    def test_default_threshold(self):
-        with patch("application.utils.get_token_limit", return_value=100000):
-            result = calculate_compression_threshold("gpt-4o")
-            assert result == 80000
-
-    @pytest.mark.unit
-    def test_custom_percentage(self):
-        with patch("application.utils.get_token_limit", return_value=100000):
-            result = calculate_compression_threshold("gpt-4o", 0.5)
-            assert result == 50000
 
 
 class TestConvertPdfToImages:
@@ -456,121 +322,6 @@ class TestConvertPdfToImages:
                 convert_pdf_to_images("/some.pdf")
 
 
-class TestCleanTextForTts:
-
-    @pytest.mark.unit
-    def test_removes_code_blocks(self):
-        result = clean_text_for_tts("before ```python\ncode\n``` after")
-        assert "code block" in result
-        assert "python" not in result
-
-    @pytest.mark.unit
-    def test_removes_mermaid_blocks(self):
-        result = clean_text_for_tts("```mermaid\ngraph TD\n```")
-        assert "flowchart" in result
-
-    @pytest.mark.unit
-    def test_removes_markdown_links(self):
-        result = clean_text_for_tts("[click here](https://example.com)")
-        assert "click here" in result
-        assert "https" not in result
-
-    @pytest.mark.unit
-    def test_removes_images(self):
-        result = clean_text_for_tts("![alt text](image.png)")
-        assert "image.png" not in result
-
-    @pytest.mark.unit
-    def test_removes_inline_code(self):
-        result = clean_text_for_tts("use `foo()` here")
-        assert "foo()" in result
-        assert "`" not in result
-
-    @pytest.mark.unit
-    def test_removes_bold_italic(self):
-        result = clean_text_for_tts("**bold** and *italic*")
-        assert "bold" in result
-        assert "italic" in result
-        assert "*" not in result
-
-    @pytest.mark.unit
-    def test_removes_headers(self):
-        result = clean_text_for_tts("# Header\ntext")
-        assert "Header" in result
-        assert "#" not in result
-
-    @pytest.mark.unit
-    def test_removes_blockquotes(self):
-        result = clean_text_for_tts("> quoted text")
-        assert "quoted text" in result
-        assert ">" not in result
-
-    @pytest.mark.unit
-    def test_removes_html_tags(self):
-        result = clean_text_for_tts("<div>content</div>")
-        assert "content" in result
-        assert "<" not in result
-
-    @pytest.mark.unit
-    def test_removes_arrows(self):
-        result = clean_text_for_tts("a --> b <-- c => d")
-        assert "-->" not in result
-        assert "<--" not in result
-        assert "=>" not in result
-
-    @pytest.mark.unit
-    def test_removes_horizontal_rules(self):
-        result = clean_text_for_tts("text\n---\nmore")
-        assert "---" not in result
-
-    @pytest.mark.unit
-    def test_removes_list_markers(self):
-        result = clean_text_for_tts("- item1\n* item2\n1. item3")
-        assert "item1" in result
-        assert "item2" in result
-        assert "item3" in result
-
-    @pytest.mark.unit
-    def test_normalizes_whitespace(self):
-        result = clean_text_for_tts("  lots   of   spaces  ")
-        assert "  " not in result
-
-    @pytest.mark.unit
-    def test_removes_braces(self):
-        result = clean_text_for_tts("{content} and [more]")
-        assert "content" in result
-        assert "more" in result
-        assert "{" not in result
-
-    @pytest.mark.unit
-    def test_removes_double_colons(self):
-        result = clean_text_for_tts("module::function")
-        assert "::" not in result
-
-    @pytest.mark.unit
-    def test_removes_non_ascii(self):
-        result = clean_text_for_tts("hello \U0001f600 world")
-        assert "\U0001f600" not in result
-        assert "hello" in result
-        assert "world" in result
-
-    @pytest.mark.unit
-    def test_empty_string(self):
-        result = clean_text_for_tts("")
-        assert result == ""
-
-    @pytest.mark.unit
-    def test_removes_underscore_bold(self):
-        result = clean_text_for_tts("__bold text__")
-        assert "bold text" in result
-        assert "__" not in result
-
-    @pytest.mark.unit
-    def test_removes_underscore_italic(self):
-        result = clean_text_for_tts("_italic text_")
-        assert "italic text" in result
-
-
 class TestLimitChatHistoryEdgeCases:
 
     @pytest.mark.unit
@@ -629,24 +380,6 @@ class TestSafeFilenameEdgeCases:
         assert len(result) > 5
 
 
-class TestGenerateImageUrlEdgeCases:
-
-    @pytest.mark.unit
-    def test_non_string_input(self):
-        result = generate_image_url(123)
-        # Not a string, not starting with http, uses default strategy
-        assert "/api/images/" in result or "s3" in result
-
-    @pytest.mark.unit
-    def test_default_strategy_is_backend(self):
-        with patch("application.utils.settings") as s:
-            # Simulate missing URL_STRATEGY attribute
-            del s.URL_STRATEGY
-            s.API_URL = "http://localhost:7091"
-            result = generate_image_url("img.png")
-            assert "localhost:7091" in result
-
-
 class TestGetHashEdgeCases:
 
     @pytest.mark.unit
@@ -659,21 +392,3 @@ class TestGetHashEdgeCases:
         h = get_hash("\u4f60\u597d\u4e16\u754c")
         assert len(h) == 32
 
-
-class TestValidateFunctionNameEdgeCases:
-
-    @pytest.mark.unit
-    def test_single_char(self):
-        assert validate_function_name("a") is True
-
-    @pytest.mark.unit
-    def test_only_numbers(self):
-        assert validate_function_name("123") is True
-
-    @pytest.mark.unit
-    def test_with_dots(self):
-        assert validate_function_name("func.name") is False
-
-    @pytest.mark.unit
-    def test_with_slash(self):
-        assert validate_function_name("path/to") is False

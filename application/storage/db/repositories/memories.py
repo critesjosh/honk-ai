@@ -1,6 +1,7 @@
 """Repository for the ``memories`` table.
 
-Covers the operations in ``application/agents/tools/memory.py``:
+Kept for the forget-me eraser and scripts/db/backfill.py; the upstream
+memory agent tool was removed from this fork. Operations:
 - upsert (create/overwrite file)
 - find by path (view file)
 - find by path prefix (view directory, regex scan)

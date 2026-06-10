@@ -9,10 +9,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
-from sqlalchemy import text as sql_text
-
 from application.core.settings import settings
-from application.storage.db.base_repository import looks_like_uuid
 from application.storage.db.repositories.agents import AgentsRepository
 from application.storage.db.repositories.conversations import ConversationsRepository
 from application.storage.db.session import db_readonly, db_session
@@ -257,36 +254,3 @@ class ConversationService:
             logger.error(
                 f"Error appending compression summary: {str(e)}", exc_info=True
             )
-
-    def get_compression_metadata(
-        self, conversation_id: str
-    ) -> Optional[Dict[str, Any]]:
-        """Fetch the stored compression metadata JSONB blob for a conversation."""
-        try:
-            with db_readonly() as conn:
-                repo = ConversationsRepository(conn)
-                conv = repo.get_by_legacy_id(conversation_id)
-                if conv is None:
-                    # Fallback to UUID lookup without user scoping — the
-                    # caller already holds an authenticated conversation
-                    # id from the streaming path. Gate on id shape so a
-                    # non-UUID (legacy ObjectId that wasn't backfilled)
-                    # doesn't reach CAST — the cast raises and spams the
-                    # logs with a stack trace on every call.
-                    if not looks_like_uuid(conversation_id):
-                        return None
-                    result = conn.execute(
-                        sql_text(
-                            "SELECT compression_metadata FROM conversations "
-                            "WHERE id = CAST(:id AS uuid)"
-                        ),
-                        {"id": conversation_id},
-                    )
-                    row = result.fetchone()
-                    return row[0] if row is not None else None
-            return conv.get("compression_metadata") if conv else None
-        except Exception as e:
-            logger.error(
-                f"Error getting compression metadata: {str(e)}", exc_info=True
-            )
-            return None

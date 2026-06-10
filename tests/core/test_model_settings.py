@@ -17,17 +17,16 @@ class TestModelProvider:
     @pytest.mark.unit
     def test_all_providers_exist(self):
         assert ModelProvider.OPENAI == "openai"
-        assert ModelProvider.ANTHROPIC == "anthropic"
-        assert ModelProvider.GOOGLE == "google"
-        assert ModelProvider.GROQ == "groq"
-        assert ModelProvider.DOCSGPT == "docsgpt"
-        assert ModelProvider.HUGGINGFACE == "huggingface"
-        assert ModelProvider.NOVITA == "novita"
         assert ModelProvider.OPENROUTER == "openrouter"
-        assert ModelProvider.SAGEMAKER == "sagemaker"
-        assert ModelProvider.PREMAI == "premai"
-        assert ModelProvider.LLAMA_CPP == "llama.cpp"
         assert ModelProvider.AZURE_OPENAI == "azure_openai"
+
+    @pytest.mark.unit
+    def test_enum_mirrors_llm_creator(self):
+        """Every registrable provider must have an LLM class — a model whose
+        provider LLMCreator can't build is a request-time 500."""
+        from application.llm.llm_creator import LLMCreator
+
+        assert {p.value for p in ModelProvider} == set(LLMCreator.llms.keys())
 
 
 class TestModelCapabilities:
@@ -88,7 +87,7 @@ class TestAvailableModel:
         caps = ModelCapabilities(supports_tools=True, context_window=64000)
         model = AvailableModel(
             id="m1",
-            provider=ModelProvider.ANTHROPIC,
+            provider=ModelProvider.OPENROUTER,
             display_name="M1",
             capabilities=caps,
         )
@@ -135,7 +134,7 @@ class TestModelRegistry:
         with patch.object(ModelRegistry, "_load_models"):
             reg = ModelRegistry()
             reg.models["m1"] = AvailableModel(id="m1", provider=ModelProvider.OPENAI, display_name="M1")
-            reg.models["m2"] = AvailableModel(id="m2", provider=ModelProvider.ANTHROPIC, display_name="M2")
+            reg.models["m2"] = AvailableModel(id="m2", provider=ModelProvider.OPENROUTER, display_name="M2")
             assert len(reg.get_all_models()) == 2
 
     @pytest.mark.unit
@@ -167,35 +166,12 @@ class TestModelRegistry:
             assert reg._parse_model_names(None) == []
 
     @pytest.mark.unit
-    def test_add_docsgpt_models(self):
-        with patch.object(ModelRegistry, "_load_models"):
-            reg = ModelRegistry()
-            reg.models = {}
-            mock_settings = MagicMock()
-            reg._add_docsgpt_models(mock_settings)
-            assert "docsgpt-local" in reg.models
-
-    @pytest.mark.unit
-    def test_add_huggingface_models(self):
-        with patch.object(ModelRegistry, "_load_models"):
-            reg = ModelRegistry()
-            reg.models = {}
-            mock_settings = MagicMock()
-            reg._add_huggingface_models(mock_settings)
-            assert "huggingface-local" in reg.models
-
-    @pytest.mark.unit
     def test_load_models_with_openai_key(self):
         mock_settings = MagicMock()
         mock_settings.OPENAI_BASE_URL = None
         mock_settings.OPENAI_API_KEY = "sk-test"
         mock_settings.OPENAI_API_BASE = None
-        mock_settings.ANTHROPIC_API_KEY = None
-        mock_settings.GOOGLE_API_KEY = None
-        mock_settings.GROQ_API_KEY = None
         mock_settings.OPEN_ROUTER_API_KEY = None
-        mock_settings.NOVITA_API_KEY = None
-        mock_settings.HUGGINGFACE_API_KEY = None
         mock_settings.LLM_PROVIDER = "openai"
         mock_settings.LLM_NAME = ""
         mock_settings.API_KEY = None
@@ -210,12 +186,7 @@ class TestModelRegistry:
         mock_settings.OPENAI_BASE_URL = "http://localhost:11434/v1"
         mock_settings.OPENAI_API_KEY = "sk-test"
         mock_settings.OPENAI_API_BASE = None
-        mock_settings.ANTHROPIC_API_KEY = None
-        mock_settings.GOOGLE_API_KEY = None
-        mock_settings.GROQ_API_KEY = None
         mock_settings.OPEN_ROUTER_API_KEY = None
-        mock_settings.NOVITA_API_KEY = None
-        mock_settings.HUGGINGFACE_API_KEY = None
         mock_settings.LLM_PROVIDER = "openai"
         mock_settings.LLM_NAME = "llama3,gemma"
         mock_settings.API_KEY = None
@@ -234,42 +205,6 @@ class TestModelRegistry:
             assert reg.default_model_id == "gpt-4"
 
     @pytest.mark.unit
-    def test_add_anthropic_models_with_key(self):
-        with patch.object(ModelRegistry, "_load_models"):
-            reg = ModelRegistry()
-            reg.models = {}
-            mock_settings = MagicMock()
-            mock_settings.ANTHROPIC_API_KEY = "sk-ant-test"
-            mock_settings.LLM_PROVIDER = ""
-            mock_settings.LLM_NAME = ""
-            reg._add_anthropic_models(mock_settings)
-            assert len(reg.models) > 0
-
-    @pytest.mark.unit
-    def test_add_google_models_with_key(self):
-        with patch.object(ModelRegistry, "_load_models"):
-            reg = ModelRegistry()
-            reg.models = {}
-            mock_settings = MagicMock()
-            mock_settings.GOOGLE_API_KEY = "google-test"
-            mock_settings.LLM_PROVIDER = ""
-            mock_settings.LLM_NAME = ""
-            reg._add_google_models(mock_settings)
-            assert len(reg.models) > 0
-
-    @pytest.mark.unit
-    def test_add_groq_models_with_key(self):
-        with patch.object(ModelRegistry, "_load_models"):
-            reg = ModelRegistry()
-            reg.models = {}
-            mock_settings = MagicMock()
-            mock_settings.GROQ_API_KEY = "groq-test"
-            mock_settings.LLM_PROVIDER = ""
-            mock_settings.LLM_NAME = ""
-            reg._add_groq_models(mock_settings)
-            assert len(reg.models) > 0
-
-    @pytest.mark.unit
     def test_add_openrouter_models_with_key(self):
         with patch.object(ModelRegistry, "_load_models"):
             reg = ModelRegistry()
@@ -279,18 +214,6 @@ class TestModelRegistry:
             mock_settings.LLM_PROVIDER = ""
             mock_settings.LLM_NAME = ""
             reg._add_openrouter_models(mock_settings)
-            assert len(reg.models) > 0
-
-    @pytest.mark.unit
-    def test_add_novita_models_with_key(self):
-        with patch.object(ModelRegistry, "_load_models"):
-            reg = ModelRegistry()
-            reg.models = {}
-            mock_settings = MagicMock()
-            mock_settings.NOVITA_API_KEY = "novita-test"
-            mock_settings.LLM_PROVIDER = ""
-            mock_settings.LLM_NAME = ""
-            reg._add_novita_models(mock_settings)
             assert len(reg.models) > 0
 
     @pytest.mark.unit
@@ -306,37 +229,47 @@ class TestModelRegistry:
             assert len(reg.models) > 0
 
     @pytest.mark.unit
-    def test_add_anthropic_models_no_key_with_provider(self):
-        with patch.object(ModelRegistry, "_load_models"):
-            reg = ModelRegistry()
-            reg.models = {}
-            mock_settings = MagicMock()
-            mock_settings.ANTHROPIC_API_KEY = None
-            mock_settings.LLM_PROVIDER = "anthropic"
-            mock_settings.LLM_NAME = "nonexistent"
-            reg._add_anthropic_models(mock_settings)
-            assert len(reg.models) > 0
-
-    @pytest.mark.unit
-    def test_default_model_fallback_to_first(self):
+    def test_unconfigured_boot_registers_nothing(self):
+        """No provider keys at all: the registry stays empty rather than
+        registering a model (e.g. upstream's docsgpt-local) whose provider
+        has no LLM class."""
         mock_settings = MagicMock()
         mock_settings.OPENAI_BASE_URL = None
         mock_settings.OPENAI_API_KEY = None
         mock_settings.OPENAI_API_BASE = None
-        mock_settings.ANTHROPIC_API_KEY = None
-        mock_settings.GOOGLE_API_KEY = None
-        mock_settings.GROQ_API_KEY = None
         mock_settings.OPEN_ROUTER_API_KEY = None
-        mock_settings.NOVITA_API_KEY = None
-        mock_settings.HUGGINGFACE_API_KEY = None
         mock_settings.LLM_PROVIDER = ""
         mock_settings.LLM_NAME = ""
         mock_settings.API_KEY = None
 
         with patch("application.core.settings.settings", mock_settings):
             reg = ModelRegistry()
-            # Should have at least docsgpt-local
+            assert reg.models == {}
+            assert reg.default_model_id is None
+
+    @pytest.mark.unit
+    def test_default_model_provider_is_buildable(self):
+        """The default-model fallthrough can only ever land on a provider
+        LLMCreator can build."""
+        from application.llm.llm_creator import LLMCreator
+
+        mock_settings = MagicMock()
+        mock_settings.OPENAI_BASE_URL = None
+        mock_settings.OPENAI_API_KEY = None
+        mock_settings.OPENAI_API_BASE = None
+        mock_settings.OPEN_ROUTER_API_KEY = "or-key"
+        mock_settings.LLM_PROVIDER = "openrouter"
+        mock_settings.LLM_NAME = ""
+        mock_settings.API_KEY = None
+
+        with patch("application.core.settings.settings", mock_settings):
+            reg = ModelRegistry()
             assert reg.default_model_id is not None
+            default = reg.get_model(reg.default_model_id)
+            assert default.provider.value in LLMCreator.llms
+            assert all(
+                m.provider.value in LLMCreator.llms for m in reg.get_all_models()
+            )
 
     @pytest.mark.unit
     def test_default_model_from_provider_fallback(self):
@@ -346,12 +279,7 @@ class TestModelRegistry:
         mock_settings.OPENAI_BASE_URL = None
         mock_settings.OPENAI_API_KEY = "sk-test"
         mock_settings.OPENAI_API_BASE = None
-        mock_settings.ANTHROPIC_API_KEY = None
-        mock_settings.GOOGLE_API_KEY = None
-        mock_settings.GROQ_API_KEY = None
         mock_settings.OPEN_ROUTER_API_KEY = None
-        mock_settings.NOVITA_API_KEY = None
-        mock_settings.HUGGINGFACE_API_KEY = None
         mock_settings.LLM_PROVIDER = "openai"
         mock_settings.LLM_NAME = None
         mock_settings.API_KEY = "sk-test"
@@ -359,30 +287,6 @@ class TestModelRegistry:
         with patch("application.core.settings.settings", mock_settings):
             reg = ModelRegistry()
             assert reg.default_model_id is not None
-
-    @pytest.mark.unit
-    def test_add_google_models_no_key_with_provider(self):
-        with patch.object(ModelRegistry, "_load_models"):
-            reg = ModelRegistry()
-            reg.models = {}
-            mock_settings = MagicMock()
-            mock_settings.GOOGLE_API_KEY = None
-            mock_settings.LLM_PROVIDER = "google"
-            mock_settings.LLM_NAME = "nonexistent"
-            reg._add_google_models(mock_settings)
-            assert len(reg.models) > 0
-
-    @pytest.mark.unit
-    def test_add_groq_models_no_key_with_provider(self):
-        with patch.object(ModelRegistry, "_load_models"):
-            reg = ModelRegistry()
-            reg.models = {}
-            mock_settings = MagicMock()
-            mock_settings.GROQ_API_KEY = None
-            mock_settings.LLM_PROVIDER = "groq"
-            mock_settings.LLM_NAME = "nonexistent"
-            reg._add_groq_models(mock_settings)
-            assert len(reg.models) > 0
 
     @pytest.mark.unit
     def test_add_openrouter_models_no_key_with_provider(self):
@@ -394,18 +298,6 @@ class TestModelRegistry:
             mock_settings.LLM_PROVIDER = "openrouter"
             mock_settings.LLM_NAME = "nonexistent"
             reg._add_openrouter_models(mock_settings)
-            assert len(reg.models) > 0
-
-    @pytest.mark.unit
-    def test_add_novita_models_no_key_with_provider(self):
-        with patch.object(ModelRegistry, "_load_models"):
-            reg = ModelRegistry()
-            reg.models = {}
-            mock_settings = MagicMock()
-            mock_settings.NOVITA_API_KEY = None
-            mock_settings.LLM_PROVIDER = "novita"
-            mock_settings.LLM_NAME = "nonexistent"
-            reg._add_novita_models(mock_settings)
             assert len(reg.models) > 0
 
     @pytest.mark.unit
@@ -458,56 +350,6 @@ class TestModelRegistry:
             assert len(reg.models) >= 1
 
     @pytest.mark.unit
-    def test_add_anthropic_no_key_no_provider_fallthrough(self):
-        """Cover lines 199-204: no key, provider set but name not found -> add all."""
-        with patch.object(ModelRegistry, "_load_models"):
-            reg = ModelRegistry()
-            reg.models = {}
-            mock_settings = MagicMock()
-            mock_settings.ANTHROPIC_API_KEY = None
-            mock_settings.LLM_PROVIDER = "anthropic"
-            mock_settings.LLM_NAME = "nonexistent-model"
-            reg._add_anthropic_models(mock_settings)
-            # Falls through to add all anthropic models
-            assert len(reg.models) > 0
-
-    @pytest.mark.unit
-    def test_add_google_no_key_matching_name(self):
-        """Cover lines 213-218: Google fallback with matching name."""
-        from application.core.model_configs import GOOGLE_MODELS
-
-        with patch.object(ModelRegistry, "_load_models"):
-            reg = ModelRegistry()
-            reg.models = {}
-            mock_settings = MagicMock()
-            mock_settings.GOOGLE_API_KEY = None
-            mock_settings.LLM_PROVIDER = "google"
-            if GOOGLE_MODELS:
-                mock_settings.LLM_NAME = GOOGLE_MODELS[0].id
-            else:
-                mock_settings.LLM_NAME = "nonexistent"
-            reg._add_google_models(mock_settings)
-            assert len(reg.models) >= 1
-
-    @pytest.mark.unit
-    def test_add_groq_no_key_matching_name(self):
-        """Cover lines 229-233: Groq fallback with matching name."""
-        from application.core.model_configs import GROQ_MODELS
-
-        with patch.object(ModelRegistry, "_load_models"):
-            reg = ModelRegistry()
-            reg.models = {}
-            mock_settings = MagicMock()
-            mock_settings.GROQ_API_KEY = None
-            mock_settings.LLM_PROVIDER = "groq"
-            if GROQ_MODELS:
-                mock_settings.LLM_NAME = GROQ_MODELS[0].id
-            else:
-                mock_settings.LLM_NAME = "nonexistent"
-            reg._add_groq_models(mock_settings)
-            assert len(reg.models) >= 1
-
-    @pytest.mark.unit
     def test_add_openrouter_no_key_matching_name(self):
         """Cover lines 241-250: OpenRouter fallback with matching name."""
         from application.core.model_configs import OPENROUTER_MODELS
@@ -526,36 +368,13 @@ class TestModelRegistry:
             assert len(reg.models) >= 1
 
     @pytest.mark.unit
-    def test_add_novita_no_key_matching_name(self):
-        """Cover novita fallback with matching name."""
-        from application.core.model_configs import NOVITA_MODELS
-
-        with patch.object(ModelRegistry, "_load_models"):
-            reg = ModelRegistry()
-            reg.models = {}
-            mock_settings = MagicMock()
-            mock_settings.NOVITA_API_KEY = None
-            mock_settings.LLM_PROVIDER = "novita"
-            if NOVITA_MODELS:
-                mock_settings.LLM_NAME = NOVITA_MODELS[0].id
-            else:
-                mock_settings.LLM_NAME = "nonexistent"
-            reg._add_novita_models(mock_settings)
-            assert len(reg.models) >= 1
-
-    @pytest.mark.unit
     def test_load_models_default_from_llm_name_exact_match(self):
         """Cover line 136/147: exact LLM_NAME match for default model."""
         mock_settings = MagicMock()
         mock_settings.OPENAI_BASE_URL = None
         mock_settings.OPENAI_API_KEY = "sk-test"
         mock_settings.OPENAI_API_BASE = None
-        mock_settings.ANTHROPIC_API_KEY = None
-        mock_settings.GOOGLE_API_KEY = None
-        mock_settings.GROQ_API_KEY = None
         mock_settings.OPEN_ROUTER_API_KEY = None
-        mock_settings.NOVITA_API_KEY = None
-        mock_settings.HUGGINGFACE_API_KEY = None
         mock_settings.LLM_PROVIDER = "openai"
         mock_settings.API_KEY = None
 
@@ -622,28 +441,6 @@ class TestModelRegistryAdditionalCoverage:
             ):
                 reg._add_azure_openai_models(mock_settings)
             assert "gpt-4o" in reg.models
-
-    def test_add_anthropic_models_with_api_key(self):
-        """Cover line 100: anthropic with API key."""
-        with patch.object(ModelRegistry, "_load_models"):
-            reg = ModelRegistry()
-            reg.models = {}
-            mock_settings = MagicMock()
-            mock_settings.ANTHROPIC_API_KEY = "sk-test"
-            mock_settings.LLM_PROVIDER = "anthropic"
-            reg._add_anthropic_models(mock_settings)
-            assert len(reg.models) > 0
-
-    def test_add_google_models_with_api_key(self):
-        """Cover line 105: google with API key."""
-        with patch.object(ModelRegistry, "_load_models"):
-            reg = ModelRegistry()
-            reg.models = {}
-            mock_settings = MagicMock()
-            mock_settings.GOOGLE_API_KEY = "test-key"
-            mock_settings.LLM_PROVIDER = "google"
-            reg._add_google_models(mock_settings)
-            assert len(reg.models) > 0
 
     def test_default_model_from_provider(self):
         """Cover line 147: default model selected from provider."""

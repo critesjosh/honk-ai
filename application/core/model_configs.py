@@ -21,13 +21,7 @@ IMAGE_ATTACHMENTS = [
 # When excluded, PDFs are synthetically processed by converting pages to images.
 OPENAI_ATTACHMENTS = IMAGE_ATTACHMENTS
 
-GOOGLE_ATTACHMENTS = ["application/pdf"] + IMAGE_ATTACHMENTS
-
-ANTHROPIC_ATTACHMENTS = IMAGE_ATTACHMENTS
-
 OPENROUTER_ATTACHMENTS = IMAGE_ATTACHMENTS
-
-NOVITA_ATTACHMENTS = IMAGE_ATTACHMENTS
 
 
 OPENAI_MODELS = [
@@ -55,153 +49,6 @@ OPENAI_MODELS = [
             context_window=200000,
         ),
     )
-]
-
-
-ANTHROPIC_MODELS = [
-    AvailableModel(
-        id="claude-sonnet-4-6",
-        provider=ModelProvider.ANTHROPIC,
-        display_name="Claude Sonnet 4.6",
-        description="Default Aztec model. Balanced performance and capability.",
-        capabilities=ModelCapabilities(
-            supports_tools=True,
-            supports_structured_output=True,
-            supported_attachment_types=ANTHROPIC_ATTACHMENTS,
-            context_window=200000,
-        ),
-    ),
-    AvailableModel(
-        id="claude-opus-4-7",
-        provider=ModelProvider.ANTHROPIC,
-        display_name="Claude Opus 4.7",
-        description="Most capable Claude model for hard reasoning and long-form tasks.",
-        capabilities=ModelCapabilities(
-            supports_tools=True,
-            supports_structured_output=True,
-            supported_attachment_types=ANTHROPIC_ATTACHMENTS,
-            context_window=200000,
-        ),
-    ),
-    AvailableModel(
-        id="claude-haiku-4-5",
-        provider=ModelProvider.ANTHROPIC,
-        display_name="Claude Haiku 4.5",
-        description="Fast, cost-effective Claude model for short tasks and high-throughput usage.",
-        capabilities=ModelCapabilities(
-            supports_tools=True,
-            supported_attachment_types=ANTHROPIC_ATTACHMENTS,
-            context_window=200000,
-        ),
-    ),
-    AvailableModel(
-        id="claude-3-5-sonnet-20241022",
-        provider=ModelProvider.ANTHROPIC,
-        display_name="Claude 3.5 Sonnet (Latest)",
-        description="Previous-generation Claude 3.5 Sonnet.",
-        capabilities=ModelCapabilities(
-            supports_tools=True,
-            supported_attachment_types=ANTHROPIC_ATTACHMENTS,
-            context_window=200000,
-        ),
-    ),
-    AvailableModel(
-        id="claude-3-5-sonnet",
-        provider=ModelProvider.ANTHROPIC,
-        display_name="Claude 3.5 Sonnet",
-        description="Previous-generation balanced Claude model.",
-        capabilities=ModelCapabilities(
-            supports_tools=True,
-            supported_attachment_types=ANTHROPIC_ATTACHMENTS,
-            context_window=200000,
-        ),
-    ),
-    AvailableModel(
-        id="claude-3-opus",
-        provider=ModelProvider.ANTHROPIC,
-        display_name="Claude 3 Opus",
-        description="Previous-generation Opus.",
-        capabilities=ModelCapabilities(
-            supports_tools=True,
-            supported_attachment_types=ANTHROPIC_ATTACHMENTS,
-            context_window=200000,
-        ),
-    ),
-    AvailableModel(
-        id="claude-3-haiku",
-        provider=ModelProvider.ANTHROPIC,
-        display_name="Claude 3 Haiku",
-        description="Previous-generation Haiku.",
-        capabilities=ModelCapabilities(
-            supports_tools=True,
-            supported_attachment_types=ANTHROPIC_ATTACHMENTS,
-            context_window=200000,
-        ),
-    ),
-]
-
-
-GOOGLE_MODELS = [
-    AvailableModel(
-        id="gemini-flash-latest",
-        provider=ModelProvider.GOOGLE,
-        display_name="Gemini Flash (Latest)",
-        description="Latest experimental Gemini model",
-        capabilities=ModelCapabilities(
-            supports_tools=True,
-            supports_structured_output=True,
-            supported_attachment_types=GOOGLE_ATTACHMENTS,
-            context_window=int(1e6),
-        ),
-    ),
-    AvailableModel(
-        id="gemini-flash-lite-latest",
-        provider=ModelProvider.GOOGLE,
-        display_name="Gemini Flash Lite (Latest)",
-        description="Fast with huge context window",
-        capabilities=ModelCapabilities(
-            supports_tools=True,
-            supports_structured_output=True,
-            supported_attachment_types=GOOGLE_ATTACHMENTS,
-            context_window=int(1e6),
-        ),
-    ),
-    AvailableModel(
-        id="gemini-3-pro-preview",
-        provider=ModelProvider.GOOGLE,
-        display_name="Gemini 3 Pro",
-        description="Most capable Gemini model",
-        capabilities=ModelCapabilities(
-            supports_tools=True,
-            supports_structured_output=True,
-            supported_attachment_types=GOOGLE_ATTACHMENTS,
-            context_window=2000000,
-        ),
-    ),
-]
-
-
-GROQ_MODELS = [
-    AvailableModel(
-        id="llama-3.3-70b-versatile",
-        provider=ModelProvider.GROQ,
-        display_name="Llama 3.3 70B",
-        description="Latest Llama model with high-speed inference",
-        capabilities=ModelCapabilities(
-            supports_tools=True,
-            context_window=128000,
-        ),
-    ),
-    AvailableModel(
-        id="openai/gpt-oss-120b",
-        provider=ModelProvider.GROQ,
-        display_name="GPT-OSS 120B",
-        description="Open-source GPT model optimized for speed",
-        capabilities=ModelCapabilities(
-            supports_tools=True,
-            context_window=128000,
-        ),
-    ),
 ]
 
 
@@ -345,45 +192,6 @@ OPENROUTER_MODELS = [
             supports_structured_output=True,
             context_window=200000,
             supported_attachment_types=OPENROUTER_ATTACHMENTS,
-        ),
-    ),
-]
-
-NOVITA_MODELS = [
-    AvailableModel(
-        id="moonshotai/kimi-k2.5",
-        provider=ModelProvider.NOVITA,
-        display_name="Kimi K2.5",
-        description="MoE model with function calling, structured output, reasoning, and vision",
-        capabilities=ModelCapabilities(
-            supports_tools=True,
-            supports_structured_output=True,
-            supported_attachment_types=NOVITA_ATTACHMENTS,
-            context_window=262144,
-        ),
-    ),
-    AvailableModel(
-        id="zai-org/glm-5",
-        provider=ModelProvider.NOVITA,
-        display_name="GLM-5",
-        description="MoE model with function calling, structured output, and reasoning",
-        capabilities=ModelCapabilities(
-            supports_tools=True,
-            supports_structured_output=True,
-            supported_attachment_types=[],
-            context_window=202800,
-        ),
-    ),
-    AvailableModel(
-        id="minimax/minimax-m2.5",
-        provider=ModelProvider.NOVITA,
-        display_name="MiniMax M2.5",
-        description="MoE model with function calling, structured output, and reasoning",
-        capabilities=ModelCapabilities(
-            supports_tools=True,
-            supports_structured_output=True,
-            supported_attachment_types=[],
-            context_window=204800,
         ),
     ),
 ]
