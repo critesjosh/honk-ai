@@ -538,6 +538,7 @@ class _RecordingClient:
         self.posts = []
         self.updates = []
         self.ephemerals = []
+        self.deletes = []
 
     async def chat_postMessage(self, **kwargs):
         self.posts.append(kwargs)
@@ -551,16 +552,18 @@ class _RecordingClient:
         self.ephemerals.append(kwargs)
         return {"ok": True}
 
+    async def chat_delete(self, **kwargs):
+        self.deletes.append(kwargs)
+        return {"ok": True}
+
 
 class TestFeedbackHandler:
-    def test_feedback_submits_silently(self, bot_module, monkeypatch):
-        """A 👍 click acks + submits but posts NO visible confirmation —
-        the old ephemeral "Thanks for the feedback" was channel noise."""
+    def _click(self, bot_module, monkeypatch, body, submit_ok=True):
         calls = []
 
         async def fake_submit(conversation_id, question_index, feedback):
             calls.append((conversation_id, question_index, feedback))
-            return True
+            return submit_ok
 
         monkeypatch.setattr(bot_module, "submit_feedback", fake_submit)
         client = _RecordingClient()
@@ -569,17 +572,94 @@ class TestFeedbackHandler:
         async def ack():
             acked.append(True)
 
+        asyncio.run(bot_module._handle_feedback(ack, body, client, body["actions"][0]["value"]))
+        assert acked
+        return client, calls
+
+    def test_feedback_retires_buttons_keeps_answer(self, bot_module, monkeypatch):
+        """A 👍 click submits silently (no post/ephemeral — the old
+        "Thanks for the feedback" was channel noise) and edits the
+        message to drop ONLY the actions block, keeping answer+sources."""
+        section = {"type": "section", "text": {"type": "mrkdwn", "text": "the answer"}}
+        ctx = {"type": "context", "elements": [{"type": "mrkdwn", "text": "*Sources:* x"}]}
+        actions = {"type": "actions", "elements": []}
         body = {
             "actions": [{"action_id": bot_module._LIKE_ACTION, "value": "conv-1:2"}],
             "user": {"id": "U1"},
             "channel": {"id": "C1"},
+            "message": {"ts": "42.0", "text": "the answer", "blocks": [section, ctx, actions]},
         }
-        asyncio.run(bot_module._handle_feedback(ack, body, client, "conv-1:2"))
-        assert acked
+        client, calls = self._click(bot_module, monkeypatch, body)
         assert calls == [("conv-1", 2, "LIKE")]
         assert client.posts == []
-        assert client.updates == []
         assert client.ephemerals == []
+        assert client.deletes == []
+        assert len(client.updates) == 1
+        assert client.updates[0]["ts"] == "42.0"
+        assert client.updates[0]["blocks"] == [section, ctx]
+
+    def test_feedback_deletes_legacy_controls_only_message(self, bot_module, monkeypatch):
+        """Pre-merge layout: a standalone controls message whose blocks are
+        actions-only has nothing left after the filter — delete it."""
+        body = {
+            "actions": [{"action_id": bot_module._DISLIKE_ACTION, "value": "conv-9:0"}],
+            "user": {"id": "U1"},
+            "channel": {"id": "C1"},
+            "message": {"ts": "7.0", "text": "Was this helpful?", "blocks": [{"type": "actions", "elements": []}]},
+        }
+        client, calls = self._click(bot_module, monkeypatch, body)
+        assert calls == [("conv-9", 0, "DISLIKE")]
+        assert client.updates == []
+        assert client.deletes == [{"channel": "C1", "ts": "7.0"}]
+
+    def test_failed_submit_leaves_buttons_in_place(self, bot_module, monkeypatch):
+        """If /api/feedback fails the buttons must stay clickable."""
+        body = {
+            "actions": [{"action_id": bot_module._LIKE_ACTION, "value": "conv-1:2"}],
+            "user": {"id": "U1"},
+            "channel": {"id": "C1"},
+            "message": {"ts": "42.0", "text": "t", "blocks": [{"type": "actions", "elements": []}]},
+        }
+        client, calls = self._click(bot_module, monkeypatch, body, submit_ok=False)
+        assert calls == [("conv-1", 2, "LIKE")]
+        assert client.updates == []
+        assert client.deletes == []
+        assert client.posts == []
+        assert client.ephemerals == []
+
+
+class TestControlsMergedIntoAnswer:
+    def test_success_attaches_controls_to_final_message_no_extra_post(self, bot_module, monkeypatch):
+        """Sources + feedback buttons are EDITED onto the final answer
+        message — no separate "Was this helpful?" post, so no extra Slack
+        notification whose preview text never renders in the thread."""
+
+        async def fake(question, messages, conversation_id):
+            return {
+                "answer": "short answer", "conversation_id": "conv-1",
+                "sources": [{"title": "wallets", "source": "https://docs.example/wallets"}],
+                "usage": None, "http_status": 200, "error": None,
+            }
+
+        monkeypatch.setattr(bot_module, "generate_answer", fake)
+        client = _RecordingClient()
+        key = ("T_UNCAPPED", "D1")
+        bot_module.conversation_states.pop(key, None)
+        asyncio.run(bot_module._answer_question(
+            client, team_id="T_UNCAPPED", channel="D1", thread_ts=None,
+            trigger_ts="1.0", user="U1", question="q", is_dm=True,
+        ))
+        bot_module.conversation_states.pop(key, None)
+        assert len(client.posts) == 1  # the placeholder only — no controls post
+        assert len(client.updates) == 2  # placeholder→text, then controls attach
+        final = client.updates[1]
+        types = [b["type"] for b in final["blocks"]]
+        assert types[0] == "section"
+        assert types[-1] == "actions"
+        assert "context" in types  # sources line preserved
+        assert final["blocks"][0]["text"]["text"] == "short answer"
+        # value still encodes conv:index so feedback survives a bot restart
+        assert final["blocks"][-1]["elements"][0]["value"] == "conv-1:0"
 
 
 class TestAnswerQuestionErrorPaths:

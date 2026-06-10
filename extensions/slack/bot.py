@@ -859,6 +859,20 @@ def _feedback_actions_block(conversation_id: str, question_index: int) -> dict:
     }
 
 
+# Slack hard-caps a section block's mrkdwn text at 3000 chars, while answer
+# chunks run up to SLACK_MAX_MSG_CHARS (3500) — so re-rendering a chunk as
+# blocks may need more than one section. 2900 leaves margin under the cap.
+_SECTION_TEXT_LIMIT = 2900
+
+
+def _mrkdwn_sections(text: str) -> list[dict]:
+    """Re-render message text as section blocks (fence-aware split)."""
+    return [
+        {"type": "section", "text": {"type": "mrkdwn", "text": part}}
+        for part in chunk_string(text, _SECTION_TEXT_LIMIT)
+    ]
+
+
 # --- App + handlers --------------------------------------------------------
 
 if _SLACK_SDK_AVAILABLE:
@@ -935,12 +949,13 @@ async def _answer_question(client, *, team_id, channel, thread_ts, trigger_ts, u
     placeholder = "🪿 _Queued — finishing the previous question…_" if busy else "🪿 _Looking into it…_"
     placeholder_ts = await _post(client, channel, thread_ts, is_dm, placeholder)
 
-    async def _emit_first(text: str) -> None:
+    async def _emit_first(text: str) -> Optional[str]:
         """Turn the placeholder into the first real message, or post fresh
-        if the placeholder couldn't be created / edited."""
+        if the placeholder couldn't be created / edited. Returns the ts of
+        the message that ended up carrying the text (None if both failed)."""
         if placeholder_ts and await _update(client, channel, placeholder_ts, text):
-            return
-        await _post(client, channel, thread_ts, is_dm, text)
+            return placeholder_ts
+        return await _post(client, channel, thread_ts, is_dm, text)
 
     try:
         async with state["lock"]:
@@ -997,17 +1012,36 @@ async def _answer_question(client, *, team_id, channel, thread_ts, trigger_ts, u
 
             formatted = format_for_slack(resp["answer"])
             chunks = chunk_string(formatted)
-            await _emit_first(chunks[0])
+            last_ts = await _emit_first(chunks[0])
+            last_chunk = chunks[0]
             for chunk in chunks[1:]:
-                await _post(client, channel, thread_ts, is_dm, chunk)
+                ts = await _post(client, channel, thread_ts, is_dm, chunk)
+                if ts:
+                    last_ts, last_chunk = ts, chunk
 
-            # Final controls message: sources + feedback buttons (Block Kit).
-            blocks = []
+            # Sources + feedback buttons are EDITED onto the final answer
+            # message instead of posted as a separate message: edits fire
+            # no Slack notification, so the user no longer gets an alert
+            # whose preview text ("Was this helpful?") never visibly
+            # rendered anywhere in the thread. Requires re-rendering the
+            # chunk text as section blocks (text is fallback-only once a
+            # message has blocks).
+            controls = []
             ctx = _sources_context_block(resp.get("sources", []))
             if ctx:
-                blocks.append(ctx)
-            blocks.append(_feedback_actions_block(new_conversation_id, question_index))
-            await _post(client, channel, thread_ts, is_dm, "Was this helpful?", blocks=blocks)
+                controls.append(ctx)
+            controls.append(_feedback_actions_block(new_conversation_id, question_index))
+            attached = False
+            if last_ts:
+                attached = await _update(
+                    client, channel, last_ts, last_chunk,
+                    blocks=_mrkdwn_sections(last_chunk) + controls,
+                )
+            if not attached:
+                # Degraded path (final-message edit failed): separate
+                # controls message with a fallback text that matches what
+                # actually renders.
+                await _post(client, channel, thread_ts, is_dm, "Rate this answer: 👍 / 👎", blocks=controls)
     except Exception:
         # Any unexpected failure (not the handled timeout/non-200 paths)
         # must still replace the eager placeholder so it doesn't linger as
@@ -1060,11 +1094,15 @@ async def _post(client, channel, thread_ts, is_dm, text, blocks=None) -> Optiona
         return None
 
 
-async def _update(client, channel, ts, text) -> bool:
+async def _update(client, channel, ts, text, blocks=None) -> bool:
     """Edit an existing message in place (used to turn the eager
-    placeholder into the first answer chunk). Returns True on success."""
+    placeholder into the first answer chunk, and to attach the
+    sources/feedback blocks to the final chunk). Returns True on success."""
+    kwargs = {"channel": channel, "ts": ts, "text": text}
+    if blocks:
+        kwargs["blocks"] = blocks
     try:
-        await client.chat_update(channel=channel, ts=ts, text=text)
+        await client.chat_update(**kwargs)
         return True
     except Exception as exc:
         logger.warning("chat_update to %s/%s failed: %s", channel, ts, _slack_error_detail(exc))
@@ -1165,6 +1203,24 @@ async def _handle_feedback(ack, body, client, value: str):
     ok = await submit_feedback(conversation_id, question_index, feedback_value)
     if not ok:
         logger.warning("Feedback submit failed for conversation %s idx %s", conversation_id, question_index)
+        return
+    # Retire the buttons once feedback landed: keep the answer/sources
+    # blocks, drop only the actions block (edits don't notify). Legacy
+    # standalone controls messages (pre-merge layout) may have nothing
+    # left after the filter — delete those outright.
+    msg = body.get("message") or {}
+    channel = body.get("channel", {}).get("id")
+    ts = msg.get("ts") or body.get("container", {}).get("message_ts")
+    if not (channel and ts):
+        return
+    remaining = [b for b in (msg.get("blocks") or []) if b.get("type") != "actions"]
+    try:
+        if remaining:
+            await client.chat_update(channel=channel, ts=ts, text=msg.get("text") or "", blocks=remaining)
+        else:
+            await client.chat_delete(channel=channel, ts=ts)
+    except Exception as exc:
+        logger.debug("Feedback-button retire failed for %s/%s: %s", channel, ts, _slack_error_detail(exc))
 
 
 async def on_like(ack, body, client):
