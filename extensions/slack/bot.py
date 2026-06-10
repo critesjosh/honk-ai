@@ -207,7 +207,13 @@ def _parse_team_usd_caps() -> dict[str, float]:
 
 _TEAM_USD_CAPS: dict[str, float] = _parse_team_usd_caps()
 if _TEAM_USD_CAPS:
-    logger.info("Per-workspace daily USD caps loaded: %s", {t: f"${u:.2f}" for t, u in _TEAM_USD_CAPS.items()})
+    logger.info(
+        "Per-workspace daily USD caps loaded: %s (prompt $/Mtok=%.4f, completion $/Mtok=%.4f, reserve=$%.4f)",
+        {t: f"${u:.2f}" for t, u in _TEAM_USD_CAPS.items()},
+        _USD_PER_PROMPT_MTOK,
+        _USD_PER_COMPLETION_MTOK,
+        _PRE_CALL_RESERVE_USD,
+    )
 else:
     logger.info("No SLACK_TEAM_DAILY_USD_CAPS configured; all workspaces uncapped")
 
@@ -399,10 +405,19 @@ def _already_handled(message_key: Optional[str]) -> bool:
     return False
 
 
-def _evict_state_if_needed() -> None:
+def _evict_state_if_needed(protected_key: Optional[tuple] = None) -> None:
+    """Lock-aware LRU eviction (mirrors the Discord bot's helper).
+
+    ``protected_key`` is the entry the caller just created/touched and is
+    about to hand out — its lock isn't held yet, so without the exemption
+    a full cache of locked entries would evict the very state we're about
+    to return. If nothing is evictable, temporarily exceed the cap.
+    """
     while len(conversation_states) > _THREAD_CACHE_MAX_ENTRIES:
         evicted = False
         for key, state in list(conversation_states.items()):
+            if key == protected_key:
+                continue
             lock = state.get("lock")
             if lock is None or not lock.locked():
                 conversation_states.pop(key)
@@ -418,7 +433,7 @@ def _get_conversation_state(key: tuple) -> dict:
         state = {"history": [], "conversation_id": None, "answer_count": 0, "lock": asyncio.Lock()}
         conversation_states[key] = state
     conversation_states.move_to_end(key)
-    _evict_state_if_needed()
+    _evict_state_if_needed(protected_key=key)
     return state
 
 
@@ -448,13 +463,33 @@ def strip_slack_decorations(text: str) -> str:
     return text
 
 
-def strip_bot_mention(text: str, bot_user_id: str) -> str:
+def strip_bot_mention(text: str, bot_user_id: Optional[str]) -> str:
     """Remove the leading/anywhere ``<@bot>`` token from a mention so the
-    raw question reaches RAG. Internal whitespace preserved verbatim."""
+    raw question reaches RAG. Internal whitespace preserved verbatim.
+    A falsy ``bot_user_id`` (startup race) degrades to a plain strip."""
     if not text:
         return ""
+    if not bot_user_id:
+        return text.strip()
     pattern = re.compile(r"<@" + re.escape(bot_user_id) + r">")
     return pattern.sub("", text).strip()
+
+
+def strip_leading_bot_mention(text: str, bot_user_id: Optional[str]) -> str:
+    """Strip a single LEADING ``<@bot>`` token (the addressing form:
+    optional whitespace, the token, optional trailing punctuation/space).
+
+    Used for DMs, where every message reaches us regardless of mention —
+    a mid-text ``<@bot>`` token there is *content* (e.g. a question about
+    Slack event payloads) and must reach RAG verbatim, unlike app_mention
+    where the token is what triggered the event. A falsy ``bot_user_id``
+    (startup race) degrades to a plain strip."""
+    if not text:
+        return ""
+    if not bot_user_id:
+        return text.strip()
+    pattern = re.compile(r"^\s*<@" + re.escape(bot_user_id) + r">[\s,:;.!?-]*")
+    return pattern.sub("", text, count=1).strip()
 
 
 def format_for_slack(text: str) -> str:
@@ -462,19 +497,24 @@ def format_for_slack(text: str) -> str:
 
     Minimal on purpose — over-converting risks mangling code. Headers
     (``#``/``##``/``###``) become ``*bold*`` lines (Slack has no headers);
-    ``[label](url)`` becomes ``<url|label>``. Fenced code blocks and
-    everything else are left intact (triple-backtick fences render in
-    Slack as-is).
+    ``[label](url)`` becomes ``<url|label>``. Fenced code blocks (``` or
+    ~~~) and everything else are left intact (triple-backtick fences
+    render in Slack as-is). The marker that OPENED a fence is remembered:
+    only the matching marker closes it, so a ``` line inside a ~~~ block
+    (or vice versa) is content, not a closer.
     """
     lines = text.split("\n")
     out = []
-    in_fence = False
+    fence_marker = None  # "```" or "~~~" while inside a fence, else None
     for line in lines:
-        if line.lstrip().startswith("```"):
-            in_fence = not in_fence
+        stripped = line.lstrip()
+        if fence_marker is not None:
+            if stripped.startswith(fence_marker):
+                fence_marker = None
             out.append(line)
             continue
-        if in_fence:
+        if stripped.startswith("```") or stripped.startswith("~~~"):
+            fence_marker = stripped[:3]
             out.append(line)
             continue
         header = re.match(r"^(#{1,3})\s+(.*)", line)
@@ -688,9 +728,16 @@ async def _resolve_user_names(client, msgs: list, bot_user_id: str) -> dict:
 
 async def generate_answer(question: str, messages: list, conversation_id):
     """Call the streaming backend. Returns answer / conversation_id /
-    sources / usage / http_status. Ported verbatim from the Discord bot —
-    the ``/stream`` contract is surface-agnostic, ``history`` stays a
-    JSON-encoded string."""
+    sources / usage / http_status / error. Ported verbatim from the
+    Discord bot — the ``/stream`` contract is surface-agnostic,
+    ``history`` stays a JSON-encoded string.
+
+    ``error`` carries the sanitized text of an in-band
+    ``{type: "error"}`` frame (``None`` on success). On that path the
+    backend flushes buffered text, emits the error frame, and returns
+    WITHOUT ``id``/``end`` and WITHOUT writing a conversation_messages
+    row, so the caller must treat the turn as failed despite the 200.
+    """
     import json
 
     payload = {
@@ -705,6 +752,7 @@ async def generate_answer(question: str, messages: list, conversation_id):
     new_conversation_id = conversation_id
     sources: list = []
     usage: Optional[dict] = None
+    error: Optional[str] = None
     async with aiohttp.ClientSession(timeout=timeout) as session:
         async with session.post(API_URL, json=payload, headers=headers) as resp:
             if resp.status != 200:
@@ -714,6 +762,7 @@ async def generate_answer(question: str, messages: list, conversation_id):
                     "sources": [],
                     "usage": None,
                     "http_status": resp.status,
+                    "error": None,
                 }
             async for line in resp.content:
                 line = line.decode("utf-8").strip()
@@ -737,12 +786,20 @@ async def generate_answer(question: str, messages: list, conversation_id):
                     gt = event.get("generated_tokens")
                     if isinstance(pt, int) and isinstance(gt, int):
                         usage = {"prompt_tokens": pt, "generated_tokens": gt, "model_id": event.get("model_id")}
+                elif etype == "error":
+                    # In-band failure: the backend returns right after
+                    # this frame (no id/end, no DB row). Stop reading and
+                    # surface it so the caller doesn't consume a feedback
+                    # position for a turn the backend never persisted.
+                    error = event.get("error") or "An error occurred"
+                    break
     return {
         "answer": answer or "Sorry, I couldn't find an answer.",
         "conversation_id": new_conversation_id,
         "sources": sources,
         "usage": usage,
         "http_status": 200,
+        "error": error,
     }
 
 
@@ -858,8 +915,8 @@ async def _answer_question(client, *, team_id, channel, thread_ts, trigger_ts, u
                     channel=channel, user=user,
                     text=f"💸 This workspace's daily AI quota (${cap:.2f}) is exhausted. Resets at 00:00 UTC ({eta} from now).",
                 )
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("Cap-notice ephemeral to %s failed: %s", channel, _slack_error_detail(exc))
         return
     reserved_usd, reserved_date = reservation
 
@@ -904,6 +961,22 @@ async def _answer_question(client, *, team_id, channel, thread_ts, trigger_ts, u
                 await _emit_first("Sorry, the request timed out. Please try again.")
                 return
 
+            # In-band error frame: the backend emitted {"type": "error"}
+            # and returned WITHOUT id/end and WITHOUT writing a
+            # conversation_messages row. Mirror the non-200 path below —
+            # no answer_count increment, no feedback blocks (otherwise
+            # every subsequent 👍/👎 in this conversation would land on
+            # the wrong DB row). Checked BEFORE the conversation_id
+            # branch because no ``id`` frame is emitted on this path, so
+            # on follow-up turns conversation_id still carries the prior
+            # turn's id. Spend stays keep_charged (the default): the LLM
+            # may have partially run before failing.
+            if resp.get("error"):
+                logger.warning("Backend in-band stream error: %s", resp["error"])
+                state["history"].pop()
+                await _emit_first("Sorry, something went wrong while answering. Please try again.")
+                return
+
             new_conversation_id = resp["conversation_id"]
             if new_conversation_id is None:
                 finalize["outcome"] = "refund"
@@ -941,12 +1014,35 @@ async def _answer_question(client, *, team_id, channel, thread_ts, trigger_ts, u
         # "🪿 Looking into it…" forever. Spend stays keep_charged (the safe
         # default) via the finally below.
         logger.exception("answer task failed for channel=%s", channel)
+        # Roll back the just-appended phantom prompt (same guarded pop as
+        # the Discord bot — the entry gains a "response" key only on the
+        # success path) so the next turn's history payload doesn't carry
+        # a promptless turn.
+        if state["history"] and "response" not in state["history"][-1]:
+            state["history"].pop()
         await _emit_first("Sorry, something went wrong handling that. Please try again.")
     finally:
         await _finalize_team_spend(
             team_id, reserved_usd, reserved_date,
             outcome=finalize["outcome"], actual_usd=finalize["actual_usd"],
         )
+
+
+def _slack_error_detail(exc: Exception) -> str:
+    """Compact, secret-free description of a Slack client failure: the
+    exception type plus, for ``SlackApiError``, the API ``error`` code
+    from the response (e.g. ``channel_not_found`` — safe, carries no
+    tokens or message content). Duck-typed on ``exc.response`` so the
+    helper works without importing slack_sdk."""
+    detail = type(exc).__name__
+    response = getattr(exc, "response", None)
+    try:
+        code = response.get("error") if response is not None else None
+    except Exception:
+        code = None
+    if code:
+        detail += f" ({code})"
+    return detail
 
 
 async def _post(client, channel, thread_ts, is_dm, text, blocks=None) -> Optional[str]:
@@ -960,7 +1056,7 @@ async def _post(client, channel, thread_ts, is_dm, text, blocks=None) -> Optiona
         resp = await client.chat_postMessage(**kwargs)
         return resp.get("ts")
     except Exception as exc:
-        logger.warning("chat_postMessage to %s failed: %s", channel, type(exc).__name__)
+        logger.warning("chat_postMessage to %s failed: %s", channel, _slack_error_detail(exc))
         return None
 
 
@@ -971,21 +1067,27 @@ async def _update(client, channel, ts, text) -> bool:
         await client.chat_update(channel=channel, ts=ts, text=text)
         return True
     except Exception as exc:
-        logger.warning("chat_update to %s/%s failed: %s", channel, ts, type(exc).__name__)
+        logger.warning("chat_update to %s/%s failed: %s", channel, ts, _slack_error_detail(exc))
         return False
 
 
-def _spawn(coro):
+def _spawn(coro) -> "asyncio.Task":
     """Fire-and-forget a coroutine with exception logging (so a crash in
-    the background answer task doesn't vanish silently)."""
+    the background answer task doesn't vanish silently). Returns the
+    task (callers may ignore it; tests use it)."""
     task = asyncio.create_task(coro)
 
     def _done(t):
+        if t.cancelled():
+            # ``Task.exception()`` RAISES CancelledError on a cancelled
+            # task — it doesn't return it. Cancellation isn't a failure.
+            return
         exc = t.exception()
         if exc:
             logger.exception("background task failed", exc_info=exc)
 
     task.add_done_callback(_done)
+    return task
 
 
 async def on_app_mention(event, body, client, logger):
@@ -1032,7 +1134,13 @@ async def on_message(event, body, client, logger):
     # both events for one ts; whichever lands first wins.
     if _already_handled(f"{team_id}:{channel}:{event.get('ts')}"):
         return
-    question = (event.get("text") or "").strip()
+    # A DM that @-mentions the bot delivers BOTH app_mention and
+    # message.im for the same message; whichever wins the dedupe above
+    # answers. Strip a LEADING <@bot> token here so the addressing form
+    # never reaches RAG when this handler wins the race (no-op when
+    # absent) — but ONLY a leading one: in a DM a mid-text mention token
+    # is content (e.g. asking about Slack event payloads), not a trigger.
+    question = strip_leading_bot_mention(event.get("text") or "", BOT_USER_ID)
     if not question:
         return
     _spawn(_answer_question(
@@ -1057,8 +1165,8 @@ async def _handle_feedback(ack, body, client, value: str):
     if ok and channel and user:
         try:
             await client.chat_postEphemeral(channel=channel, user=user, text="Thanks for the feedback! 🪿")
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Feedback-thanks ephemeral to %s failed: %s", channel, _slack_error_detail(exc))
 
 
 async def on_like(ack, body, client):
@@ -1092,6 +1200,13 @@ def _mcp_setup_instructions() -> str:
         "    }\n"
         "  }\n"
         "}\n"
+        "```\n"
+        "_Codex_ — add to `~/.codex/config.toml`:\n"
+        "```\n"
+        "[mcp_servers.aztec-docs]\n"
+        'command = "npx"\n'
+        'args = ["-y", "@aztec/mcp-server@latest"]\n'
+        f'env = {{ API_URL = "{MCP_PUBLIC_URL}", API_KEY = "<paste your key here>" }}\n'
         "```"
     )
 
@@ -1130,7 +1245,13 @@ async def cmd_mcp_key(ack, body, client, respond):
         logger.error("create_mcp_key connection error: %s", exc)
         await respond("Sorry, the service is temporarily unavailable. Please try again later.")
         return
-    api_key = data["api_key"]
+    api_key = data.get("api_key") if isinstance(data, dict) else None
+    if not api_key:
+        # A 200 without an api_key field is a backend contract break;
+        # surface an error instead of KeyError-ing the whole handler.
+        logger.error("create_mcp_key returned 200 without an api_key field")
+        await respond("Sorry, there was an error generating your key. Please try again later.")
+        return
     # Two separate ephemeral messages: key first (to limit screenshot
     # disclosure), instructions second (no secret).
     await respond(f"*Your Aztec MCP API Key:*\n```\n{api_key}\n```\nThis key is personal to you. Do not share it.")

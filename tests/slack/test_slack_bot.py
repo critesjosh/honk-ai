@@ -96,6 +96,21 @@ class TestFormatForSlack:
         assert "# not a header" in out  # untouched inside fence
         assert out.count("```") == 2
 
+    def test_hash_comment_inside_tilde_fence_untouched(self, bot_module):
+        src = "intro\n~~~bash\n# not a header\necho hi\n~~~\n# Outside"
+        out = bot_module.format_for_slack(src)
+        assert "# not a header" in out
+        assert "*not a header*" not in out
+        assert "*Outside*" in out
+
+    def test_backtick_line_does_not_close_tilde_fence(self, bot_module):
+        # Only the marker that opened the fence may close it.
+        src = "~~~\n```\n# still fenced\n~~~\n# Outside"
+        out = bot_module.format_for_slack(src)
+        assert "# still fenced" in out
+        assert "*still fenced*" not in out
+        assert "*Outside*" in out
+
 
 class TestChunkString:
     def test_short_text_single_chunk(self, bot_module):
@@ -130,6 +145,20 @@ class TestStripDecorations:
 
     def test_strip_bot_mention(self, bot_module):
         assert bot_module.strip_bot_mention("<@UBOT> what is noir?", "UBOT") == "what is noir?"
+
+    def test_strip_leading_bot_mention_addressing_forms(self, bot_module):
+        f = bot_module.strip_leading_bot_mention
+        assert f("<@UBOT> what is noir?", "UBOT") == "what is noir?"
+        assert f("  <@UBOT>: what is noir?", "UBOT") == "what is noir?"
+        assert f("<@UBOT>, what is noir?", "UBOT") == "what is noir?"
+
+    def test_strip_leading_bot_mention_keeps_mid_text_token(self, bot_module):
+        # In a DM a non-leading <@bot> token is content, not addressing.
+        src = "why does <@UBOT> appear in my event payload?"
+        assert bot_module.strip_leading_bot_mention(src, "UBOT") == src
+        # Leading addressing stripped, the content token preserved.
+        out = bot_module.strip_leading_bot_mention("<@UBOT> what does <@UBOT> mean?", "UBOT")
+        assert out == "what does <@UBOT> mean?"
 
 
 class TestThreadContextBlock:
@@ -335,6 +364,35 @@ class TestEventTeamId:
         assert bot_module._event_team_id({}, {}) is None
 
 
+class TestConversationStateCache:
+    def test_fresh_entry_protected_when_all_others_locked(self, bot_module, monkeypatch):
+        """At cap with every OTHER entry's lock held, the just-created
+        entry must NOT be the eviction victim (its own lock isn't held
+        yet — ``_answer_question`` acquires it after the lookup). The
+        cache may transiently exceed the cap instead. Mirrors the
+        Discord bot's ``_evict_cache_if_needed`` guarantee."""
+        monkeypatch.setattr(bot_module, "_THREAD_CACHE_MAX_ENTRIES", 3)
+        bot_module.conversation_states.clear()
+
+        async def driver():
+            keys = [("T1", f"C{i}") for i in range(3)]
+            states = [bot_module._get_conversation_state(k) for k in keys]
+            for s in states:
+                await s["lock"].acquire()
+            try:
+                fresh = bot_module._get_conversation_state(("T1", "C-new"))
+                assert ("T1", "C-new") in bot_module.conversation_states, "fresh entry was evicted"
+                assert bot_module.conversation_states[("T1", "C-new")] is fresh
+                # Cap transiently exceeded rather than orphaning the new state.
+                assert len(bot_module.conversation_states) == 4
+            finally:
+                for s in states:
+                    s["lock"].release()
+
+        asyncio.run(driver())
+        bot_module.conversation_states.clear()
+
+
 class TestForgetCacheScope:
     def test_pops_dm_and_thread_keys_for_channel_only(self, bot_module):
         cs = bot_module.conversation_states
@@ -390,3 +448,262 @@ class TestBlockBuilders:
 
     def test_sources_block_none_when_empty(self, bot_module):
         assert bot_module._sources_context_block([]) is None
+
+
+# --- /stream error-frame handling -------------------------------------------
+
+
+class _FakeStreamContent:
+    """Async-iterates canned SSE byte lines like ``resp.content``."""
+
+    def __init__(self, lines):
+        self._lines = list(lines)
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        if not self._lines:
+            raise StopAsyncIteration
+        return self._lines.pop(0)
+
+
+class _FakeStreamResponse:
+    def __init__(self, status, lines):
+        self.status = status
+        self.content = _FakeStreamContent(lines)
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+
+class _FakeSession:
+    def __init__(self, response):
+        self._response = response
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    def post(self, *args, **kwargs):
+        return self._response
+
+
+def _patch_stream(bot_module, monkeypatch, lines, status=200):
+    response = _FakeStreamResponse(status, lines)
+    monkeypatch.setattr(bot_module.aiohttp, "ClientSession", lambda *a, **kw: _FakeSession(response))
+
+
+class TestGenerateAnswerErrorFrame:
+    """On an in-band error the backend flushes buffered text, emits
+    ``{"type": "error"}``, and returns WITHOUT ``id``/``end`` and WITHOUT
+    writing a conversation_messages row — the client must surface that
+    instead of treating the turn as a success."""
+
+    def test_error_frame_stops_stream_and_surfaces_error(self, bot_module, monkeypatch):
+        lines = [
+            b'data: {"type": "answer", "answer": "partial"}\n',
+            b'data: {"type": "error", "error": "LLM exploded"}\n',
+            b'data: {"type": "answer", "answer": "never read"}\n',
+        ]
+        _patch_stream(bot_module, monkeypatch, lines)
+        result = asyncio.run(bot_module.generate_answer("q", [], "conv-prior"))
+        assert result["error"] == "LLM exploded"
+        assert result["http_status"] == 200
+        assert "never read" not in result["answer"]  # reading stopped at the error frame
+        # No id frame on this path — conversation_id stays the prior turn's.
+        assert result["conversation_id"] == "conv-prior"
+
+    def test_success_path_has_no_error(self, bot_module, monkeypatch):
+        lines = [
+            b'data: {"type": "answer", "answer": "hello"}\n',
+            b'data: {"type": "id", "id": "conv-1"}\n',
+        ]
+        _patch_stream(bot_module, monkeypatch, lines)
+        result = asyncio.run(bot_module.generate_answer("q", [], None))
+        assert result["error"] is None
+        assert result["conversation_id"] == "conv-1"
+        assert result["answer"] == "hello"
+
+
+class _RecordingClient:
+    """Records chat_postMessage / chat_update / chat_postEphemeral calls."""
+
+    def __init__(self):
+        self.posts = []
+        self.updates = []
+        self.ephemerals = []
+
+    async def chat_postMessage(self, **kwargs):
+        self.posts.append(kwargs)
+        return {"ts": f"{len(self.posts)}.0"}
+
+    async def chat_update(self, **kwargs):
+        self.updates.append(kwargs)
+        return {"ok": True}
+
+    async def chat_postEphemeral(self, **kwargs):
+        self.ephemerals.append(kwargs)
+        return {"ok": True}
+
+
+class TestAnswerQuestionErrorPaths:
+    def _run(self, bot_module, monkeypatch, fake_generate):
+        monkeypatch.setattr(bot_module, "generate_answer", fake_generate)
+        client = _RecordingClient()
+        key = ("T_UNCAPPED", "D1")
+        bot_module.conversation_states.pop(key, None)
+        asyncio.run(bot_module._answer_question(
+            client, team_id="T_UNCAPPED", channel="D1", thread_ts=None,
+            trigger_ts="1.0", user="U1", question="q", is_dm=True,
+        ))
+        state = bot_module.conversation_states[key]
+        bot_module.conversation_states.pop(key, None)
+        return client, state
+
+    def test_error_frame_rolls_back_like_non_200(self, bot_module, monkeypatch):
+        """An in-band error must not consume a feedback position: the
+        backend wrote NO row, so advancing answer_count would desync
+        every subsequent 👍/👎 in the conversation."""
+
+        async def fake(question, messages, conversation_id):
+            return {
+                "answer": "partial", "conversation_id": conversation_id,
+                "sources": [], "usage": None, "http_status": 200, "error": "boom",
+            }
+
+        client, state = self._run(bot_module, monkeypatch, fake)
+        assert state["history"] == []  # phantom prompt rolled back
+        assert state["answer_count"] == 0  # no feedback position consumed
+        assert state["conversation_id"] is None
+        assert len(client.posts) == 1  # the placeholder only — no feedback blocks
+        assert len(client.updates) == 1  # placeholder became the error text
+        assert "answering" in client.updates[0]["text"]
+
+    def test_error_frame_on_follow_up_turn_rolls_back(self, bot_module, monkeypatch):
+        """First-turn coverage masks the bug: there conversation_id is
+        still None, so the pre-existing non-200 fallback would roll back
+        anyway. On a follow-up turn the state carries a real
+        conversation_id (no ``id`` frame is emitted on the error path, so
+        it keeps the prior turn's), and ONLY the error-frame branch
+        protects answer_count / feedback alignment."""
+
+        async def fake(question, messages, conversation_id):
+            assert conversation_id == "conv-REAL"
+            return {
+                "answer": "partial", "conversation_id": conversation_id,
+                "sources": [], "usage": None, "http_status": 200, "error": "boom",
+            }
+
+        monkeypatch.setattr(bot_module, "generate_answer", fake)
+        client = _RecordingClient()
+        key = ("T_UNCAPPED", "D1")
+        bot_module.conversation_states.pop(key, None)
+        seeded = bot_module._get_conversation_state(key)
+        seeded["conversation_id"] = "conv-REAL"
+        seeded["answer_count"] = 1
+        seeded["history"].append({"prompt": "first q", "response": "first a"})
+        asyncio.run(bot_module._answer_question(
+            client, team_id="T_UNCAPPED", channel="D1", thread_ts=None,
+            trigger_ts="2.0", user="U1", question="follow-up q", is_dm=True,
+        ))
+        state = bot_module.conversation_states.pop(key)
+        assert state["answer_count"] == 1  # NOT incremented — backend wrote no row
+        assert state["conversation_id"] == "conv-REAL"
+        assert len(state["history"]) == 1  # phantom prompt rolled back
+        assert state["history"][0] == {"prompt": "first q", "response": "first a"}
+        assert len(client.posts) == 1  # placeholder only — no feedback blocks posted
+        assert not any(p.get("blocks") for p in client.posts)
+        assert len(client.updates) == 1  # placeholder became the canned error
+        assert "answering" in client.updates[0]["text"]
+
+    def test_unexpected_exception_rolls_back_phantom_prompt(self, bot_module, monkeypatch):
+        async def fake(question, messages, conversation_id):
+            raise RuntimeError("kaput")
+
+        client, state = self._run(bot_module, monkeypatch, fake)
+        assert state["history"] == []  # guarded pop ran in the catch-all
+        assert state["answer_count"] == 0
+        assert len(client.updates) == 1  # placeholder replaced, not dangling
+        assert "handling" in client.updates[0]["text"]
+
+
+class TestDmMentionStrip:
+    """A DM containing @Honk fires BOTH app_mention and message.im; when
+    message.im wins the dedupe race the raw ``<@U…>`` token must not
+    reach RAG."""
+
+    def _run_on_message(self, bot_module, monkeypatch, text):
+        captured = {}
+
+        async def fake_answer(client, **kwargs):
+            captured.update(kwargs)
+
+        spawned = []
+        monkeypatch.setattr(bot_module, "_answer_question", fake_answer)
+        monkeypatch.setattr(bot_module, "_spawn", lambda coro: spawned.append(coro))
+        monkeypatch.setattr(bot_module, "BOT_USER_ID", "UBOT")
+        monkeypatch.setattr(bot_module, "SLACK_TEAM_IDS", [])
+        bot_module._seen_messages.clear()
+        event = {"channel_type": "im", "channel": "D1", "ts": "1700000000.1", "user": "U1", "text": text}
+        asyncio.run(bot_module.on_message(event, {"team_id": "T1"}, client=None, logger=None))
+        for coro in spawned:
+            asyncio.run(coro)
+        return captured
+
+    def test_mention_token_stripped(self, bot_module, monkeypatch):
+        captured = self._run_on_message(bot_module, monkeypatch, "<@UBOT> what is aztec?")
+        assert captured["question"] == "what is aztec?"
+        assert captured["is_dm"] is True
+
+    def test_plain_dm_text_unchanged(self, bot_module, monkeypatch):
+        captured = self._run_on_message(bot_module, monkeypatch, "what is aztec?")
+        assert captured["question"] == "what is aztec?"
+
+    def test_mid_text_mention_token_preserved(self, bot_module, monkeypatch):
+        """Only a LEADING mention is the addressing form; a literal
+        ``<@UBOT>`` in the middle of a DM is the question's content
+        (e.g. asking about Slack event payloads) and must reach RAG."""
+        src = "why does <@UBOT> appear in my event payload?"
+        captured = self._run_on_message(bot_module, monkeypatch, src)
+        assert captured["question"] == src
+
+
+class TestSpawnDoneCallback:
+    def test_cancelled_task_does_not_raise_in_callback(self, bot_module):
+        """``Task.exception()`` RAISES CancelledError on cancelled tasks;
+        the done-callback must guard with ``t.cancelled()`` first or the
+        loop reports 'Exception in callback' for every cancelled spawn."""
+        records = []
+
+        async def go():
+            loop = asyncio.get_running_loop()
+            loop.set_exception_handler(lambda _lp, ctx: records.append(ctx))
+            task = bot_module._spawn(asyncio.sleep(30))
+            await asyncio.sleep(0)
+            task.cancel()
+            for _ in range(3):  # let the cancellation + done-callback run
+                await asyncio.sleep(0)
+
+        asyncio.run(go())
+        assert records == []
+
+    def test_failed_task_still_logs(self, bot_module, caplog):
+        import logging
+
+        async def boom():
+            raise RuntimeError("kaput")
+
+        async def go():
+            bot_module._spawn(boom())
+            for _ in range(3):
+                await asyncio.sleep(0)
+
+        with caplog.at_level(logging.ERROR, logger=bot_module.logger.name):
+            asyncio.run(go())
+        assert any("background task failed" in r.message for r in caplog.records)

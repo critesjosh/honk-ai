@@ -47,7 +47,7 @@ Thread context is fetched best-effort via `conversations.replies` (bounded by `S
 
 - `format_for_slack`: Markdown headers → `*bold*`, `[label](url)` → `<url|label>` mrkdwn; fenced code blocks left intact.
 - `chunk_string`: packs to ≥80% of `SLACK_MAX_MSG_CHARS` (3500) and repairs code fences across a split — ported from the Discord chunker.
-- Posts use `unfurl_links=False, unfurl_media=False` to suppress link-preview cards (cleaner than the Discord `<…>` trick).
+- `chat_postMessage` sends use `unfurl_links=False, unfurl_media=False` to suppress link-preview cards (cleaner than the Discord `<…>` trick). Caveat: the FIRST chunk lands by editing the placeholder via `chat_update`, which accepts no unfurl flags — links in that chunk may still unfurl per workspace defaults.
 
 ## Feedback — Block Kit buttons
 
@@ -63,7 +63,7 @@ Bot-side soft brake on OpenRouter spend, scoped per Slack **workspace** (`team_i
 
 ## `/forget-me` scope
 
-`/aztec-forget-me` revokes the user's MCP key and deletes MCP-originated data keyed to their pseudonym, and drops the bot's in-memory conversation cache for that workspace. **It does not erase shared bot Q&A in channels** — those `/stream` turns are written under the shared chat agent's owner (`user_id='local'`), not the per-user pseudonym, so they aren't individually erasable. This is identical to the Discord bot's behaviour. The command message states this explicitly.
+`/aztec-forget-me` revokes the user's MCP key and deletes MCP-originated data keyed to their pseudonym, and drops the bot's in-memory conversation cache for the **channel the command was invoked in** (typically the user's DM with the bot — both the DM key and any thread keys in that channel; other channels' state is left alone and ages out of the LRU). **It does not erase shared bot Q&A in channels** — those `/stream` turns are written under the shared chat agent's owner (`user_id='local'`), not the per-user pseudonym, so they aren't individually erasable. This is identical to the Discord bot's behaviour. The command message states this explicitly.
 
 ## The Slack chat agent
 

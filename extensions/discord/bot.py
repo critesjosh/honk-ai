@@ -23,7 +23,10 @@ logger = logging.getLogger(__name__)
 # Bot configuration
 TOKEN = os.getenv("DISCORD_TOKEN")
 PREFIX = "!"  # Command prefix
-BASE_API_URL = os.getenv("API_BASE", "https://gptcloud.arc53.com")
+# Default matches the in-compose backend (same as the Slack bot). Running
+# outside compose without API_BASE set must NOT silently POST user
+# questions + the prod agent API key to a third-party host.
+BASE_API_URL = os.getenv("API_BASE", "http://backend:7091")
 API_URL = BASE_API_URL + "/stream"
 FEEDBACK_URL = BASE_API_URL + "/api/feedback"
 API_KEY = os.getenv("API_KEY")
@@ -76,6 +79,7 @@ MAX_THREAD_MSG_CHARS = 1500
 MAX_STARTER_CHARS = 4000
 MAX_SPEAKER_LABEL_CHARS = 64
 _THREAD_CACHE_MAX_ENTRIES = 500
+_USER_CACHE_MAX_ENTRIES = 500
 
 # Feedback (👍 / 👎 reaction → POST /api/feedback) configuration. The
 # cache maps Discord message_id → (conversation_id, question_index) so
@@ -167,8 +171,12 @@ if getattr(bot.http, "max_ratelimit_timeout", None) != 2.0:
         "Re-check extensions/discord/bot.py against the upstream HTTPClient API."
     )
 
-# Store conversation history per user
-conversation_histories = {}
+# Per-user conversation state (DMs + top-level guild mentions). Same
+# bounded, lock-aware LRU discipline as the per-thread cache below —
+# without the bound, every distinct user that ever DM'd or mentioned the
+# bot stayed resident for the life of the process. `/forget-me` and
+# `!reset` still prune entries eagerly; everything else ages out.
+conversation_histories: "OrderedDict[int, dict]" = OrderedDict()
 
 # Per-thread conversation state (separate from per-user above) so that
 # the bot's prior answers in a given thread persist across mentions,
@@ -198,40 +206,48 @@ thread_conversation_histories: "OrderedDict[int, dict]" = OrderedDict()
 feedback_targets: "OrderedDict[int, tuple[str, int]]" = OrderedDict()
 
 
-def _evict_thread_cache_if_needed() -> None:
+def _evict_cache_if_needed(cache: "OrderedDict", max_entries: int, protected_key=None) -> None:
     """LRU eviction that skips entries whose lock is currently held.
 
     `move_to_end` keeps an active entry "recently used" between its
     own accesses, but a long-running `generate_answer` call (up to
     ~180s) yields control while awaiting the backend. If 500+ other
-    threads are touched during that window, the active entry could
+    keys are touched during that window, the active entry could
     become the oldest in the OrderedDict and be evicted out from
     under the in-flight reply — re-creating it on the next mention
     would lose conversation continuity. So we walk the cache
-    oldest→newest and pop the first NOT-locked entry. If every
-    entry is currently locked, we temporarily allow the cache to
-    exceed the cap (rather than corrupt an in-flight session).
+    oldest→newest and pop the first NOT-locked entry. If no entry is
+    evictable, we temporarily allow the cache to exceed the cap
+    (rather than corrupt an in-flight session).
+
+    ``protected_key`` is the key the caller just created/touched and
+    is about to hand out. Its lock isn't held yet (the caller acquires
+    it after this returns), so without the exemption a full cache of
+    locked entries would evict the very state we're about to return —
+    the first answer would then complete against an orphaned dict and
+    the next turn would silently start a fresh conversation.
     """
-    while len(thread_conversation_histories) > _THREAD_CACHE_MAX_ENTRIES:
+    while len(cache) > max_entries:
         evicted = False
-        for thread_id, state in list(thread_conversation_histories.items()):
+        for key, state in list(cache.items()):
+            if key == protected_key:
+                continue
             lock = state.get("lock")
             if lock is None or not lock.locked():
-                thread_conversation_histories.pop(thread_id)
+                cache.pop(key)
                 evicted = True
                 break
         if not evicted:
-            return  # All entries active; cache temporarily over cap.
+            return  # Nothing evictable; cache temporarily over cap.
 
 
-def _get_thread_state(thread_id: int) -> dict:
-    """Return the per-thread state dict, creating one if absent.
+def _get_cached_state(cache: "OrderedDict", key: int, max_entries: int) -> dict:
+    """Return the conversation state for ``key``, creating one if absent.
 
-    The `lock` field is created lazily and shares the same cache entry
-    as the conversation state, so we cannot orphan a held lock by
-    evicting it independently.
+    The `lock` field shares the same cache entry as the conversation
+    state, so we cannot orphan a held lock by evicting it independently.
     """
-    state = thread_conversation_histories.get(thread_id)
+    state = cache.get(key)
     if state is None:
         state = {
             "history": [],
@@ -239,10 +255,20 @@ def _get_thread_state(thread_id: int) -> dict:
             "answer_count": 0,
             "lock": asyncio.Lock(),
         }
-        thread_conversation_histories[thread_id] = state
-    thread_conversation_histories.move_to_end(thread_id)
-    _evict_thread_cache_if_needed()
+        cache[key] = state
+    cache.move_to_end(key)
+    _evict_cache_if_needed(cache, max_entries, protected_key=key)
     return state
+
+
+def _get_thread_state(thread_id: int) -> dict:
+    """Per-thread state dict (bounded lock-aware LRU)."""
+    return _get_cached_state(thread_conversation_histories, thread_id, _THREAD_CACHE_MAX_ENTRIES)
+
+
+def _get_user_state(user_id: int) -> dict:
+    """Per-user state dict (DMs / top-level mentions) — same LRU discipline."""
+    return _get_cached_state(conversation_histories, user_id, _USER_CACHE_MAX_ENTRIES)
 
 
 def _register_feedback_target(
@@ -1166,10 +1192,28 @@ def _build_thread_context_block(
 
 
 def format_for_discord(text):
-    """Converts standard Markdown to Discord-friendly formatting."""
+    """Converts standard Markdown to Discord-friendly formatting.
+
+    Tracks ``` and ~~~ fences (same scheme as the Slack bot's
+    ``format_for_slack``) so ``# comment`` lines inside code blocks are
+    left untouched instead of being bolded. The marker that OPENED the
+    fence is remembered: only the matching marker closes it, so a ```
+    line inside a ~~~ block (or vice versa) is content, not a closer.
+    """
     lines = text.split("\n")
     formatted = []
+    fence_marker = None  # "```" or "~~~" while inside a fence, else None
     for line in lines:
+        stripped = line.lstrip()
+        if fence_marker is not None:
+            if stripped.startswith(fence_marker):
+                fence_marker = None
+            formatted.append(line)
+            continue
+        if stripped.startswith("```") or stripped.startswith("~~~"):
+            fence_marker = stripped[:3]
+            formatted.append(line)
+            continue
         # Convert headers to bold (Discord doesn't render # headers)
         header_match = re.match(r"^(#{1,3})\s+(.*)", line)
         if header_match:
@@ -1433,7 +1477,7 @@ async def mcp_key(interaction: discord.Interaction):
             ) as resp:
                 if resp.status != 200:
                     error_text = await resp.text()
-                    logger.error(f"/get-api-key failed: {resp.status} {error_text}")
+                    logger.error("/get-api-key failed: %s %s", resp.status, error_text)
                     await interaction.followup.send(
                         "Sorry, there was an error generating your key. Please try again later.",
                         ephemeral=True,
@@ -1441,14 +1485,23 @@ async def mcp_key(interaction: discord.Interaction):
                     return
                 data = await resp.json()
     except (aiohttp.ClientError, asyncio.TimeoutError) as e:
-        logger.error(f"/get-api-key connection error: {e}")
+        logger.error("/get-api-key connection error: %s", e)
         await interaction.followup.send(
             "Sorry, the service is temporarily unavailable. Please try again later.",
             ephemeral=True,
         )
         return
 
-    api_key = data["api_key"]
+    api_key = data.get("api_key") if isinstance(data, dict) else None
+    if not api_key:
+        # A 200 without an api_key field is a backend contract break;
+        # surface an error instead of KeyError-ing the whole handler.
+        logger.error("create_mcp_key returned 200 without an api_key field")
+        await interaction.followup.send(
+            "Sorry, there was an error generating your key. Please try again later.",
+            ephemeral=True,
+        )
+        return
 
     # Message 1: The key (separate from config to reduce screenshot disclosure risk)
     await interaction.followup.send(
@@ -1542,7 +1595,7 @@ async def forget_me(interaction: discord.Interaction):
             ) as resp:
                 if resp.status != 200:
                     error_text = await resp.text()
-                    logger.error(f"/forget-me failed: {resp.status} {error_text}")
+                    logger.error("/forget-me failed: %s %s", resp.status, error_text)
                     await interaction.followup.send(
                         "Sorry, there was an error erasing your data. Please try again later.",
                         ephemeral=True,
@@ -1550,7 +1603,7 @@ async def forget_me(interaction: discord.Interaction):
                     return
                 data = await resp.json()
     except (aiohttp.ClientError, asyncio.TimeoutError) as e:
-        logger.error(f"/forget-me connection error: {e}")
+        logger.error("/forget-me connection error: %s", e)
         await interaction.followup.send(
             "Sorry, the service is temporarily unavailable. Please try again later.",
             ephemeral=True,
@@ -1619,7 +1672,13 @@ async def generate_answer(question, messages, conversation_id):
 
     Also returns ``http_status`` so callers in the per-guild spend cap
     path can distinguish a backend non-200 (known no-cost — refund the
-    reserve) from a 200 that just didn't include a usage frame.
+    reserve) from a 200 that just didn't include a usage frame, and
+    ``error`` — the sanitized text of an in-band ``{type: "error"}``
+    frame (``None`` on success). On an in-band error the backend
+    flushes buffered text, emits the error frame, and returns WITHOUT
+    ``id``/``end`` and WITHOUT writing a conversation_messages row
+    (see application/api/answer/routes/base.py), so the caller must
+    treat the turn as failed even though the HTTP status was 200.
     """
     payload = {
         "question": question,
@@ -1633,6 +1692,7 @@ async def generate_answer(question, messages, conversation_id):
     new_conversation_id = conversation_id
     sources: list = []
     usage: Optional[dict] = None
+    error: Optional[str] = None
     async with aiohttp.ClientSession(timeout=timeout) as session:
         async with session.post(API_URL, json=payload, headers=headers) as resp:
             if resp.status != 200:
@@ -1642,6 +1702,7 @@ async def generate_answer(question, messages, conversation_id):
                     "sources": [],
                     "usage": None,
                     "http_status": resp.status,
+                    "error": None,
                 }
             async for line in resp.content:
                 line = line.decode("utf-8").strip()
@@ -1672,12 +1733,20 @@ async def generate_answer(question, messages, conversation_id):
                             "generated_tokens": generated_tokens,
                             "model_id": event.get("model_id"),
                         }
+                elif event_type == "error":
+                    # In-band failure: the backend returns right after
+                    # this frame (no id/end, no DB row). Stop reading and
+                    # surface it so the caller doesn't consume a feedback
+                    # position for a turn the backend never persisted.
+                    error = event.get("error") or "An error occurred"
+                    break
     return {
         "answer": answer or "Sorry, I couldn't find an answer.",
         "conversation_id": new_conversation_id,
         "sources": sources,
         "usage": usage,
         "http_status": 200,
+        "error": error,
     }
 
 
@@ -1909,20 +1978,7 @@ async def on_message(message):
         # that doesn't exist in either conversation.
         thread = None
         user_id = message.author.id
-        conversation = conversation_histories.setdefault(
-            user_id,
-            {
-                "history": [],
-                "conversation_id": None,
-                "answer_count": 0,
-                "lock": asyncio.Lock(),
-            },
-        )
-        # Older cached entries (created before the feedback / lock
-        # additions shipped) may be missing these fields; backfill so
-        # subsequent turns don't KeyError.
-        conversation.setdefault("answer_count", 0)
-        conversation.setdefault("lock", asyncio.Lock())
+        conversation = _get_user_state(user_id)
         lock_cm = conversation["lock"]
 
     # Per-guild spend cap accounting. ``reserved_usd`` was charged
@@ -2052,7 +2108,7 @@ async def on_message(message):
                     conversation["conversation_id"],
                 )
             except (asyncio.TimeoutError, aiohttp.ClientError) as e:
-                logger.error(f"Error generating answer: {e}")
+                logger.error("Error generating answer: %s", e)
                 await target.send("Sorry, the request timed out. Please try again with a shorter message.")
                 conversation["history"].pop()
                 return
@@ -2060,6 +2116,23 @@ async def on_message(message):
             answer = response_doc["answer"]
             new_conversation_id = response_doc["conversation_id"]
             sources = response_doc.get("sources", [])
+
+            # In-band error frame: the backend emitted {"type": "error"}
+            # and returned WITHOUT id/end and WITHOUT writing a
+            # conversation_messages row. Treat it like the non-200 path
+            # below — no answer_count increment, no feedback
+            # registration (otherwise every subsequent 👍/👎 in this
+            # conversation would land on the wrong DB row). Checked
+            # BEFORE the conversation_id-is-None branch because the
+            # backend never emits an ``id`` frame on this path, so on
+            # follow-up turns conversation_id still carries the prior
+            # turn's id. Spend stays keep_charged (the default): the
+            # LLM may have partially run before failing.
+            if response_doc.get("error"):
+                logger.warning("Backend in-band stream error: %s", response_doc["error"])
+                await target.send("Sorry, something went wrong while answering. Please try again.")
+                conversation["history"].pop()
+                return
 
             # /stream returns conversation_id=None on a non-200
             # backend response (see ``generate_answer``). In that
@@ -2175,6 +2248,28 @@ async def on_message(message):
                     target=target,
                     eta_seconds=_breaker_time_remaining(guild_id),
                 )
+            return
+        except Exception:
+            # Anything the handled timeout / discord-write paths above
+            # didn't catch (unexpected bug, malformed payload, non-
+            # discord/non-aiohttp failure). Without this the user sees a
+            # typing indicator then silence, and the phantom prompt
+            # stays queued in history. Mirror the Slack bot's catch-all:
+            # log, roll back the prompt (guarded — the entry gains a
+            # "response" key only on the post-DB success path), and
+            # best-effort send a canned error. Spend stays keep_charged
+            # via the outer finally (the LLM may have run).
+            logger.exception(
+                "Unexpected error answering message %s in channel %s",
+                message.id,
+                getattr(target, "id", "?"),
+            )
+            if conversation["history"] and "response" not in conversation["history"][-1]:
+                conversation["history"].pop()
+            try:
+                await target.send("Sorry, something went wrong handling that. Please try again.")
+            except discord.DiscordException as send_exc:
+                logger.warning("Error-notice send failed (swallowed): %s", send_exc)
             return
 
         # Keep conversation history to last 10 exchanges.

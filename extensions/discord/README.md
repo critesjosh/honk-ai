@@ -26,7 +26,7 @@ When @-mentioned inside a `discord.Thread`, the bot fetches the thread starter +
 
 History fetch uses `before=triggering_message, oldest_first=False` then reverses — `oldest_first=True` returns the wrong end of the thread.
 
-Per-thread state lives in LRU `thread_conversation_histories` (cap 500), separate from per-user `conversation_histories`; an `asyncio.Lock` per thread.
+Per-thread state lives in LRU `thread_conversation_histories` (cap 500), separate from the per-user `conversation_histories` cache (also a bounded LRU, cap 500, same lock-aware eviction — held locks are never evicted out from under an in-flight reply); an `asyncio.Lock` per entry. `/forget-me` and `!reset` still prune per-user entries eagerly.
 
 **Privacy:** forwards other users' message bodies + display names to the LLM provider.
 
