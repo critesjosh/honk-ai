@@ -16,6 +16,7 @@ SQL guesses.
 | `build.py` | CLI: builds upload-ready zips from local checkouts of `aztec-packages` and `noir`. Writes per-corpus + overall manifests. |
 | `upload.py` | CLI: POSTs the zips to `/api/upload`, polls the Celery task, captures the resulting `sources.id` UUIDs. |
 | `swap_sources.py` | Generates the SQL needed to point an agent at the new corpora, plus the `.env` `AZTEC_SOURCE_IDS` block. **Does not execute SQL** — you do that yourself with `psql`, after reviewing. |
+| `../db/attach_source_to_agents.py` | Appends ONE already-uploaded source to existing chat agents' `extra_source_ids` (idempotent, `--dry-run`). Use when a corpus lands after agents were provisioned — `swap_sources.py` rebuilds the whole list and is the wrong shape for this. Example: the Awesome Aztec corpus was initially attached only to the widget agent, which made the eval's `awesome-*` resource queries unpassable on the Discord/Slack agents. |
 
 ## What the corpora are
 
