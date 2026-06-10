@@ -53,8 +53,13 @@ COPY --from=builder /venv /venv
 # `RUN chown -R` would create (every file gets a new metadata record).
 COPY --chown=appuser:appuser . /app/application
 
+# inputs/ is excluded from the build context (.dockerignore): it's dev
+# upload junk locally and a volume mountpoint at runtime (named `uploads`
+# volume in the hub compose, bind mount in dev). Recreate it empty and
+# appuser-owned — `-R` matters: a fresh named volume copies the image
+# directory's ownership, so a root-owned inputs/ would break uploads.
 RUN mkdir -p /app/application/inputs/local && \
-    chown appuser:appuser /app/application/inputs/local
+    chown -R appuser:appuser /app/application/inputs
 
 EXPOSE 7091
 

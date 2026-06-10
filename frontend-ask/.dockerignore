@@ -1,0 +1,8 @@
+# Keep host build artifacts out of the image. Without this, `COPY . .`
+# overlaid the host's ~77MB node_modules on top of the fresh `npm ci`
+# install inside the builder stage.
+node_modules
+dist
+.vite
+**/*.log
+**/*.tsbuildinfo

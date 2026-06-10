@@ -1,7 +1,7 @@
 import os
 import logging
 from typing import List, Any
-from retry import retry
+from tenacity import retry, stop_after_attempt, wait_fixed
 from tqdm import tqdm
 from application.core.settings import settings
 from application.vectorstore.vector_creator import VectorCreator
@@ -22,7 +22,10 @@ def sanitize_content(content: str) -> str:
     return content.replace('\x00', '')
 
 
-@retry(tries=10, delay=60)
+# tenacity equivalent of the old `retry` package's @retry(tries=10, delay=60):
+# any Exception is retried, 10 attempts total, fixed 60s between attempts,
+# and the final exception is re-raised (not wrapped in RetryError).
+@retry(stop=stop_after_attempt(10), wait=wait_fixed(60), reraise=True)
 def add_text_to_store_with_retry(store: Any, doc: Any, source_id: str) -> None:
     """Add a document's text and metadata to the vector store with retry logic.
     

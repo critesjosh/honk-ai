@@ -19,7 +19,8 @@ services:
     ports:
       - "5174:80"
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
 
   backend:
     user: root
@@ -32,8 +33,22 @@ services:
       - CELERY_RESULT_BACKEND=redis://redis:6379/1
       - CACHE_REDIS_URL=redis://redis:6379/2
       - POSTGRES_URI=postgresql://docsgpt:docsgpt@postgres:5432/docsgpt
+      # Mirror the hub compose: without these overrides the dev stack
+      # inherits PGVECTOR_CONNECTION_STRING/VECTOR_STORE from the shared
+      # ../.env, i.e. the PROD password pointed at the dev database.
+      # Dev postgres hardcodes POSTGRES_PASSWORD=docsgpt (below).
+      - PGVECTOR_CONNECTION_STRING=postgresql://docsgpt:docsgpt@postgres:5432/docsgpt
+      - VECTOR_STORE=pgvector
     ports:
       - "7091:7091"
+    healthcheck:
+      # The image ships no curl/wget — use the stdlib. /api/health is
+      # the unauthenticated liveness route in application/app.py.
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:7091/api/health', timeout=4)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
     volumes:
       # Match prod (docker-compose-hub.yaml) — UPLOAD_FOLDER in .env is
       # /app/application/inputs; backend + worker must mount the same
@@ -68,6 +83,10 @@ services:
       - API_URL=http://backend:7091
       - CACHE_REDIS_URL=redis://redis:6379/2
       - POSTGRES_URI=postgresql://docsgpt:docsgpt@postgres:5432/docsgpt
+      # Mirror the hub compose — see the backend service for why these
+      # must be overridden instead of inherited from the shared ../.env.
+      - PGVECTOR_CONNECTION_STRING=postgresql://docsgpt:docsgpt@postgres:5432/docsgpt
+      - VECTOR_STORE=pgvector
     volumes:
       # Match prod (docker-compose-hub.yaml) — UPLOAD_FOLDER in .env is
       # /app/application/inputs; backend + worker must mount the same
@@ -143,8 +162,15 @@ services:
 
   redis:
     image: redis:6-alpine
+    # 127.0.0.1 — this dev compose runs on the tunnel-exposed prod host;
+    # never bind the unauthenticated redis port to 0.0.0.0.
     ports:
-      - 6379:6379
+      - "127.0.0.1:6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   postgres:
     image: pgvector/pgvector:pg16
@@ -152,8 +178,10 @@ services:
       - POSTGRES_USER=docsgpt
       - POSTGRES_PASSWORD=docsgpt
       - POSTGRES_DB=docsgpt
+    # 127.0.0.1 — dev postgres has a well-known password; keep it off
+    # the host's external interfaces (same rationale as redis above).
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./postgres-init:/docker-entrypoint-initdb.d:ro

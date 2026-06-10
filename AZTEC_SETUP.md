@@ -46,6 +46,11 @@ After that, `docker compose -f deployment/docker-compose.yaml {up,down,logs,rest
 
 UI: http://localhost:5173 · API: http://localhost:7091 · Postgres: `localhost:5432` (docsgpt/docsgpt).
 
+Dev Postgres (`:5432`) and Redis (`:6379`) host ports are published on
+`127.0.0.1` only — the dev compose often runs on the same tunnel-exposed
+host as prod and both services use well-known/no credentials. Connect from
+the host via `localhost`; there is no remote access path.
+
 ## Production deployment — company server
 
 Do **not** reuse the dev compose on the public internet. Use `deployment/docker-compose-hub.yaml`.
@@ -114,6 +119,13 @@ docker compose -f deployment/docker-compose-hub.yaml run --rm \
   backend python scripts/db/init_postgres.py
 docker compose -f deployment/docker-compose-hub.yaml up -d
 ```
+
+The backend and redis services carry healthchecks; caddy, frontend-ask,
+discord-bot, and slack-bot wait for the backend's `/api/health` to answer
+(`condition: service_healthy`) before starting. On a cold boot expect those
+services to sit in `Created`/`Waiting` for roughly 30–60s — `docker compose ps`
+shows `(healthy)` next to backend once the gate opens. If the backend never
+turns healthy, its dependents never start; check `logs backend` first.
 
 Subsequent releases apply migrations the same way — never rely on `AUTO_MIGRATE=true` in prod:
 

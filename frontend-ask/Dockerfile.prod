@@ -12,7 +12,7 @@ ENV VITE_ASK_AZTEC_API_BASE=$VITE_ASK_AZTEC_API_BASE
 
 WORKDIR /app
 COPY package*.json ./
-RUN npm install --no-audit --no-fund
+RUN npm ci --no-audit --no-fund
 COPY . .
 RUN npm run build
 
