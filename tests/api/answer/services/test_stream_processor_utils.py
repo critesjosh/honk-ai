@@ -41,9 +41,24 @@ class TestGetPrompt:
         got = get_prompt("strict")
         assert isinstance(got, str) and len(got) > 0
 
+    def test_reduce_preset(self):
+        from application.api.answer.services.stream_processor import get_prompt
+        got = get_prompt("reduce")
+        assert isinstance(got, str) and len(got) > 0
+
     def test_agentic_default_preset(self):
         from application.api.answer.services.stream_processor import get_prompt
         got = get_prompt("agentic_default")
+        assert isinstance(got, str) and len(got) > 0
+
+    def test_agentic_creative_preset(self):
+        from application.api.answer.services.stream_processor import get_prompt
+        got = get_prompt("agentic_creative")
+        assert isinstance(got, str) and len(got) > 0
+
+    def test_agentic_strict_preset(self):
+        from application.api.answer.services.stream_processor import get_prompt
+        got = get_prompt("agentic_strict")
         assert isinstance(got, str) and len(got) > 0
 
     def test_none_defaults_to_default(self):
@@ -300,6 +315,56 @@ class TestResolveAgentId:
             StreamProcessor,
         )
         sp = StreamProcessor({}, {"sub": "u"})
+        assert sp._resolve_agent_id() is None
+
+    def test_falls_back_to_conversation_agent_id(self):
+        from unittest.mock import MagicMock
+
+        from application.api.answer.services.stream_processor import (
+            StreamProcessor,
+        )
+        sp = StreamProcessor({"conversation_id": "conv1"}, {"sub": "u"})
+        sp.conversation_service = MagicMock()
+        sp.conversation_service.get_conversation.return_value = {
+            "agent_id": "from_conv"
+        }
+        assert sp._resolve_agent_id() == "from_conv"
+
+    def test_conversation_not_found_returns_none(self):
+        from unittest.mock import MagicMock
+
+        from application.api.answer.services.stream_processor import (
+            StreamProcessor,
+        )
+        sp = StreamProcessor({"conversation_id": "conv1"}, {"sub": "u"})
+        sp.conversation_service = MagicMock()
+        sp.conversation_service.get_conversation.return_value = None
+        assert sp._resolve_agent_id() is None
+
+    def test_conversation_lookup_exception_returns_none(self):
+        from unittest.mock import MagicMock
+
+        from application.api.answer.services.stream_processor import (
+            StreamProcessor,
+        )
+        sp = StreamProcessor({"conversation_id": "conv1"}, {"sub": "u"})
+        sp.conversation_service = MagicMock()
+        sp.conversation_service.get_conversation.side_effect = Exception(
+            "db error"
+        )
+        assert sp._resolve_agent_id() is None
+
+    def test_conversation_without_agent_id_returns_none(self):
+        from unittest.mock import MagicMock
+
+        from application.api.answer.services.stream_processor import (
+            StreamProcessor,
+        )
+        sp = StreamProcessor({"conversation_id": "conv1"}, {"sub": "u"})
+        sp.conversation_service = MagicMock()
+        sp.conversation_service.get_conversation.return_value = {
+            "name": "test conv"
+        }
         assert sp._resolve_agent_id() is None
 
 

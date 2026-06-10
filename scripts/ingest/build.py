@@ -15,8 +15,9 @@ Usage::
         --out            /tmp/aztec-corpora-build \
         [--corpus aztec_nr_apiref]   # optional: limit to one corpus
 
-Four source roots are accepted (Option B per ``PLAN-v4.3.0-bump.md``)
-because the corpora are pinned at different upstream commits:
+Four source roots are accepted ("Option B" — the four-root layout
+shipped by PR #150) because the corpora are pinned at different
+upstream commits:
 
   * ``--aztec-pkg``      → aztec-packages at the release tag
                            (``v4.3.0``). Used for code corpora + the

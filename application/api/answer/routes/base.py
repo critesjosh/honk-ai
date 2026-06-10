@@ -104,8 +104,8 @@ _AWESOME_AZTEC_GITHUB_BASE = (
 # release branch before PR #23375 merged into ``next``, so at the tag
 # the latest snapshot is ``version-v4.2.0-aztecnr-rc.2`` (dev) /
 # ``version-v4.1.2`` (network). The docs version snapshot is taken from
-# a moving branch; we ingest from ``next``-branch commits (see Option B
-# in ``PLAN-v4.3.0-bump.md``). All such markdown content is rendered on
+# a moving branch; we ingest from ``next``-branch commits (the four-root
+# "Option B" layout from PR #150). All such markdown content is rendered on
 # docs.aztec.network anyway, so we route it there directly via the
 # dedicated rules in `_aztec_source_url` — never via GitHub.
 _SOURCE_TO_REPO_PREFIX: List[Tuple[str, str]] = [

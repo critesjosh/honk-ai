@@ -157,8 +157,8 @@ def main() -> None:
         required=True,
         type=Path,
         help="Path to an aztec-packages checkout (next-branch worktree "
-             "that contains version-v4.3.0/, NOT the release tag — see "
-             "PLAN-v4.3.0-bump.md Option B)",
+             "that contains version-v4.3.0/, NOT the release tag — "
+             "'Option B' four-root layout per PR #150)",
     )
     args = parser.parse_args()
     overrides = scan_tree(args.aztec_pkg)

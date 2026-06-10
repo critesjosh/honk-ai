@@ -264,6 +264,19 @@ class TestInternalSearchToolListFiles:
         result = tool.execute_action("list_files", path="a/b/c")
         assert "file.txt" in result
 
+    def test_list_files_plain_file_entry_sections(self):
+        tool = InternalSearchTool({"source": {}})
+        tool._dir_structure_loaded = True
+        tool._directory_structure = {
+            "src": {"main.py": {}},
+            "README.md": "plain_file_value",
+        }
+
+        result = tool.execute_action("list_files")
+        assert "Folders:" in result
+        assert "Files:" in result
+        assert "README.md" in result
+
 
 # =====================================================================
 # Count Files Helper
@@ -310,6 +323,50 @@ class TestGetDirectoryStructure:
 
         result = tool._get_directory_structure()
         assert result == {"cached": True}
+
+
+# =====================================================================
+# Retriever lazy-loading
+# =====================================================================
+
+
+@pytest.mark.unit
+class TestGetRetriever:
+
+    def test_get_retriever_creates_retriever(self):
+        tool = _make_tool()
+        assert tool._retriever is None
+
+        mock_retriever = Mock()
+        with patch(
+            "application.agents.tools.internal_search.RetrieverCreator"
+        ) as mock_rc:
+            mock_rc.create_retriever.return_value = mock_retriever
+            result = tool._get_retriever()
+
+        assert result is mock_retriever
+        assert tool._retriever is mock_retriever
+
+    def test_get_retriever_cached(self):
+        tool = _make_tool()
+        mock_retriever = Mock()
+        tool._retriever = mock_retriever
+
+        result = tool._get_retriever()
+        assert result is mock_retriever
+
+    def test_get_retriever_api_key_defaults_to_none(self):
+        """An unset api_key must reach the retriever as None — defaulting
+        to settings.API_KEY (an agent UUID in prod) breaks the retriever's
+        rephrase LLM call with a 401 (CLAUDE.md rule)."""
+        tool = InternalSearchTool({"source": {}, "retriever_name": "classic"})
+        with patch(
+            "application.agents.tools.internal_search.RetrieverCreator"
+        ) as mock_rc:
+            tool._get_retriever()
+
+        assert mock_rc.create_retriever.call_args.kwargs["api_key"] is None
+
 
 # =====================================================================
 # Metadata
@@ -442,3 +499,6 @@ class TestSourcesHaveDirectoryStructure:
 
     def test_no_active_docs(self):
         assert sources_have_directory_structure({}) is False
+
+    def test_empty_active_docs_list(self):
+        assert sources_have_directory_structure({"active_docs": []}) is False

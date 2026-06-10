@@ -107,8 +107,9 @@ architectural diff and
   and `Cf-Access-Authenticated-User-Email → X-Auth-Email`
   propagation. The Aztec deployment additionally anchors the tunnel on
   a separate bastion host in a CF-friendly region (us-east-2)
-  reached over an outbound SSH reverse tunnel — see
-  `PLAN-bastion-relay.md` for why and how. Generic single-host
+  reached over an outbound SSH reverse tunnel — see the
+  "Bastion-anchored Cloudflare Tunnel" section of `AZTEC_SETUP.md`
+  for why and how. Generic single-host
   CF-Tunnel-on-origin deployments still work with the same compose.
 - **Slim backend image (1.34 GB)** — `application/Dockerfile` drops torch,
   transformers, sentence-transformers, docling, rapidocr, onnxruntime, and

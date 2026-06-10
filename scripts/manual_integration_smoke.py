@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
-"""
-Integration test script for DocsGPT API endpoints.
+"""Manual integration smoke harness for DocsGPT API endpoints.
 
-Tests:
+NOT part of the pytest suite — pytest collects zero tests from this file.
+Run it by hand against a live backend; it makes real network calls (and
+sleeps between requests), so the compose stack must be up.
+
+Checks:
 1. /stream endpoint without agent
 2. /api/answer endpoint without agent
 3. Create agent via API
@@ -10,9 +13,9 @@ Tests:
 5. /api/answer endpoint with agent
 
 Usage:
-    python tests/test_integration.py  # auto-generates JWT token from local secret when available
-    python tests/test_integration.py --base-url http://localhost:7091
-    python tests/test_integration.py --token YOUR_JWT_TOKEN  # override auto-generation
+    python scripts/manual_integration_smoke.py  # auto-generates JWT token from local secret when available
+    python scripts/manual_integration_smoke.py --base-url http://localhost:7091
+    python scripts/manual_integration_smoke.py --token YOUR_JWT_TOKEN  # override auto-generation
 """
 
 import argparse
@@ -1227,16 +1230,16 @@ def main():
         epilog="""
 Examples:
   # Test local instance
-  python tests/test_integration.py  # auto-generates JWT token from local secret if possible
+  python scripts/manual_integration_smoke.py  # auto-generates JWT token from local secret if possible
 
   # Test remote instance
-  python tests/test_integration.py --base-url https://app.docsgpt.com
+  python scripts/manual_integration_smoke.py --base-url https://app.docsgpt.com
 
   # Test with authentication (required for agent creation)
-  python tests/test_integration.py --token YOUR_JWT_TOKEN
+  python scripts/manual_integration_smoke.py --token YOUR_JWT_TOKEN
 
   # Test specific endpoint only
-  python tests/test_integration.py --base-url http://localhost:7091 --token YOUR_TOKEN
+  python scripts/manual_integration_smoke.py --base-url http://localhost:7091 --token YOUR_TOKEN
         """
     )
 

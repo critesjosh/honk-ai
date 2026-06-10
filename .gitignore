@@ -144,38 +144,9 @@ dmypy.json
 # macOS
 .DS_Store
 
-#frontend
-# Logs
-frontend/logs
-frontend/*.log
-frontend/npm-debug.log*
-frontend/yarn-debug.log*
-frontend/yarn-error.log*
-frontend/pnpm-debug.log*
-frontend/lerna-debug.log*
-
-# Keep frontend utility helpers tracked (overrides global lib/ ignore)
-!frontend/src/lib/
-!frontend/src/lib/**
+# Keep frontend-ask utility helpers tracked (overrides global lib/ ignore)
 !frontend-ask/src/lib/
 !frontend-ask/src/lib/**
-
-frontend/node_modules
-frontend/dist
-frontend/dist-ssr
-extensions/mcp-server/dist
-frontend/*.local
-
-# Editor directories and files
-frontend/.vscode/*
-frontend/!.vscode/extensions.json
-frontend/.idea
-frontend/.DS_Store
-frontend/*.suo
-frontend/*.ntvs*
-frontend/*.njsproj
-frontend/*.sln
-frontend/*.sw?
 
 application/vectors/
 
@@ -192,11 +163,3 @@ node_modules/
 .vscode/sftp.json
 /models/
 model/
-
-# E2E test artifacts
-.e2e-tmp/
-/tmp/docsgpt-e2e/
-tests/e2e/node_modules/
-tests/e2e/playwright-report/
-tests/e2e/test-results/
-tests/e2e/.e2e-last-run.json

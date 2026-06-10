@@ -29,7 +29,7 @@ services:
     # The systemd-user service `aztec-docs-tunnel` (file outside this
     # repo, on josh-box at ~/.config/systemd/user/) carries this port to
     # bastion's localhost:5080, where cloudflared on bastion picks it
-    # up and serves it to Cloudflare. See PLAN-bastion-relay.md.
+    # up and serves it to Cloudflare. See AZTEC_SETUP.md, "Bastion-anchored Cloudflare Tunnel".
     ports:
       - "127.0.0.1:5080:80"
     volumes:

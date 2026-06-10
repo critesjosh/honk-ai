@@ -192,54 +192,6 @@ class TestPrepareClientToolsForLlm:
 
 
 # ---------------------------------------------------------------------------
-# get_tools auto-merges client_tools
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.unit
-@pytest.mark.skip(reason="needs PG fixture rewrite — tracked as part of post-cutover test cleanup")
-class TestGetToolsAutoMerge:
-
-    def test_get_tools_merges_client_tools(self, monkeypatch):
-        from unittest.mock import MagicMock
-        mock_db = MagicMock()
-        mock_db.__getitem__.return_value.find.return_value = iter([])
-        monkeypatch.setattr(
-            "application.agents.tool_executor.MongoDB.get_client",
-            lambda: mock_db,
-        )
-        executor = ToolExecutor(user="alice")
-        executor.client_tools = [
-            {
-                "type": "function",
-                "function": {"name": "my_fn", "description": "test"},
-            }
-        ]
-
-        tools = executor.get_tools()
-
-        assert any(
-            t.get("client_side") is True for t in tools.values()
-        ), "Client tools should be merged into tools_dict"
-
-    def test_get_tools_no_client_tools(self, monkeypatch):
-        from unittest.mock import MagicMock
-        mock_db = MagicMock()
-        mock_db.__getitem__.return_value.find.return_value = iter([])
-        monkeypatch.setattr(
-            "application.agents.tool_executor.MongoDB.get_client",
-            lambda: mock_db,
-        )
-        executor = ToolExecutor(user="alice")
-
-        tools = executor.get_tools()
-
-        assert not any(
-            t.get("client_side") for t in tools.values()
-        )
-
-
-# ---------------------------------------------------------------------------
 # check_pause for client-side tools
 # ---------------------------------------------------------------------------
 

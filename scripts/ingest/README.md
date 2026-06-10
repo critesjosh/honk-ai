@@ -88,8 +88,9 @@ the wanted slice is far smaller than the source tree. Currently:
 Outline; details below.
 
 ```bash
-# 1. Get clean checkouts of the FOUR source trees (see "Option B" in
-#    PLAN-v4.3.0-bump.md). The docs version snapshot is taken from a
+# 1. Get clean checkouts of the FOUR source trees ("Option B" — the
+#    four-root layout shipped by PR #150, the v4.3.0 corpus bump).
+#    The docs version snapshot is taken from a
 #    moving branch, so the release tag does NOT contain version-vNEW/.
 #    awesome-aztec is a moving community repo — just clone current main.
 git -C ../aztec-packages worktree add --detach /tmp/aztec-vNEW      vNEW
