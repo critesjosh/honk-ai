@@ -66,6 +66,11 @@ _GOVERNANCE_CAP = 20
 # so the LLM gets a clear message before a wasted request, and cap the
 # no-range "latest blocks" response to the same size.
 _BLOCKS_WINDOW_CAP = 20
+_REORGS_CAP = 10
+_BLOCK_TX_HASHES_CAP = 10
+# Aztecscan reports validator status as the staking-contract enum ordinal
+# (its OpenAPI spec also admits the string labels, so tolerate both).
+_VALIDATOR_STATUS_LABELS = {0: "NONE", 1: "VALIDATING", 2: "LIVING", 3: "EXITING"}
 
 
 class AztecNetworkTool(Tool):
@@ -153,6 +158,10 @@ class AztecNetworkTool(Tool):
             "aztec_network_get_contract_instance": self._get_contract_instance,
             "aztec_network_get_governance_proposals": self._get_governance_proposals,
             "aztec_network_get_tips": self._get_tips,
+            "aztec_network_get_tx_effect": self._get_tx_effect,
+            "aztec_network_get_block": self._get_block_by_id,
+            "aztec_network_get_validator": self._get_validator,
+            "aztec_network_get_reorgs": self._get_reorgs,
         }
         if action_name not in actions:
             raise ValueError(f"Unknown action: {action_name}")
@@ -538,6 +547,207 @@ class AztecNetworkTool(Tool):
             out[f"{stage}_hash"] = block.get("hash")
         return out
 
+    def _get_tx_effect(self, tx_hash: Any = None, network: str = "mainnet") -> dict[str, Any]:
+        """Resolve a transaction hash to its current state.
+
+        Mined transactions come back from ``/l2/tx-effects/{hash}`` with
+        the full receipt. On a 404 we fall through to the pending pool
+        (``/l2/txs/{hash}``) and the dropped list
+        (``/l2/dropped-txs/{hash}``) so one action answers "did my tx go
+        through?" in every state: mined / pending / dropped / not_found.
+        """
+        try:
+            h = _validate_hex_id(tx_hash, "tx_hash")
+        except ValueError as exc:
+            return self._err(0, f"invalid tx_hash: {exc}")
+        status, body, net = self._request(f"/l2/tx-effects/{h}", network)
+        if status == 200 and not isinstance(body, dict):
+            return self._err(502, "Unexpected tx-effect body shape (expected an object)", net)
+        if status == 200:
+            revert = body.get("revertCode")
+            revert_code = _coerce_int(revert.get("code")) if isinstance(revert, dict) else _coerce_int(revert)
+            return {
+                "status_code": 200,
+                "network": net,
+                "state": "mined",
+                "tx_hash": body.get("txHash") or h,
+                "reverted": bool(revert_code) if revert_code is not None else None,
+                "revert_code": revert_code,
+                "block_height": _coerce_int(body.get("blockHeight")),
+                "block_hash": body.get("blockHash"),
+                # True when the containing block was orphaned by a reorg —
+                # the tx is no longer on the canonical chain.
+                "is_orphaned": body.get("isOrphaned"),
+                "transaction_fee": _coerce_int(body.get("transactionFee")),
+                "fee_payer": body.get("feePayer"),
+                "fee_payment_method": body.get("feePaymentMethod"),
+                "initiator": body.get("initiator"),
+                "timestamp": _coerce_int(body.get("timestamp")),
+                "effect_counts": {
+                    key: len(body[field])
+                    for key, field in (
+                        ("note_hashes", "noteHashes"),
+                        ("nullifiers", "nullifiers"),
+                        ("l2_to_l1_msgs", "l2ToL1Msgs"),
+                        ("public_data_writes", "publicDataWrites"),
+                        ("private_logs", "privateLogs"),
+                        ("public_logs", "publicLogs"),
+                    )
+                    if isinstance(body.get(field), list)
+                },
+            }
+        if status != 404:
+            return self._err(status or 502, f"Failed to fetch tx effect: {body}", net)
+
+        # Not mined — check the pending pool, then the dropped list. A
+        # failed secondary check must not mask the primary finding (the tx
+        # is not mined), so non-404 errors here degrade to a note.
+        unavailable: list[str] = []
+        status, body, net = self._request(f"/l2/txs/{h}", network)
+        if status == 200 and isinstance(body, dict):
+            return {
+                "status_code": 200,
+                "network": net,
+                "state": "pending",
+                "tx_hash": body.get("txHash") or h,
+                "birth_timestamp": _coerce_int(body.get("birthTimestamp")),
+                "expiration_timestamp": _coerce_int(body.get("expirationTimestamp")),
+                "fee_payer": body.get("feePayer"),
+                "fee_payment_method": body.get("feePaymentMethod"),
+                "initiator": body.get("initiator"),
+            }
+        if status != 404:
+            unavailable.append("pending-pool")
+        status, body, net = self._request(f"/l2/dropped-txs/{h}", network)
+        if status == 200 and isinstance(body, dict):
+            return {
+                "status_code": 200,
+                "network": net,
+                "state": "dropped",
+                "tx_hash": body.get("txHash") or h,
+                # Shape is undocumented upstream; surface the fields that
+                # explain the drop when present.
+                "reason": body.get("reason"),
+                "dropped_at": _coerce_int(body.get("droppedAt")),
+                "created_at": _coerce_int(body.get("createdAt")),
+            }
+        if status != 404:
+            unavailable.append("dropped-list")
+        message = "Transaction not found: not mined, not pending, and not in the dropped list"
+        if unavailable:
+            message = (
+                f"Transaction is not mined, but the {' and '.join(unavailable)} "
+                "check(s) failed, so it may still be pending or dropped"
+            )
+        return {
+            "status_code": 404,
+            "network": net,
+            "state": "not_found",
+            "tx_hash": h,
+            "message": message,
+        }
+
+    def _get_block_by_id(self, height_or_hash: Any = None, network: str = "mainnet") -> dict[str, Any]:
+        try:
+            block_id = _validate_height_or_hash(height_or_hash)
+        except ValueError as exc:
+            return self._err(0, f"invalid height_or_hash: {exc}")
+        status, body, net = self._request(f"/l2/blocks/{block_id}", network)
+        if status == 404:
+            return self._err(404, "Block not found", net)
+        if status != 200:
+            return self._err(status or 502, f"Failed to fetch block: {body}", net)
+        if not isinstance(body, dict):
+            return self._err(502, "Unexpected block body shape (expected an object)", net)
+        # Nested fields are upstream-controlled; tolerate any non-dict
+        # (fail soft to empty) rather than raising mid-action.
+        header = body.get("header")
+        header = header if isinstance(header, dict) else {}
+        global_vars = header.get("globalVariables")
+        global_vars = global_vars if isinstance(global_vars, dict) else {}
+        block_body = body.get("body")
+        tx_effects = block_body.get("txEffects") if isinstance(block_body, dict) else None
+        tx_hashes = [
+            entry.get("txHash")
+            for entry in (tx_effects if isinstance(tx_effects, list) else [])
+            if isinstance(entry, dict) and entry.get("txHash")
+        ]
+        return {
+            "status_code": 200,
+            "network": net,
+            "hash": body.get("hash"),
+            "height": _coerce_int(body.get("height")),
+            "finalization_status": body.get("nativeStatus") or body.get("finalizationStatus"),
+            # Non-null when the block was reorged out of the canonical chain.
+            "is_orphaned": body.get("orphan") is not None,
+            "slot_number": _coerce_int(global_vars.get("slotNumber")),
+            "timestamp": _coerce_int(global_vars.get("timestamp")),
+            "coinbase": global_vars.get("coinbase"),
+            "total_fees": _coerce_int(header.get("totalFees")),
+            "total_mana_used": _coerce_int(header.get("totalManaUsed")),
+            "tx_count": len(tx_hashes),
+            "tx_hashes": tx_hashes[:_BLOCK_TX_HASHES_CAP],
+            "tx_hashes_truncated": len(tx_hashes) > _BLOCK_TX_HASHES_CAP,
+        }
+
+    def _get_validator(self, attester_address: Any = None, network: str = "mainnet") -> dict[str, Any]:
+        try:
+            addr = _validate_hex_id(attester_address, "attester_address")
+        except ValueError as exc:
+            return self._err(0, f"invalid attester_address: {exc}")
+        status, body, net = self._request(f"/l1/l2-validators/{addr}", network)
+        if status == 404:
+            return self._err(404, "No validator found with that attester address", net)
+        if status != 200:
+            return self._err(status or 502, f"Failed to fetch validator: {body}", net)
+        if not isinstance(body, dict):
+            return self._err(502, "Unexpected validator body shape (expected an object)", net)
+        raw_status = body.get("status")
+        status_label = _VALIDATOR_STATUS_LABELS.get(_coerce_int(raw_status))
+        if status_label is None and isinstance(raw_status, str):
+            status_label = raw_status
+        stake_wei = _coerce_int(body.get("stake"))
+        return {
+            "status_code": 200,
+            "network": net,
+            "attester": body.get("attester"),
+            "status": status_label,
+            "stake": stake_wei,
+            # The stake asset has 18 decimals; pre-divide so the LLM
+            # doesn't have to do 10^18 arithmetic on a 24-digit integer.
+            "stake_tokens": round(stake_wei / 1e18, 4) if stake_wei is not None else None,
+            "withdrawer": body.get("withdrawer"),
+            "proposer": body.get("proposer"),
+            "rollup_address": body.get("rollupAddress"),
+            "first_seen_at": _coerce_int(body.get("firstSeenAt")),
+            "latest_seen_change_at": _coerce_int(body.get("latestSeenChangeAt")),
+        }
+
+    def _get_reorgs(self, network: str = "mainnet") -> dict[str, Any]:
+        status, body, net = self._request("/l2/reorgs", network)
+        if status != 200:
+            return self._err(status or 502, f"Failed to fetch reorgs: {body}", net)
+        if not isinstance(body, list):
+            return self._err(502, "Unexpected reorgs body shape (expected an array)", net)
+        entries = [e for e in body if isinstance(e, dict)]
+        reorgs = [
+            {
+                "height": _coerce_int(entry.get("height")),
+                "orphaned_block_hash": entry.get("orphanedBlockHash"),
+                "orphaned_block_count": _coerce_int(entry.get("nbrOfOrphanedBlocks")),
+                "timestamp": entry.get("timestamp"),
+            }
+            for entry in entries[:_REORGS_CAP]
+        ]
+        return {
+            "status_code": 200,
+            "network": net,
+            "reorgs": reorgs,
+            "returned_count": len(reorgs),
+            "total_count": len(entries),
+            "truncated": len(entries) > _REORGS_CAP,
+        }
+
     def get_actions_metadata(self) -> list[dict[str, Any]]:
         network_param = {
             "type": "string",
@@ -747,6 +957,83 @@ class AztecNetworkTool(Tool):
                 ),
                 "parameters": params(),
             },
+            {
+                "name": "aztec_network_get_tx_effect",
+                "description": (
+                    "Look up an Aztec L2 transaction by its hash and report "
+                    "its state. If mined, returns the receipt: success or "
+                    "reverted (revert_code), block height/hash, fee, fee "
+                    "payer, timestamp, and effect counts. If not mined, "
+                    "checks the pending pool and the dropped list, so the "
+                    "state is one of mined / pending / dropped / not_found. "
+                    "Use this to answer 'check this tx hash' or 'did my "
+                    "transaction go through?'. Defaults to mainnet."
+                ),
+                "parameters": params(
+                    {
+                        "tx_hash": {
+                            "type": "string",
+                            "required": True,
+                            "description": "The 0x-prefixed transaction hash to look up.",
+                        }
+                    }
+                ),
+            },
+            {
+                "name": "aztec_network_get_block",
+                "description": (
+                    "Get a specific Aztec L2 block by height or block hash: "
+                    "finalization stage, timestamp, fees, mana, coinbase, "
+                    "whether it was orphaned by a reorg, and the hashes of "
+                    "the transactions it contains. Use when the user asks "
+                    "about a specific block ('what's in block 12345?'). "
+                    "Defaults to mainnet."
+                ),
+                "parameters": params(
+                    {
+                        "height_or_hash": {
+                            "type": "string",
+                            "required": True,
+                            "description": (
+                                "A block height (decimal number) or a "
+                                "0x-prefixed block hash."
+                            ),
+                        }
+                    }
+                ),
+            },
+            {
+                "name": "aztec_network_get_validator",
+                "description": (
+                    "Get one Aztec L2 validator by its L1 attester address: "
+                    "status (VALIDATING / LIVING / EXITING), stake, "
+                    "withdrawer and proposer addresses, and first/last seen "
+                    "timestamps. Use for 'is my validator in the set?' / "
+                    "'what's the status of validator 0x…?'. Defaults to "
+                    "mainnet."
+                ),
+                "parameters": params(
+                    {
+                        "attester_address": {
+                            "type": "string",
+                            "required": True,
+                            "description": "The validator's 0x-prefixed L1 attester address.",
+                        }
+                    }
+                ),
+            },
+            {
+                "name": "aztec_network_get_reorgs",
+                "description": (
+                    "List recent Aztec L2 chain reorgs, newest first: the "
+                    "height, orphaned block hash, number of orphaned "
+                    "blocks, and when each happened. Use for 'did the "
+                    "chain reorg?' or to explain why a previously-seen "
+                    "block or transaction disappeared. Defaults to "
+                    "mainnet."
+                ),
+                "parameters": params(),
+            },
         ]
 
     def get_config_requirements(self) -> dict[str, Any]:
@@ -852,6 +1139,24 @@ def _validate_block_height(value: Any, label: str) -> int:
     if height < 0:
         raise ValueError(f"{label} must be a non-negative integer")
     return height
+
+
+def _validate_height_or_hash(value: Any) -> str:
+    """Validate an LLM-supplied block identifier for URL-path use.
+
+    Accepts a 0x-hex hash (``_validate_hex_id`` charset), a non-negative
+    int, or an all-digits string; returns the canonical path segment.
+    Both accepted grammars are path-safe by construction. Raises
+    ``ValueError`` (caught at the action boundary → error dict) and never
+    echoes the rejected value."""
+    if isinstance(value, str) and _HEX_ID_RE.match(value):
+        return value
+    try:
+        return str(_validate_block_height(value, "height_or_hash"))
+    except ValueError:
+        raise ValueError(
+            "height_or_hash must be a block height (non-negative integer) or a 0x-prefixed hex hash"
+        )
 
 
 def _validate_gov_state(value: Any) -> str:

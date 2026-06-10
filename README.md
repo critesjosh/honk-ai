@@ -196,7 +196,7 @@ architectural diff and
   `application/agents/tools/ethereum_network.py`) — give the Discord,
   widget, and Slack agents live read access to chain state.
   - **Aztec L2** via Aztecscan REST
-    (`https://api.aztecscan.xyz/v1/{apiKey}/...`). Eleven actions:
+    (`https://api.aztecscan.xyz/v1/{apiKey}/...`). Fifteen actions:
     latest height, latest block summary, a recent-block window
     (`/l2/blocks` — up to 20 blocks with timestamps for an inclusive
     `from_height`/`to_height` range, or the latest 20 with no range; use
@@ -206,16 +206,27 @@ architectural diff and
     totals, RPC node health, explorer search (`/l2/search` — resolve a
     block/tx/contract/account by hash, height, or address), contract
     instance lookup (`/l2/contract-instances/{address}`), L1 governance
-    proposals (`/l1/governance/proposals`, optional `state` filter), and
+    proposals (`/l1/governance/proposals`, optional `state` filter),
     chain finality tips (`/l2/tips` — proposed/checkpointed/proven/
-    finalized heads). The curated set was chosen by probing each endpoint
-    live on both hosts; spec endpoints that 404 in production (e.g.
-    `/l2/txEffects/{hash}`) were excluded — explorer search covers
-    transaction lookup instead. LLM-supplied identifiers are charset-
+    finalized heads), **transaction lookup by hash**
+    (`/l2/tx-effects/{hash}` — full receipt for a mined tx: revert code,
+    block, fee, effect counts; on a 404 it falls through to the pending
+    pool `/l2/txs/{hash}` and the dropped list `/l2/dropped-txs/{hash}`,
+    so one action reports mined / pending / dropped / not_found — the
+    Aztecscan OpenAPI spec spells this route `/l2/txEffects/{hash}`, which
+    404s in production; the kebab-case path is the live one), **block
+    lookup by height or hash** (`/l2/blocks/{heightOrHash}` — trimmed
+    header + the tx hashes it contains, capped at 10), **validator lookup
+    by attester address** (`/l1/l2-validators/{attesterAddress}` —
+    status decoded from the staking-contract enum ordinal, stake
+    pre-divided by 10^18), and **recent reorgs** (`/l2/reorgs`, capped at
+    10 — testnet has thousands of historical entries). The curated set
+    was chosen by probing each endpoint live on both hosts.
+    LLM-supplied identifiers are charset-
     validated before they reach the URL (hex ids must match
-    `0x[0-9a-fA-F]{1,128}`; free-text search is urlencoded) so a tool
-    argument can never alter the request authority or escape its path
-    segment. Each action takes a `network` arg —
+    `0x[0-9a-fA-F]{1,128}`; block ids may also be a decimal height) so a
+    tool argument can never alter the request authority or escape its
+    path segment. Each action takes a `network` arg —
     **`mainnet`** (the live network, anchored to Ethereum mainnet /
     `l1ChainId=1`, host `api.aztecscan.xyz`) or **`testnet`** (anchored
     to Sepolia / `l1ChainId=11155111`, host `api.testnet.aztecscan.xyz`)
@@ -226,8 +237,14 @@ architectural diff and
     `[A-Za-z0-9._-]{1,128}`. Per-network base URLs are configurable
     (`AZTECSCAN_MAINNET_BASE_URL` / `AZTECSCAN_TESTNET_BASE_URL`); config
     precedence: `user_tools.config` > env > default.
-  - **Ethereum L1** via public JSON-RPC. Five actions: block number, gas
-    price, chain id, sync status, trimmed block header. Each takes
+  - **Ethereum L1** via public JSON-RPC. Seven actions: block number, gas
+    price, chain id, sync status, trimmed block header, transaction
+    lookup by hash (`eth_getTransactionByHash` +
+    `eth_getTransactionReceipt` combined — reports mined with
+    success/reverted, pending, or not_found; useful for Aztec
+    deposit/bridge and validator-staking txs), and address balance
+    (`eth_getBalance` — e.g. checking an attester/proposer is funded).
+    Each takes
     `network` = `"mainnet"` or `"sepolia"`; **Sepolia is the L1 the Aztec
     testnet anchors to** (`l1ChainId=11155111`). Defaults are
     publicnode.com endpoints; override via `ETHEREUM_RPC_URL` /

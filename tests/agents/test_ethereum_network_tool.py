@@ -336,11 +336,13 @@ class TestMisc:
         with pytest.raises(ValueError, match="Unknown action"):
             tool.execute_action("ethereum_network_bogus")
 
-    def test_metadata_five_actions(self, tool):
+    def test_metadata_seven_actions(self, tool):
         meta = tool.get_actions_metadata()
-        assert len(meta) == 5
+        assert len(meta) == 7
         names = [m["name"] for m in meta]
         assert all(n.startswith("ethereum_network_") for n in names)
+        assert "ethereum_network_get_transaction" in names
+        assert "ethereum_network_get_balance" in names
 
     def test_config_requirements_marks_secret(self, tool):
         reqs = tool.get_config_requirements()
@@ -355,3 +357,116 @@ class TestMisc:
         assert h("0x10") == 16
         assert h(42) == 42
         assert h("not hex") is None
+
+
+_TX_HASH = "0x" + "ab" * 32
+_ADDRESS = "0x" + "6d" * 20
+
+_TX_BODY = {
+    "hash": _TX_HASH,
+    "from": "0xfrom",
+    "to": "0xto",
+    "value": "0xde0b6b3a7640000",  # 1 ETH
+    "nonce": "0x2a",
+}
+
+_RECEIPT_BODY = {
+    "status": "0x1",
+    "blockNumber": "0x181d17a",
+    "blockHash": "0x" + "2c" * 32,
+    "gasUsed": "0x876d",
+    "effectiveGasPrice": "0xea0e6c8",  # 0.2454 gwei
+    "contractAddress": None,
+}
+
+
+@pytest.mark.unit
+class TestGetTransaction:
+    @patch("application.agents.tools.ethereum_network.requests.post")
+    def test_mined_combines_tx_and_receipt(self, mock_post, tool):
+        mock_post.side_effect = [_rpc_resp(result=_TX_BODY), _rpc_resp(result=_RECEIPT_BODY)]
+        result = tool.execute_action("ethereum_network_get_transaction", tx_hash=_TX_HASH)
+        methods = [c.kwargs["json"]["method"] for c in mock_post.call_args_list]
+        assert methods == ["eth_getTransactionByHash", "eth_getTransactionReceipt"]
+        assert mock_post.call_args_list[0].kwargs["json"]["params"] == [_TX_HASH]
+        assert result["state"] == "mined"
+        assert result["success"] is True
+        assert result["value_eth"] == 1.0
+        assert result["nonce"] == 42
+        assert result["block_number"] == 25284986
+        assert result["gas_used"] == 34669
+        assert result["effective_gas_price_gwei"] == 0.2454
+
+    @patch("application.agents.tools.ethereum_network.requests.post")
+    def test_reverted_tx(self, mock_post, tool):
+        mock_post.side_effect = [
+            _rpc_resp(result=_TX_BODY),
+            _rpc_resp(result={**_RECEIPT_BODY, "status": "0x0"}),
+        ]
+        result = tool.execute_action("ethereum_network_get_transaction", tx_hash=_TX_HASH)
+        assert result["state"] == "mined"
+        assert result["success"] is False
+
+    @patch("application.agents.tools.ethereum_network.requests.post")
+    def test_pending_tx(self, mock_post, tool):
+        mock_post.side_effect = [_rpc_resp(result=_TX_BODY), _rpc_resp(result=None)]
+        result = tool.execute_action("ethereum_network_get_transaction", tx_hash=_TX_HASH)
+        assert result["state"] == "pending"
+        assert result["status_code"] == 200
+        assert "block_number" not in result
+
+    @patch("application.agents.tools.ethereum_network.requests.post")
+    def test_unknown_tx_skips_receipt_call(self, mock_post, tool):
+        mock_post.return_value = _rpc_resp(result=None)
+        result = tool.execute_action("ethereum_network_get_transaction", tx_hash=_TX_HASH)
+        assert mock_post.call_count == 1
+        assert result["status_code"] == 404
+        assert result["state"] == "not_found"
+
+    @patch("application.agents.tools.ethereum_network.requests.post")
+    def test_rpc_error_surfaced(self, mock_post, tool):
+        mock_post.return_value = _rpc_resp(error={"code": -32000, "message": "boom"})
+        result = tool.execute_action("ethereum_network_get_transaction", tx_hash=_TX_HASH)
+        assert "eth_getTransactionByHash failed" in result["message"]
+
+    @patch("application.agents.tools.ethereum_network.requests.post")
+    def test_sepolia_routes(self, mock_post, tool):
+        mock_post.side_effect = [_rpc_resp(result=_TX_BODY), _rpc_resp(result=_RECEIPT_BODY)]
+        result = tool.execute_action("ethereum_network_get_transaction", tx_hash=_TX_HASH, network="sepolia")
+        assert mock_post.call_args[0][0] == "https://example.org"
+        assert result["network"] == "sepolia"
+
+    @pytest.mark.parametrize("bad", [None, 42, "abc", "0x123", "0x" + "ab" * 31, "0x" + "zz" * 32])
+    @patch("application.agents.tools.ethereum_network.requests.post")
+    def test_invalid_hash_degrades_without_request(self, mock_post, tool, bad):
+        result = tool.execute_action("ethereum_network_get_transaction", tx_hash=bad)
+        assert result["status_code"] == 0
+        assert "tx_hash must be" in result["message"]
+        mock_post.assert_not_called()
+
+
+@pytest.mark.unit
+class TestGetBalance:
+    @patch("application.agents.tools.ethereum_network.requests.post")
+    def test_wei_and_eth(self, mock_post, tool):
+        mock_post.return_value = _rpc_resp(result="0x4ef0d622a4ec2326")  # ~5.6883 ETH
+        result = tool.execute_action("ethereum_network_get_balance", address=_ADDRESS)
+        payload = mock_post.call_args.kwargs["json"]
+        assert payload["method"] == "eth_getBalance"
+        assert payload["params"] == [_ADDRESS, "latest"]
+        assert result["balance_wei"] == 5688281773653107494
+        assert result["balance_eth"] == pytest.approx(5.6883, abs=1e-4)
+
+    @patch("application.agents.tools.ethereum_network.requests.post")
+    def test_non_hex_result(self, mock_post, tool):
+        mock_post.return_value = _rpc_resp(result="garbage")
+        result = tool.execute_action("ethereum_network_get_balance", address=_ADDRESS)
+        assert "non-hex" in result["message"]
+
+    @pytest.mark.parametrize("bad", [None, 42, "abc", _TX_HASH, "0x" + "zz" * 20])
+    @patch("application.agents.tools.ethereum_network.requests.post")
+    def test_invalid_address_degrades_without_request(self, mock_post, tool, bad):
+        result = tool.execute_action("ethereum_network_get_balance", address=bad)
+        assert result["status_code"] == 0
+        assert "address must be" in result["message"]
+        mock_post.assert_not_called()

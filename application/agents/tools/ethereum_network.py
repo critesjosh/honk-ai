@@ -36,6 +36,12 @@ _MAX_RESPONSE_BYTES = 512 * 1024
 _SUPPORTED_NETWORKS = ("mainnet", "sepolia")
 _BLOCK_TAG_LITERALS = ("latest", "finalized", "safe", "earliest", "pending")
 _HEX_BLOCK_RE = re.compile(r"^0x[0-9a-fA-F]+$")
+# LLM-supplied identifiers are sent as JSON-RPC params (POST body, never
+# the URL), so these are strict-shape checks rather than path-escape
+# guards: a malformed value should fail here with a clear message, not in
+# an upstream error that _redact_text has to scrub.
+_TX_HASH_RE = re.compile(r"^0x[0-9a-fA-F]{64}$")
+_ADDRESS_RE = re.compile(r"^0x[0-9a-fA-F]{40}$")
 
 
 class EthereumNetworkTool(Tool):
@@ -91,6 +97,8 @@ class EthereumNetworkTool(Tool):
             "ethereum_network_get_chain_id": self._get_chain_id,
             "ethereum_network_get_sync_status": self._get_sync_status,
             "ethereum_network_get_block": self._get_block,
+            "ethereum_network_get_transaction": self._get_transaction,
+            "ethereum_network_get_balance": self._get_balance,
         }
         if action_name not in actions:
             raise ValueError(f"Unknown action: {action_name}")
@@ -277,6 +285,89 @@ class EthereumNetworkTool(Tool):
             "miner": body.get("miner"),
         }
 
+    def _get_transaction(self, tx_hash: Any = None, network: str = "mainnet") -> dict[str, Any]:
+        """Resolve an L1 transaction hash to its state and receipt.
+
+        ``eth_getTransactionByHash`` distinguishes known/unknown;
+        ``eth_getTransactionReceipt`` distinguishes pending/mined and
+        carries the success/reverted status. Both calls go to the same
+        upstream, so a transport failure surfaces from the first."""
+        if not isinstance(tx_hash, str) or not _TX_HASH_RE.match(tx_hash):
+            return {
+                "status_code": 0,
+                "message": "tx_hash must be a 0x-prefixed 32-byte hex hash (0x + 64 hex chars)",
+            }
+        ok, status, tx = self._rpc(network, "eth_getTransactionByHash", [tx_hash])
+        if not ok:
+            return {"status_code": status, "message": f"eth_getTransactionByHash failed: {tx}"}
+        if tx is None:
+            return {
+                "status_code": 404,
+                "network": network,
+                "state": "not_found",
+                "tx_hash": tx_hash,
+                "message": "Transaction not known to this RPC node (never broadcast, or evicted)",
+            }
+        if not isinstance(tx, dict):
+            return self._err(200, "eth_getTransactionByHash returned an unexpected body shape")
+        value_wei = self._hex_to_int(tx.get("value"))
+        out: dict[str, Any] = {
+            "status_code": 200,
+            "network": network,
+            "tx_hash": tx_hash,
+            "from": tx.get("from"),
+            "to": tx.get("to"),
+            "value_wei": value_wei,
+            "value_eth": round(value_wei / 1e18, 8) if value_wei is not None else None,
+            "nonce": self._hex_to_int(tx.get("nonce")),
+        }
+        ok, status, receipt = self._rpc(network, "eth_getTransactionReceipt", [tx_hash])
+        if not ok:
+            return {"status_code": status, "message": f"eth_getTransactionReceipt failed: {receipt}"}
+        if receipt is None:
+            out["state"] = "pending"
+            return out
+        if not isinstance(receipt, dict):
+            return self._err(200, "eth_getTransactionReceipt returned an unexpected body shape")
+        receipt_status = self._hex_to_int(receipt.get("status"))
+        gas_price = self._hex_to_int(receipt.get("effectiveGasPrice"))
+        out.update(
+            {
+                "state": "mined",
+                # status 1 = success, 0 = reverted (post-Byzantium).
+                "success": receipt_status == 1 if receipt_status is not None else None,
+                "block_number": self._hex_to_int(receipt.get("blockNumber")),
+                "block_hash": receipt.get("blockHash"),
+                "gas_used": self._hex_to_int(receipt.get("gasUsed")),
+                "effective_gas_price_gwei": (
+                    round(gas_price / 1_000_000_000, 4) if gas_price is not None else None
+                ),
+                # Non-null only for contract-creation transactions.
+                "contract_address": receipt.get("contractAddress"),
+            }
+        )
+        return out
+
+    def _get_balance(self, address: Any = None, network: str = "mainnet") -> dict[str, Any]:
+        if not isinstance(address, str) or not _ADDRESS_RE.match(address):
+            return {
+                "status_code": 0,
+                "message": "address must be a 0x-prefixed 20-byte hex address (0x + 40 hex chars)",
+            }
+        ok, status, value = self._rpc(network, "eth_getBalance", [address, "latest"])
+        if not ok:
+            return {"status_code": status, "message": f"eth_getBalance failed: {value}"}
+        wei = self._hex_to_int(value)
+        if wei is None:
+            return self._err(200, "eth_getBalance returned a non-hex value")
+        return {
+            "status_code": 200,
+            "network": network,
+            "address": address,
+            "balance_wei": wei,
+            "balance_eth": round(wei / 1e18, 8),
+        }
+
     def get_actions_metadata(self) -> list[dict[str, Any]]:
         network_param = {
             "type": "string",
@@ -376,6 +467,56 @@ class EthereumNetworkTool(Tool):
                                 "'earliest', 'pending', or a 0x-prefixed "
                                 "hex block number. Defaults to 'latest'."
                             ),
+                        },
+                    },
+                    "required": [],
+                    "additionalProperties": False,
+                },
+            },
+            {
+                "name": "ethereum_network_get_transaction",
+                "description": (
+                    "Look up an Ethereum L1 transaction by hash and report "
+                    "its state: mined (with success/reverted status, block "
+                    "number, gas used, effective gas price), pending, or "
+                    "not_found. Use for 'check this L1 tx' — e.g. an Aztec "
+                    "deposit/bridge or validator-staking transaction. Pass "
+                    "network='sepolia' for the L1 underneath the Aztec "
+                    "testnet."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        **base_props,
+                        "tx_hash": {
+                            "type": "string",
+                            "required": True,
+                            "pattern": r"^0x[0-9a-fA-F]{64}$",
+                            "description": "The 0x-prefixed 32-byte transaction hash.",
+                        },
+                    },
+                    "required": [],
+                    "additionalProperties": False,
+                },
+            },
+            {
+                "name": "ethereum_network_get_balance",
+                "description": (
+                    "Get the latest ETH balance of an L1 address, in wei "
+                    "and ETH. Useful for checking whether an Aztec "
+                    "validator's attester/proposer address is funded. Pass "
+                    "network='sepolia' for the L1 underneath the Aztec "
+                    "testnet."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        **base_props,
+                        "address": {
+                            "type": "string",
+                            "required": True,
+                            "pattern": r"^0x[0-9a-fA-F]{40}$",
+                            "description": "The 0x-prefixed 20-byte Ethereum address.",
                         },
                     },
                     "required": [],

@@ -398,9 +398,9 @@ class TestValidatorTotals:
 
 @pytest.mark.unit
 class TestActionsMetadata:
-    def test_eleven_actions(self, tool):
+    def test_fifteen_actions(self, tool):
         meta = tool.get_actions_metadata()
-        assert len(meta) == 11
+        assert len(meta) == 15
         names = [m["name"] for m in meta]
         assert all(n.startswith("aztec_network_") for n in names)
         # The curated additions are present.
@@ -410,6 +410,10 @@ class TestActionsMetadata:
             "aztec_network_get_governance_proposals",
             "aztec_network_get_tips",
             "aztec_network_get_blocks",
+            "aztec_network_get_tx_effect",
+            "aztec_network_get_block",
+            "aztec_network_get_validator",
+            "aztec_network_get_reorgs",
         ):
             assert name in names
 
@@ -1049,3 +1053,309 @@ class TestLlmSchemaConversion:
         assert "from_height" in props and "to_height" in props
         assert "from_height" not in fn["parameters"].get("required", [])
         assert "to_height" not in fn["parameters"].get("required", [])
+
+    def test_tx_effect_hash_is_required(self):
+        fn = self._converted("aztec_network_get_tx_effect")
+        assert "tx_hash" in fn["parameters"]["required"]
+
+    def test_get_block_id_is_required(self):
+        fn = self._converted("aztec_network_get_block")
+        assert "height_or_hash" in fn["parameters"]["required"]
+
+    def test_validator_address_is_required(self):
+        fn = self._converted("aztec_network_get_validator")
+        assert "attester_address" in fn["parameters"]["required"]
+
+
+_TX_HASH = "0x" + "ab" * 32
+
+_MINED_TX_EFFECT = {
+    "txHash": _TX_HASH,
+    "revertCode": {"code": 0},
+    "blockHeight": 109504,
+    "blockHash": "0x" + "0f" * 32,
+    "isOrphaned": False,
+    "transactionFee": "3552501726239200000",
+    "feePayer": "0xfee",
+    "feePaymentMethod": "fee_juice",
+    "initiator": "0xini",
+    "timestamp": 1781032740000,
+    "noteHashes": [],
+    "nullifiers": ["0x1", "0x2"],
+    "l2ToL1Msgs": [],
+    "publicDataWrites": [{"leafSlot": "0x1"}],
+    "privateLogs": [],
+    "publicLogs": [{}],
+}
+
+
+@pytest.mark.unit
+class TestTxEffect:
+    @patch("application.agents.tools.aztec_network.requests.get")
+    def test_mined_extracts_receipt(self, mock_get, tool):
+        mock_get.return_value = _resp(200, json_body=_MINED_TX_EFFECT)
+        result = tool.execute_action("aztec_network_get_tx_effect", tx_hash=_TX_HASH)
+        assert mock_get.call_count == 1
+        assert mock_get.call_args[0][0].endswith(f"/l2/tx-effects/{_TX_HASH}")
+        assert result["state"] == "mined"
+        assert result["reverted"] is False
+        assert result["revert_code"] == 0
+        assert result["block_height"] == 109504
+        assert result["transaction_fee"] == 3552501726239200000
+        assert result["effect_counts"]["nullifiers"] == 2
+        assert result["effect_counts"]["public_logs"] == 1
+
+    @patch("application.agents.tools.aztec_network.requests.get")
+    def test_mined_reverted(self, mock_get, tool):
+        mock_get.return_value = _resp(200, json_body={**_MINED_TX_EFFECT, "revertCode": {"code": 2}})
+        result = tool.execute_action("aztec_network_get_tx_effect", tx_hash=_TX_HASH)
+        assert result["state"] == "mined"
+        assert result["reverted"] is True
+        assert result["revert_code"] == 2
+
+    @patch("application.agents.tools.aztec_network.requests.get")
+    def test_falls_back_to_pending(self, mock_get, tool):
+        mock_get.side_effect = [
+            _resp(404, text="not found"),
+            _resp(
+                200,
+                json_body={
+                    "txHash": _TX_HASH,
+                    "birthTimestamp": 1781074841904,
+                    "expirationTimestamp": 1781157588,
+                    "feePayer": "0xfee",
+                    "feePaymentMethod": "fee_juice",
+                    "initiator": "0xini",
+                },
+            ),
+        ]
+        result = tool.execute_action("aztec_network_get_tx_effect", tx_hash=_TX_HASH)
+        assert mock_get.call_count == 2
+        assert mock_get.call_args_list[1][0][0].endswith(f"/l2/txs/{_TX_HASH}")
+        assert result["state"] == "pending"
+        assert result["expiration_timestamp"] == 1781157588
+
+    @patch("application.agents.tools.aztec_network.requests.get")
+    def test_falls_back_to_dropped(self, mock_get, tool):
+        mock_get.side_effect = [
+            _resp(404, text="not found"),
+            _resp(404, text="not found"),
+            _resp(200, json_body={"txHash": _TX_HASH, "reason": "expired"}),
+        ]
+        result = tool.execute_action("aztec_network_get_tx_effect", tx_hash=_TX_HASH)
+        assert mock_get.call_count == 3
+        assert mock_get.call_args_list[2][0][0].endswith(f"/l2/dropped-txs/{_TX_HASH}")
+        assert result["state"] == "dropped"
+        assert result["reason"] == "expired"
+
+    @patch("application.agents.tools.aztec_network.requests.get")
+    def test_not_found_after_all_checks(self, mock_get, tool):
+        mock_get.side_effect = [_resp(404, text="nf")] * 3
+        result = tool.execute_action("aztec_network_get_tx_effect", tx_hash=_TX_HASH)
+        assert result["status_code"] == 404
+        assert result["state"] == "not_found"
+        assert "not mined, not pending" in result["message"]
+
+    @patch("application.agents.tools.aztec_network.requests.get")
+    def test_secondary_check_failure_degrades_to_note(self, mock_get, tool):
+        """A broken pending/dropped endpoint must not mask the primary
+        finding (the tx is not mined) behind an opaque error."""
+        mock_get.side_effect = [
+            _resp(404, text="nf"),
+            _resp(500, text="boom"),
+            _resp(404, text="nf"),
+        ]
+        result = tool.execute_action("aztec_network_get_tx_effect", tx_hash=_TX_HASH)
+        assert result["state"] == "not_found"
+        assert "pending-pool" in result["message"]
+
+    @patch("application.agents.tools.aztec_network.requests.get")
+    def test_non_dict_200_body_is_shape_error(self, mock_get, tool):
+        mock_get.return_value = _resp(200, json_body=["not", "an", "object"])
+        result = tool.execute_action("aztec_network_get_tx_effect", tx_hash=_TX_HASH)
+        assert result["status_code"] == 502
+        assert "Unexpected tx-effect body shape" in result["message"]
+
+    @patch("application.agents.tools.aztec_network.requests.get")
+    def test_primary_upstream_error_short_circuits(self, mock_get, tool):
+        mock_get.return_value = _resp(500, text="boom")
+        result = tool.execute_action("aztec_network_get_tx_effect", tx_hash=_TX_HASH)
+        assert mock_get.call_count == 1
+        assert result["status_code"] == 500
+        assert "Failed to fetch tx effect" in result["message"]
+
+    @patch("application.agents.tools.aztec_network.requests.get")
+    def test_routes_to_testnet(self, mock_get, tool):
+        mock_get.return_value = _resp(200, json_body=_MINED_TX_EFFECT)
+        result = tool.execute_action("aztec_network_get_tx_effect", tx_hash=_TX_HASH, network="testnet")
+        assert mock_get.call_args[0][0].startswith(_TESTNET)
+        assert result["network"] == "testnet"
+
+    @pytest.mark.parametrize("bad", [None, 42, "abc", "0x", "0xzz", "0x12/..", ""])
+    @patch("application.agents.tools.aztec_network.requests.get")
+    def test_invalid_hash_degrades_without_request(self, mock_get, tool, bad):
+        result = tool.execute_action("aztec_network_get_tx_effect", tx_hash=bad)
+        assert result["status_code"] == 0
+        assert "invalid tx_hash" in result["message"]
+        mock_get.assert_not_called()
+
+
+@pytest.mark.unit
+class TestGetBlockById:
+    _BLOCK = {
+        "hash": "0x" + "0f" * 32,
+        "height": "109504",
+        "nativeStatus": "finalized",
+        "orphan": None,
+        "header": {
+            "totalFees": "3552501726239200000",
+            "totalManaUsed": "1140881",
+            "globalVariables": {
+                "slotNumber": "115218",
+                "timestamp": 1781032740000,
+                "coinbase": "0xcb",
+            },
+        },
+        "body": {"txEffects": [{"txHash": _TX_HASH}]},
+    }
+
+    @patch("application.agents.tools.aztec_network.requests.get")
+    def test_success_by_height(self, mock_get, tool):
+        mock_get.return_value = _resp(200, json_body=self._BLOCK)
+        result = tool.execute_action("aztec_network_get_block", height_or_hash="109504")
+        assert mock_get.call_args[0][0].endswith("/l2/blocks/109504")
+        assert result["height"] == 109504
+        assert result["finalization_status"] == "finalized"
+        assert result["is_orphaned"] is False
+        assert result["slot_number"] == 115218
+        assert result["tx_count"] == 1
+        assert result["tx_hashes"] == [_TX_HASH]
+
+    @patch("application.agents.tools.aztec_network.requests.get")
+    def test_success_by_hash(self, mock_get, tool):
+        mock_get.return_value = _resp(200, json_body=self._BLOCK)
+        block_hash = "0x" + "0f" * 32
+        tool.execute_action("aztec_network_get_block", height_or_hash=block_hash)
+        assert mock_get.call_args[0][0].endswith(f"/l2/blocks/{block_hash}")
+
+    @patch("application.agents.tools.aztec_network.requests.get")
+    def test_int_height_accepted(self, mock_get, tool):
+        mock_get.return_value = _resp(200, json_body=self._BLOCK)
+        tool.execute_action("aztec_network_get_block", height_or_hash=109504)
+        assert mock_get.call_args[0][0].endswith("/l2/blocks/109504")
+
+    @patch("application.agents.tools.aztec_network.requests.get")
+    def test_orphaned_block_flagged(self, mock_get, tool):
+        mock_get.return_value = _resp(200, json_body={**self._BLOCK, "orphan": {"timestamp": 1}})
+        result = tool.execute_action("aztec_network_get_block", height_or_hash="109504")
+        assert result["is_orphaned"] is True
+
+    @patch("application.agents.tools.aztec_network.requests.get")
+    def test_tx_hashes_capped(self, mock_get, tool):
+        body = {**self._BLOCK, "body": {"txEffects": [{"txHash": f"0x{i:064x}"} for i in range(15)]}}
+        mock_get.return_value = _resp(200, json_body=body)
+        result = tool.execute_action("aztec_network_get_block", height_or_hash="109504")
+        assert result["tx_count"] == 15
+        assert len(result["tx_hashes"]) == 10
+        assert result["tx_hashes_truncated"] is True
+
+    @patch("application.agents.tools.aztec_network.requests.get")
+    def test_404_returns_not_found(self, mock_get, tool):
+        mock_get.return_value = _resp(404, text="nf")
+        result = tool.execute_action("aztec_network_get_block", height_or_hash="999999999")
+        assert result["status_code"] == 404
+        assert "Block not found" in result["message"]
+
+    @patch("application.agents.tools.aztec_network.requests.get")
+    def test_non_dict_nested_fields_fail_soft(self, mock_get, tool):
+        """Upstream-controlled nested fields must not raise mid-action."""
+        mock_get.return_value = _resp(
+            200, json_body={**self._BLOCK, "header": [1], "body": [2]}
+        )
+        result = tool.execute_action("aztec_network_get_block", height_or_hash="109504")
+        assert result["status_code"] == 200
+        assert result["tx_count"] == 0
+        assert result["timestamp"] is None
+
+    @pytest.mark.parametrize("bad", [None, "12.5", "latest", -1, "0x", "abc", True])
+    @patch("application.agents.tools.aztec_network.requests.get")
+    def test_invalid_id_degrades_without_request(self, mock_get, tool, bad):
+        result = tool.execute_action("aztec_network_get_block", height_or_hash=bad)
+        assert result["status_code"] == 0
+        assert "invalid height_or_hash" in result["message"]
+        mock_get.assert_not_called()
+
+
+@pytest.mark.unit
+class TestValidator:
+    _VALIDATOR = {
+        "rollupAddress": "0xrollup",
+        "attester": "0x" + "6d" * 20,
+        "stake": "200000000000000000000000",
+        "withdrawer": "0xw",
+        "proposer": "0xp",
+        "status": 1,
+        "firstSeenAt": 1780959567569,
+        "latestSeenChangeAt": 1780959567569,
+    }
+
+    @patch("application.agents.tools.aztec_network.requests.get")
+    def test_success_maps_numeric_status(self, mock_get, tool):
+        mock_get.return_value = _resp(200, json_body=self._VALIDATOR)
+        addr = "0x" + "6d" * 20
+        result = tool.execute_action("aztec_network_get_validator", attester_address=addr)
+        assert mock_get.call_args[0][0].endswith(f"/l1/l2-validators/{addr}")
+        assert result["status"] == "VALIDATING"
+        assert result["stake"] == 200000000000000000000000
+        assert result["stake_tokens"] == 200000.0
+
+    @patch("application.agents.tools.aztec_network.requests.get")
+    def test_string_status_tolerated(self, mock_get, tool):
+        mock_get.return_value = _resp(200, json_body={**self._VALIDATOR, "status": "EXITING"})
+        result = tool.execute_action("aztec_network_get_validator", attester_address="0x" + "6d" * 20)
+        assert result["status"] == "EXITING"
+
+    @patch("application.agents.tools.aztec_network.requests.get")
+    def test_404_returns_not_found(self, mock_get, tool):
+        mock_get.return_value = _resp(404, text="nf")
+        result = tool.execute_action("aztec_network_get_validator", attester_address="0x" + "11" * 20)
+        assert result["status_code"] == 404
+        assert "No validator" in result["message"]
+
+    @pytest.mark.parametrize("bad", [None, 42, "abc", "0xZZ"])
+    @patch("application.agents.tools.aztec_network.requests.get")
+    def test_invalid_address_degrades_without_request(self, mock_get, tool, bad):
+        result = tool.execute_action("aztec_network_get_validator", attester_address=bad)
+        assert result["status_code"] == 0
+        assert "invalid attester_address" in result["message"]
+        mock_get.assert_not_called()
+
+
+@pytest.mark.unit
+class TestReorgs:
+    @patch("application.agents.tools.aztec_network.requests.get")
+    def test_success_caps_and_maps(self, mock_get, tool):
+        entries = [
+            {
+                "orphanedBlockHash": f"0x{i:064x}",
+                "height": str(1000 + i),
+                "timestamp": "2026-06-10T13:21:33.357Z",
+                "nbrOfOrphanedBlocks": 1,
+            }
+            for i in range(25)
+        ]
+        mock_get.return_value = _resp(200, json_body=entries)
+        result = tool.execute_action("aztec_network_get_reorgs", network="testnet")
+        assert mock_get.call_args[0][0].endswith("/l2/reorgs")
+        assert result["returned_count"] == 10
+        assert result["total_count"] == 25
+        assert result["truncated"] is True
+        assert result["reorgs"][0]["height"] == 1000
+        assert result["reorgs"][0]["orphaned_block_count"] == 1
+
+    @patch("application.agents.tools.aztec_network.requests.get")
+    def test_unexpected_shape(self, mock_get, tool):
+        mock_get.return_value = _resp(200, json_body={"not": "a list"})
+        result = tool.execute_action("aztec_network_get_reorgs")
+        assert result["status_code"] == 502
+        assert "Unexpected reorgs body shape" in result["message"]

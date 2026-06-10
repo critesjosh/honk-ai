@@ -64,13 +64,15 @@ _TOOLS = [
     (
         "aztec_network",
         "Aztec Network Status",
-        "Query Aztec L2 chain head, finalization, validators, and RPC nodes via Aztecscan.",
+        "Query Aztec L2 chain head, finalization, blocks, transactions, validators, reorgs, and "
+        "governance via Aztecscan.",
         AztecNetworkTool,
     ),
     (
         "ethereum_network",
         "Ethereum Network Status",
-        "Query Ethereum L1 mainnet/Sepolia block number, gas price, chain id, sync status via JSON-RPC.",
+        "Query Ethereum L1 mainnet/Sepolia block number, gas price, transactions, balances, and "
+        "sync status via JSON-RPC.",
         EthereumNetworkTool,
     ),
 ]
