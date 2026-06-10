@@ -9,10 +9,20 @@ ephemeral ``pg_ctl``-managed cluster in a temp directory and tears it
 down at the end of the session, so CI only needs Postgres *binaries*
 installed, not a running service.
 
-Tests under ``tests/storage/db/`` intentionally override ``pg_conn`` in
-their own conftest to point at a real, long-running Postgres instance
-(DBngin locally, a service container in CI). Those are integration/e2e
-tests and are marked with ``@pytest.mark.integration``.
+Schema setup is amortised across the session: ``alembic upgrade head``
+runs ONCE into the cluster's *template* database (via the factory's
+``load=`` hook), and every test that requests ``pg_engine`` / ``pg_conn``
+gets its own throwaway database cloned from that template with
+``CREATE DATABASE … TEMPLATE …`` — milliseconds instead of a full
+per-test alembic subprocess. Tests that commit, or that open extra
+connections straight off ``pg_engine``, stay hermetic because the clone
+is dropped after each test.
+
+Tests under ``tests/storage/db/`` use these same fixtures (see that
+directory's conftest). Only the Alembic end-to-end test in
+``test_migration_0005_pseudonymize_user_ids.py`` is marked
+``@pytest.mark.integration``; it requests the *blank* ``postgresql``
+fixture directly because it drives alembic itself from an empty DB.
 
 No mongomock. The ``mock_mongo_db`` fixture that used to live here was
 removed as part of the Phase 4/5 Mongo→Postgres cutover. Tests that
@@ -24,13 +34,21 @@ from __future__ import annotations
 
 import os
 
+# Keep the repo-root ``.env`` (operator/prod values) out of every test
+# run. ``application.core.settings`` constructs its module-level
+# ``Settings(_env_file=…)`` at import time, so clearing the shell env is
+# not enough — this flag makes settings skip the dotenv file entirely.
+# Must be set before ANY ``application.*`` import. ``setdefault`` so a
+# caller can explicitly opt back in with DOCSGPT_SETTINGS_SKIP_ENV_FILE="".
+os.environ.setdefault("DOCSGPT_SETTINGS_SKIP_ENV_FILE", "1")
+
 # Disable the app's self-bootstrap (AUTO_CREATE_DB / AUTO_MIGRATE) before
 # any ``application.*`` module is imported. ``application/app.py`` runs
 # ``ensure_database_ready`` at import time using whatever ``POSTGRES_URI``
 # is set in the environment — which in dev is the operator's local DB, not
 # the ephemeral ``pytest-postgresql`` cluster that the fixtures below spin
 # up. Tests manage their own schema via the ``pg_engine`` fixture
-# (subprocess ``alembic upgrade head`` against the per-test URI), so the
+# (``alembic upgrade head`` into the session's template DB), so the
 # import-time bootstrap would at best be redundant and at worst would
 # mutate the operator's dev DB. ``setdefault`` so a test run can still
 # opt back in by setting the env var explicitly.
@@ -55,6 +73,7 @@ os.environ.setdefault("USER_ID_PEPPER", "0" * 64)
 os.environ.setdefault("OPENAI_API_KEY", "test-openai-key-not-used")
 os.environ.setdefault("OPEN_ROUTER_API_KEY", "test-openrouter-key-not-used")
 
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -64,16 +83,43 @@ import pytest
 from pytest_postgresql import factories
 from sqlalchemy import create_engine
 
-
 # ---------------------------------------------------------------------------
 # Postgres fixtures (ephemeral cluster via pytest-postgresql)
 # ---------------------------------------------------------------------------
 
-# ``postgresql_proc`` starts a fresh ``pg_ctl`` cluster once per session.
-# ``postgresql`` hands out a per-test DB on top of it. We layer our own
-# SQLAlchemy engine + rolled-back transaction on top for test isolation.
+_ALEMBIC_INI_PATH = Path(__file__).resolve().parent.parent / "application" / "alembic.ini"
+
+
+def _migrate_template(host: str, port: int, user: str, dbname: str, password: str | None) -> None:
+    """``load=`` hook: run ``alembic upgrade head`` ONCE into the template DB.
+
+    pytest-postgresql calls this a single time per session, against the
+    cluster's template database. Every per-test database handed out by the
+    ``pg_migrated`` client fixture below is then cloned from that template,
+    so no test pays the (multi-second) alembic subprocess cost itself.
+    """
+    url = f"postgresql+psycopg://{user}:{password or ''}@{host}:{port}/{dbname}"
+    subprocess.check_call(
+        [sys.executable, "-m", "alembic", "-c", str(_ALEMBIC_INI_PATH), "upgrade", "head"],
+        timeout=120,
+        env={**os.environ, "POSTGRES_URI": url},
+    )
+
+
+# Two session-scoped clusters, each lazily started only if requested:
+#
+# * ``postgresql_proc`` / ``postgresql`` — BLANK per-test databases. Kept
+#   for tests that drive alembic themselves from an empty schema (the
+#   migration-0005 integration test).
+# * ``pg_proc_migrated`` / ``pg_migrated`` — per-test databases cloned
+#   from a template that already has the full alembic schema applied.
+#   This is what ``pg_engine`` / ``pg_conn`` (and therefore ~all
+#   repository tests) ride on.
 postgresql_proc = factories.postgresql_proc()
 postgresql = factories.postgresql("postgresql_proc")
+
+pg_proc_migrated = factories.postgresql_proc(load=[_migrate_template])
+pg_migrated = factories.postgresql("pg_proc_migrated")
 
 
 def _sqlalchemy_url(pg_conn_info) -> str:
@@ -84,21 +130,41 @@ def _sqlalchemy_url(pg_conn_info) -> str:
     )
 
 
-@pytest.fixture(scope="session")
-def _alembic_ini_path() -> Path:
-    return Path(__file__).resolve().parent.parent / "application" / "alembic.ini"
+def pytest_collection_modifyitems(config, items):
+    """Cleanly SKIP Postgres-backed tests on hosts without Postgres binaries.
+
+    pytest-postgresql shells out to ``pg_config`` to locate ``pg_ctl``;
+    without it every pg test ERRORs at fixture setup. Turn that into an
+    explicit skip instead. A configured ``--postgresql-exec`` (or the
+    ``postgresql_exec`` ini option) pointing at a real ``pg_ctl`` still
+    counts as "binaries installed".
+    """
+    if shutil.which("pg_config") is not None:
+        return
+    exec_opt = config.getoption("postgresql_exec", default=None) or config.getini("postgresql_exec")
+    if exec_opt and Path(exec_opt).exists():
+        return
+    skip_pg = pytest.mark.skip(reason="postgresql binaries not installed (pg_config not on PATH)")
+    # The client fixtures request their proc fixture dynamically (via
+    # ``request.getfixturevalue``), so the proc names never show up in an
+    # item's static fixture closure — match on the client names too.
+    pg_fixtures = {"postgresql_proc", "postgresql", "pg_proc_migrated", "pg_migrated"}
+    for item in items:
+        if pg_fixtures.intersection(getattr(item, "fixturenames", ())):
+            item.add_marker(skip_pg)
 
 
 @pytest.fixture()
-def pg_engine(postgresql, _alembic_ini_path, monkeypatch):
+def pg_engine(pg_migrated, monkeypatch):
     """Per-test SQLAlchemy engine against a fresh ephemeral Postgres DB.
 
-    Alembic is run from scratch against the per-test database so the full
-    schema is present. ``POSTGRES_URI`` is patched in the environment for
-    the duration of the test so any code that reads it via
-    ``application.core.settings`` sees the ephemeral DB.
+    The database is cloned from the session's pre-migrated template, so
+    the full schema is present without running alembic per test.
+    ``POSTGRES_URI`` is patched in the environment for the duration of
+    the test so any code that reads it via ``application.core.settings``
+    sees the ephemeral DB.
     """
-    url = _sqlalchemy_url(postgresql.info)
+    url = _sqlalchemy_url(pg_migrated.info)
     monkeypatch.setenv("POSTGRES_URI", url)
 
     # Reset the settings cache so the new POSTGRES_URI is picked up if the
@@ -106,12 +172,6 @@ def pg_engine(postgresql, _alembic_ini_path, monkeypatch):
     from application.core import settings as settings_module
 
     monkeypatch.setattr(settings_module.settings, "POSTGRES_URI", url, raising=False)
-
-    subprocess.check_call(
-        [sys.executable, "-m", "alembic", "-c", str(_alembic_ini_path), "upgrade", "head"],
-        timeout=60,
-        env={**__import__("os").environ, "POSTGRES_URI": url},
-    )
 
     engine = create_engine(url)
     yield engine

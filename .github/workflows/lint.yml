@@ -21,4 +21,6 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Lint with Ruff
-        uses: chartboost/ruff-action@v1
+        # chartboost/ruff-action is archived; astral-sh/ruff-action is the
+        # maintained successor. Pinned to the v4.0.0 release commit.
+        uses: astral-sh/ruff-action@0ce1b0bf8b818ef400413f810f8a11cdbda0034b # v4.0.0

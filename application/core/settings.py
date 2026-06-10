@@ -287,4 +287,9 @@ class Settings(BaseSettings):
 
 # Project root is one level above application/
 path = Path(__file__).parent.parent.parent.absolute()
-settings = Settings(_env_file=path.joinpath(".env"), _env_file_encoding="utf-8")
+# Tests set DOCSGPT_SETTINGS_SKIP_ENV_FILE=1 (tests/conftest.py) so the
+# repo-root operator .env can't leak into test runs at import time.
+settings = Settings(
+    _env_file=None if os.environ.get("DOCSGPT_SETTINGS_SKIP_ENV_FILE") else path.joinpath(".env"),
+    _env_file_encoding="utf-8",
+)

@@ -25,6 +25,15 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
+          cache: "pip"
+          cache-dependency-path: |
+            application/requirements.txt
+            tests/requirements.txt
+      - name: Ensure PostgreSQL binaries are present
+        # The pg fixtures SKIP (not error) when pg_config is missing, so a
+        # runner image without Postgres would go green while silently
+        # skipping all ~570 database tests. Fail loudly instead.
+        run: pg_config --version
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
