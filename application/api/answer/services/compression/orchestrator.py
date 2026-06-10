@@ -49,6 +49,7 @@ class CompressionOrchestrator:
         model_id: str,
         decoded_token: Dict[str, Any],
         current_query_tokens: int = 500,
+        current_conversation: Optional[Dict[str, Any]] = None,
     ) -> CompressionResult:
         """
         Check if compression is needed and perform it if so.
@@ -61,15 +62,21 @@ class CompressionOrchestrator:
             model_id: Model being used for conversation
             decoded_token: User's decoded JWT token
             current_query_tokens: Estimated tokens for current query
+            current_conversation: Pre-loaded conversation (optional) —
+                skips the redundant fetch when the caller already holds
+                the row, mirroring ``compress_mid_execution``.
 
         Returns:
             CompressionResult with summary and recent queries
         """
         try:
-            # Load conversation
-            conversation = self.conversation_service.get_conversation(
-                conversation_id, user_id
-            )
+            # Load conversation if not provided
+            if current_conversation is not None:
+                conversation = current_conversation
+            else:
+                conversation = self.conversation_service.get_conversation(
+                    conversation_id, user_id
+                )
 
             if not conversation:
                 logger.warning(
@@ -208,7 +215,7 @@ class CompressionOrchestrator:
         """
         try:
             # Load conversation if not provided
-            if current_conversation:
+            if current_conversation is not None:
                 conversation = current_conversation
             else:
                 conversation = self.conversation_service.get_conversation(

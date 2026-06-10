@@ -68,7 +68,7 @@ class TestGetPrompt:
     def test_mongo_prompt_by_id(self):
         mock_collection = MagicMock()
         mock_collection.find_one.return_value = {"_id": "abc", "content": "Custom prompt"}
-        prompt = get_prompt("507f1f77bcf86cd799439011", prompts_collection=mock_collection)
+        prompt = get_prompt("507f1f77bcf86cd799439011")
         assert prompt == "Custom prompt"
 
     @pytest.mark.unit
@@ -76,14 +76,14 @@ class TestGetPrompt:
         mock_collection = MagicMock()
         mock_collection.find_one.return_value = None
         with pytest.raises(ValueError, match="Invalid prompt ID"):
-            get_prompt("507f1f77bcf86cd799439011", prompts_collection=mock_collection)
+            get_prompt("507f1f77bcf86cd799439011")
 
     @pytest.mark.unit
     def test_invalid_id_raises(self):
         mock_collection = MagicMock()
         mock_collection.find_one.side_effect = Exception("bad id")
         with pytest.raises(ValueError, match="Invalid prompt ID"):
-            get_prompt("not-an-objectid", prompts_collection=mock_collection)
+            get_prompt("not-an-objectid")
 
     @pytest.mark.unit
     def test_mongo_fallback_when_no_collection(self):
@@ -740,7 +740,7 @@ class TestGetPromptEdgeCases:
         mock_collection = MagicMock()
         mock_collection.find_one.return_value = None
         with pytest.raises(ValueError, match="Invalid prompt ID"):
-            get_prompt("507f1f77bcf86cd799439011", prompts_collection=mock_collection)
+            get_prompt("507f1f77bcf86cd799439011")
 
 
 # ---- Additional coverage: _get_prompt_content with DB prompt ----
@@ -3190,7 +3190,7 @@ class TestCreateAgentPaths:
             mock_s.LLM_PROVIDER = "openai"
             sp.create_agent(docs_together="docs", docs=[], tools_data={})
         # Verify agentic_default prompt was requested
-        mock_gp.assert_any_call("agentic_default", sp.prompts_collection)
+        mock_gp.assert_any_call("agentic_default")
 
     def test_create_agent_non_agentic_no_prompt(self):
         """Cover lines 794-796: non-agentic agent, raw_prompt None, uses normal preset."""
@@ -3242,7 +3242,7 @@ class TestCreateAgentPaths:
         ):
             mock_s.LLM_PROVIDER = "openai"
             sp.create_agent()
-        mock_gp.assert_any_call("default", sp.prompts_collection)
+        mock_gp.assert_any_call("default")
 
     def test_create_agent_backup_models_computed(self):
         """Cover lines 820-822: backup_models excludes current model."""

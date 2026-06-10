@@ -144,6 +144,58 @@ class TestCompressIfNeeded:
         assert result.success is False
         assert "DB down" in result.error
 
+    def test_preloaded_conversation_skips_fetch(
+        self,
+        orchestrator,
+        mock_conversation_service,
+        mock_threshold_checker,
+        sample_conversation,
+    ):
+        """A caller-supplied conversation (the stream processor's cached
+        row) must be used as-is — no redundant get_conversation call."""
+        mock_threshold_checker.should_compress.return_value = False
+
+        result = orchestrator.compress_if_needed(
+            conversation_id="conv1",
+            user_id="user1",
+            model_id="gpt-4",
+            decoded_token={"sub": "user1"},
+            current_conversation=sample_conversation,
+        )
+
+        mock_conversation_service.get_conversation.assert_not_called()
+        assert result.success is True
+        assert result.compression_performed is False
+        assert len(result.recent_queries) == 3
+
+    def test_preloaded_conversation_passed_to_perform_compression(
+        self,
+        orchestrator,
+        mock_conversation_service,
+        mock_threshold_checker,
+        sample_conversation,
+        decoded_token,
+    ):
+        mock_threshold_checker.should_compress.return_value = True
+
+        with patch.object(
+            orchestrator, "_perform_compression"
+        ) as mock_perform:
+            mock_perform.return_value = CompressionResult.success_no_compression([])
+
+            orchestrator.compress_if_needed(
+                conversation_id="conv1",
+                user_id="user1",
+                model_id="gpt-4",
+                decoded_token=decoded_token,
+                current_conversation=sample_conversation,
+            )
+
+            mock_perform.assert_called_once_with(
+                "conv1", sample_conversation, "gpt-4", decoded_token
+            )
+        mock_conversation_service.get_conversation.assert_not_called()
+
     def test_custom_query_tokens(
         self,
         orchestrator,

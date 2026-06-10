@@ -144,13 +144,13 @@ def stream_token_usage(func):
             usage_attachments=usage_attachments,
             **kwargs,
         )
-        batch = []
         result = func(self, model, messages, stream, tools, **kwargs)
+        # Count each chunk as it streams instead of buffering the whole
+        # answer in a list and counting afterwards — same per-chunk
+        # counting semantics, without the O(answer) memory.
         for r in result:
-            batch.append(r)
+            call_usage["generated_tokens"] += _count_tokens(r)
             yield r
-        for line in batch:
-            call_usage["generated_tokens"] += _count_tokens(line)
         self.token_usage["prompt_tokens"] += call_usage["prompt_tokens"]
         self.token_usage["generated_tokens"] += call_usage["generated_tokens"]
         update_token_usage(

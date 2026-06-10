@@ -599,7 +599,7 @@ class TestSearchResourcePgConn:
         )
 
         with _patch_search_db(pg_conn), patch(
-            "application.api.answer.routes.search.SearchResource._get_sources_from_api_key",
+            "application.api.answer.routes.search.SearchResource._get_sources_from_agent",
             side_effect=RuntimeError("boom"),
         ), flask_app.app_context():
             with flask_app.test_request_context(
@@ -609,47 +609,44 @@ class TestSearchResourcePgConn:
         assert result.status_code == 500
 
 
-class TestGetSourcesFromApiKeyPg:
-    def test_empty_for_unknown_key(self, pg_conn, flask_app):
+@pytest.mark.unit
+class TestGetSourcesFromAgent:
+    """``_get_sources_from_agent`` receives the agent row ``post()``
+    already fetched for API-key validation. The predecessor
+    ``_get_sources_from_api_key`` re-ran the identical ``find_by_key``
+    query on a second connection for every request; the source-ordering
+    semantics below must survive the refactor unchanged."""
+
+    def test_empty_for_missing_agent(self, flask_app):
         from application.api.answer.routes.search import SearchResource
 
-        with _patch_search_db(pg_conn), flask_app.app_context():
-            got = SearchResource()._get_sources_from_api_key("nope")
-        assert got == []
+        with flask_app.app_context():
+            assert SearchResource()._get_sources_from_agent({}) == []
+            assert SearchResource()._get_sources_from_agent(None) == []
 
-    def test_returns_extra_source_ids(self, pg_conn, flask_app):
+    def test_returns_extra_source_ids(self, flask_app):
+        import uuid
+
         from application.api.answer.routes.search import SearchResource
-        from application.storage.db.repositories.agents import AgentsRepository
-        from application.storage.db.repositories.sources import SourcesRepository
 
-        src = SourcesRepository(pg_conn).create("s", user_id="u")
-        AgentsRepository(pg_conn).create(
-            "u", "a", "published",
-            surface="web_ask",
-            key="sources-key",
-            extra_source_ids=[str(src["id"])],
-        )
-        with _patch_search_db(pg_conn), flask_app.app_context():
-            got = SearchResource()._get_sources_from_api_key("sources-key")
-        assert got == [str(src["id"])]
+        src_id = uuid.uuid4()
+        agent = {"source_id": None, "extra_source_ids": [src_id]}
+        with flask_app.app_context():
+            got = SearchResource()._get_sources_from_agent(agent)
+        assert got == [str(src_id)]
 
-    def test_falls_back_to_single_source(self, pg_conn, flask_app):
+    def test_falls_back_to_single_source(self, flask_app):
+        import uuid
+
         from application.api.answer.routes.search import SearchResource
-        from application.storage.db.repositories.agents import AgentsRepository
-        from application.storage.db.repositories.sources import SourcesRepository
 
-        src = SourcesRepository(pg_conn).create("s", user_id="u")
-        AgentsRepository(pg_conn).create(
-            "u", "a", "published",
-            surface="web_ask",
-            key="single-key",
-            source_id=str(src["id"]),
-        )
-        with _patch_search_db(pg_conn), flask_app.app_context():
-            got = SearchResource()._get_sources_from_api_key("single-key")
-        assert got == [str(src["id"])]
+        src_id = uuid.uuid4()
+        agent = {"source_id": src_id, "extra_source_ids": None}
+        with flask_app.app_context():
+            got = SearchResource()._get_sources_from_agent(agent)
+        assert got == [str(src_id)]
 
-    def test_primary_and_extras_combine_with_primary_first(self, pg_conn, flask_app):
+    def test_primary_and_extras_combine_with_primary_first(self, flask_app):
         """Regression guard: the upstream version of this method only
         looked at ``extra_source_ids`` and fell back to ``source_id``
         only when extras was empty, silently dropping the primary
@@ -658,44 +655,30 @@ class TestGetSourcesFromApiKeyPg:
         in ``extra_source_ids``; the canonical search order must
         preserve that.
         """
+        import uuid
+
         from application.api.answer.routes.search import SearchResource
-        from application.storage.db.repositories.agents import AgentsRepository
-        from application.storage.db.repositories.sources import SourcesRepository
 
-        primary = SourcesRepository(pg_conn).create("primary", user_id="u")
-        extra1 = SourcesRepository(pg_conn).create("e1", user_id="u")
-        extra2 = SourcesRepository(pg_conn).create("e2", user_id="u")
-        AgentsRepository(pg_conn).create(
-            "u", "a", "published",
-            surface="web_ask",
-            key="combined-key",
-            source_id=str(primary["id"]),
-            extra_source_ids=[str(extra1["id"]), str(extra2["id"])],
-        )
-        with _patch_search_db(pg_conn), flask_app.app_context():
-            got = SearchResource()._get_sources_from_api_key("combined-key")
-        assert got == [str(primary["id"]), str(extra1["id"]), str(extra2["id"])]
+        primary, extra1, extra2 = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+        agent = {"source_id": primary, "extra_source_ids": [extra1, extra2]}
+        with flask_app.app_context():
+            got = SearchResource()._get_sources_from_agent(agent)
+        assert got == [str(primary), str(extra1), str(extra2)]
 
-    def test_dedups_when_primary_appears_in_extras(self, pg_conn, flask_app):
+    def test_dedups_when_primary_appears_in_extras(self, flask_app):
         """Defensive: if a malformed write put the primary into both
         ``source_id`` AND ``extra_source_ids``, dedupe — duplicates
         in the source list would cause pgvector to scan the same
         corpus twice."""
-        from application.api.answer.routes.search import SearchResource
-        from application.storage.db.repositories.agents import AgentsRepository
-        from application.storage.db.repositories.sources import SourcesRepository
+        import uuid
 
-        primary = SourcesRepository(pg_conn).create("primary", user_id="u")
-        AgentsRepository(pg_conn).create(
-            "u", "a", "published",
-            surface="web_ask",
-            key="dup-key",
-            source_id=str(primary["id"]),
-            extra_source_ids=[str(primary["id"])],
-        )
-        with _patch_search_db(pg_conn), flask_app.app_context():
-            got = SearchResource()._get_sources_from_api_key("dup-key")
-        assert got == [str(primary["id"])]
+        from application.api.answer.routes.search import SearchResource
+
+        primary = uuid.uuid4()
+        agent = {"source_id": primary, "extra_source_ids": [primary]}
+        with flask_app.app_context():
+            got = SearchResource()._get_sources_from_agent(agent)
+        assert got == [str(primary)]
 
 
 # ---------------------------------------------------------------------------
@@ -1028,7 +1011,7 @@ class TestSearchUserLogs:
         )
 
         with _patch_search_db(pg_conn), patch(
-            "application.api.answer.routes.search.SearchResource._get_sources_from_api_key",
+            "application.api.answer.routes.search.SearchResource._get_sources_from_agent",
             side_effect=RuntimeError("boom"),
         ), flask_app.app_context():
             with flask_app.test_request_context(

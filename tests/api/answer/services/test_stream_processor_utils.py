@@ -625,6 +625,97 @@ class TestPreFetchDocs:
         assert docs is None and raw is None
 
 
+class TestConversationFetchCaching:
+    """The conversation row + full message history must be fetched exactly
+    once per request: ``_resolve_agent_id``, ``_load_conversation_history``
+    and the compression threshold check all share the processor-level
+    cache (``_get_conversation_once``)."""
+
+    def _make_processor(self, conversation):
+        from unittest.mock import MagicMock
+
+        from application.api.answer.services.compression import (
+            CompressionOrchestrator,
+        )
+        from application.api.answer.services.stream_processor import (
+            StreamProcessor,
+        )
+
+        sp = StreamProcessor(
+            {"question": "q", "conversation_id": "conv-1"}, {"sub": "u1"},
+        )
+        sp.conversation_service = MagicMock()
+        sp.conversation_service.get_conversation.return_value = conversation
+        checker = MagicMock()
+        checker.should_compress.return_value = False
+        # Real orchestrator wired to the same mocked service: if
+        # compress_if_needed ignored the pre-loaded conversation it would
+        # re-fetch and the call-count assertion below would fail.
+        sp.compression_orchestrator = CompressionOrchestrator(
+            sp.conversation_service, threshold_checker=checker,
+        )
+        return sp
+
+    def test_fetched_once_across_resolve_history_and_compression(self):
+        conversation = {
+            "_id": "conv-1",
+            "agent_id": None,
+            "queries": [
+                {"prompt": "p1", "response": "r1", "metadata": {"k": "v"}},
+            ],
+        }
+        sp = self._make_processor(conversation)
+        with patch(
+            "application.api.answer.services.stream_processor.settings."
+            "ENABLE_CONVERSATION_COMPRESSION",
+            True,
+        ):
+            assert sp._resolve_agent_id() is None  # fetch site 1
+            sp._load_conversation_history()  # fetch sites 2 + 3
+        assert sp.conversation_service.get_conversation.call_count == 1
+        assert sp.history == [
+            {"prompt": "p1", "response": "r1", "metadata": {"k": "v"}},
+        ]
+
+    def test_fetched_once_with_compression_disabled(self):
+        conversation = {
+            "_id": "conv-1",
+            "agent_id": "agent-9",
+            "queries": [{"prompt": "p1", "response": "r1"}],
+        }
+        sp = self._make_processor(conversation)
+        with patch(
+            "application.api.answer.services.stream_processor.settings."
+            "ENABLE_CONVERSATION_COMPRESSION",
+            False,
+        ):
+            assert sp._resolve_agent_id() == "agent-9"
+            sp._load_conversation_history()
+        assert sp.conversation_service.get_conversation.call_count == 1
+        assert sp.history == [{"prompt": "p1", "response": "r1"}]
+
+    def test_cache_is_identity_keyed(self):
+        """``_configure_agent`` may rewrite ``initial_user_id`` to the
+        agent owner for API-key callers AFTER ``_resolve_agent_id`` ran
+        under the caller's identity. ``get_conversation`` enforces
+        per-user access control, so a changed identity must re-fetch."""
+        conversation = {"_id": "conv-1", "agent_id": None, "queries": []}
+        sp = self._make_processor(conversation)
+        assert sp._get_conversation_once() is conversation
+        sp.initial_user_id = "owner-user"  # simulate api_key identity rewrite
+        assert sp._get_conversation_once() is conversation
+        assert sp.conversation_service.get_conversation.call_count == 2
+
+    def test_not_found_is_not_cached(self):
+        """A None result (missing/unauthorized) must not poison the cache;
+        the failure path may re-fetch."""
+        sp = self._make_processor(None)
+        assert sp._get_conversation_once() is None
+        assert sp._conversation is None
+        assert sp._get_conversation_once() is None
+        assert sp.conversation_service.get_conversation.call_count == 2
+
+
 class TestPreFetchTools:
     def test_disabled_globally_returns_none(self):
         from application.api.answer.services.stream_processor import (

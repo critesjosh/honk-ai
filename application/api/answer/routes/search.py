@@ -52,8 +52,12 @@ class SearchResource(Resource):
         },
     )
 
-    def _get_sources_from_api_key(self, api_key: str) -> List[str]:
-        """Get source IDs connected to the API key/agent.
+    def _get_sources_from_agent(self, agent: Dict[str, Any]) -> List[str]:
+        """Get source IDs connected to an already-fetched agent row.
+
+        Receives the agent dict that ``post()`` fetched for API-key
+        validation — re-querying by key here would run the identical
+        ``find_by_key`` lookup on a second connection per request.
 
         Combines the agent's primary ``source_id`` with ``extra_source_ids``
         in the canonical order (primary first, extras after). The
@@ -65,22 +69,20 @@ class SearchResource(Resource):
         ``extra_source_ids``, so the bug ate the most-relevant corpus
         for every Discord-issued MCP key.
         """
-        with db_readonly() as conn:
-            agent_data = AgentsRepository(conn).find_by_key(api_key)
-        if not agent_data:
+        if not agent:
             return []
 
         ordered: List[str] = []
         seen: set = set()
 
-        primary = agent_data.get("source_id")
+        primary = agent.get("source_id")
         if primary:
             sid = str(primary)
             ordered.append(sid)
             seen.add(sid)
 
         # extra_source_ids is a PG ARRAY(UUID) of source UUIDs.
-        for src in agent_data.get("extra_source_ids") or []:
+        for src in agent.get("extra_source_ids") or []:
             if not src:
                 continue
             sid = str(src)
@@ -407,14 +409,15 @@ class SearchResource(Resource):
         if not api_key:
             return make_response({"error": "api_key is required"}, 400)
 
-        # Validate API key
+        # Validate API key; the fetched row also carries the source ids,
+        # so _get_sources_from_agent reuses it instead of re-querying.
         with db_readonly() as conn:
             agent = AgentsRepository(conn).find_by_key(api_key)
         if not agent:
             return make_response({"error": "Invalid API key"}, 401)
 
         try:
-            source_ids = self._get_sources_from_api_key(api_key)
+            source_ids = self._get_sources_from_agent(agent)
             results = (
                 self._search_global(question, source_ids, chunks)
                 if source_ids

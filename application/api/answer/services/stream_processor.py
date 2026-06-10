@@ -3,7 +3,7 @@ import json
 import logging
 import os
 from pathlib import Path
-from typing import Any, Dict, Optional, Set
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from application.agents.agent_creator import AgentCreator
 from application.api.answer.services.compression import CompressionOrchestrator
@@ -34,15 +34,27 @@ from application.utils import (
 
 logger = logging.getLogger(__name__)
 
+# Preset prompt files, keyed by preset name. Module-level so get_prompt()
+# (called on the hot /stream path) doesn't rebuild the dicts per call.
+CLASSIC_PRESETS = {
+    "default": "chat_combine_default.txt",
+    "creative": "chat_combine_creative.txt",
+    "strict": "chat_combine_strict.txt",
+    "reduce": "chat_reduce_prompt.txt",
+}
+AGENTIC_PRESETS = {
+    "default": "agentic/default.txt",
+    "creative": "agentic/creative.txt",
+    "strict": "agentic/strict.txt",
+}
+_PRESET_MAPPING = {
+    **CLASSIC_PRESETS,
+    **{f"agentic_{k}": v for k, v in AGENTIC_PRESETS.items()},
+}
 
-def get_prompt(prompt_id: str, prompts_collection=None) -> str:
-    """Get a prompt by preset name or Postgres ID (UUID or legacy ObjectId).
 
-    The ``prompts_collection`` parameter is retained for backwards
-    compatibility with call sites that still pass it positionally; it is
-    ignored post-cutover.
-    """
-    del prompts_collection  # unused — retained for call-site compatibility
+def get_prompt(prompt_id: str) -> str:
+    """Get a prompt by preset name or Postgres ID (UUID or legacy ObjectId)."""
     # Callers may pass a ``uuid.UUID`` (from a PG ``prompt_id`` column) or a
     # plain string ("default"/"creative"/legacy ObjectId). Normalise to str
     # so both the preset lookup and the UUID-vs-legacy branching work.
@@ -55,25 +67,8 @@ def get_prompt(prompt_id: str, prompts_collection=None) -> str:
     current_dir = Path(__file__).resolve().parents[3]
     prompts_dir = current_dir / "prompts"
 
-    CLASSIC_PRESETS = {
-        "default": "chat_combine_default.txt",
-        "creative": "chat_combine_creative.txt",
-        "strict": "chat_combine_strict.txt",
-        "reduce": "chat_reduce_prompt.txt",
-    }
-    AGENTIC_PRESETS = {
-        "default": "agentic/default.txt",
-        "creative": "agentic/creative.txt",
-        "strict": "agentic/strict.txt",
-    }
-
-    preset_mapping = {
-        **CLASSIC_PRESETS,
-        **{f"agentic_{k}": v for k, v in AGENTIC_PRESETS.items()},
-    }
-
-    if prompt_id in preset_mapping:
-        file_path = os.path.join(prompts_dir, preset_mapping[prompt_id])
+    if prompt_id in _PRESET_MAPPING:
+        file_path = os.path.join(prompts_dir, _PRESET_MAPPING[prompt_id])
         try:
             with open(file_path, "r") as f:
                 return f.read()
@@ -96,13 +91,31 @@ def get_prompt(prompt_id: str, prompts_collection=None) -> str:
         raise ValueError(f"Invalid prompt ID: {prompt_id}") from e
 
 
+def _queries_to_history(queries: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Shape stored conversation queries into chat-history entries.
+
+    Args:
+        queries: Message dicts in the legacy Mongo shape
+            (``prompt``/``response``/optional ``metadata``/...).
+
+    Returns:
+        History entries carrying ``prompt``/``response`` plus ``metadata``
+        when present on the source query.
+    """
+    return [
+        {
+            "prompt": query["prompt"],
+            "response": query["response"],
+            **({"metadata": query["metadata"]} if "metadata" in query else {}),
+        }
+        for query in queries
+    ]
+
+
 class StreamProcessor:
     def __init__(
         self, request_data: Dict[str, Any], decoded_token: Optional[Dict[str, Any]]
     ):
-        # Legacy attribute retained as None for any external callers that
-        # introspect the processor; all DB access uses per-op connections.
-        self.prompts_collection = None
         self.data = request_data
         self.decoded_token = decoded_token
         self.initial_user_id = (
@@ -131,6 +144,8 @@ class StreamProcessor:
         self.compressed_summary: Optional[str] = None
         self.compressed_summary_tokens: int = 0
         self._agent_data: Optional[Dict[str, Any]] = None
+        self._conversation: Optional[Dict[str, Any]] = None
+        self._conversation_cache_key: Optional[Tuple[str, str]] = None
 
     def initialize(self):
         """Initialize all required components for processing"""
@@ -164,12 +179,43 @@ class StreamProcessor:
             tools_data=tools_data,
         )
 
+    def _get_conversation_once(self) -> Optional[Dict[str, Any]]:
+        """Fetch the conversation once per ``(conversation_id, user_id)`` and cache it.
+
+        ``_resolve_agent_id``, ``_load_conversation_history`` and the
+        compression check all need the same conversation row plus its full
+        message history, and each ``get_conversation`` call costs two
+        queries and a full history deserialization. Reuse within one
+        request is safe: nothing mutates conversation rows between those
+        call sites (the only write in ``_configure_agent`` touches
+        ``agents.last_used_at``), and compression's post-write re-read
+        happens inside the orchestrator, bypassing this cache. The cache
+        key includes the user id because ``_configure_agent`` may rewrite
+        ``initial_user_id`` to the agent owner for API-key callers —
+        ``get_conversation`` enforces per-user access control, so a
+        changed identity must re-fetch rather than reuse the
+        caller-scoped row.
+
+        Returns:
+            The conversation dict, or None when missing/unauthorized.
+        """
+        if not self.conversation_id or not self.initial_user_id:
+            return None
+        cache_key = (str(self.conversation_id), str(self.initial_user_id))
+        if self._conversation is not None and self._conversation_cache_key == cache_key:
+            return self._conversation
+        conversation = self.conversation_service.get_conversation(
+            self.conversation_id, self.initial_user_id
+        )
+        if conversation is not None:
+            self._conversation = conversation
+            self._conversation_cache_key = cache_key
+        return conversation
+
     def _load_conversation_history(self):
         """Load conversation history either from DB or request"""
         if self.conversation_id and self.initial_user_id:
-            conversation = self.conversation_service.get_conversation(
-                self.conversation_id, self.initial_user_id
-            )
+            conversation = self._get_conversation_once()
             if not conversation:
                 raise ValueError("Conversation not found or unauthorized")
 
@@ -178,18 +224,7 @@ class StreamProcessor:
                 self._handle_compression(conversation)
             else:
                 # Original behavior - load all history (include metadata if present)
-                self.history = [
-                    {
-                        "prompt": query["prompt"],
-                        "response": query["response"],
-                        **(
-                            {"metadata": query["metadata"]}
-                            if "metadata" in query
-                            else {}
-                        ),
-                    }
-                    for query in conversation.get("queries", [])
-                ]
+                self.history = _queries_to_history(conversation.get("queries", []))
         else:
             # `history` can arrive as either a JSON-encoded string (what the
             # Discord bot sends via `json.dumps(messages)`) or as a native
@@ -211,18 +246,12 @@ class StreamProcessor:
                 user_id=self.initial_user_id,
                 model_id=self.model_id,
                 decoded_token=self.decoded_token,
+                current_conversation=conversation,
             )
 
             if not result.success:
                 logger.error(f"Compression failed: {result.error}, using full history")
-                self.history = [
-                    {
-                        "prompt": query["prompt"],
-                        "response": query["response"],
-                        **({"metadata": query["metadata"]} if "metadata" in query else {}),
-                    }
-                    for query in conversation.get("queries", [])
-                ]
+                self.history = _queries_to_history(conversation.get("queries", []))
                 return
 
             if result.compression_performed and result.compressed_summary:
@@ -250,14 +279,7 @@ class StreamProcessor:
                 f"Error handling compression, falling back to standard history: {str(e)}",
                 exc_info=True,
             )
-            self.history = [
-                {
-                    "prompt": query["prompt"],
-                    "response": query["response"],
-                    **({"metadata": query["metadata"]} if "metadata" in query else {}),
-                }
-                for query in conversation.get("queries", [])
-            ]
+            self.history = _queries_to_history(conversation.get("queries", []))
 
     def _process_attachments(self):
         """Process any attachments in the request"""
@@ -528,9 +550,7 @@ class StreamProcessor:
             return None
 
         try:
-            conversation = self.conversation_service.get_conversation(
-                self.conversation_id, self.initial_user_id
-            )
+            conversation = self._get_conversation_once()
         except Exception:
             return None
 
@@ -664,11 +684,19 @@ class StreamProcessor:
             self.retriever_config["chunks"] = 0
 
     def create_retriever(self):
+        # Reuse the prompt cached by _get_prompt_content (shared with
+        # pre_fetch_tools/create_agent) instead of re-fetching it from
+        # Postgres. The cached read swallows lookup errors and returns
+        # None, but the retriever path must keep raising on an invalid
+        # prompt id — fall back to a direct get_prompt call, which does.
+        prompt = self._get_prompt_content()
+        if prompt is None:
+            prompt = get_prompt(self.agent_config["prompt_id"])
         return RetrieverCreator.create_retriever(
             self.retriever_config["retriever_name"],
             source=self.source,
             chat_history=self.history,
-            prompt=get_prompt(self.agent_config["prompt_id"], self.prompts_collection),
+            prompt=prompt,
             chunks=self.retriever_config["chunks"],
             doc_token_limit=self.retriever_config.get("doc_token_limit", 50000),
             model_id=self.model_id,
@@ -889,7 +917,7 @@ class StreamProcessor:
         if not prompt_id:
             return None
         try:
-            self._prompt_content = get_prompt(prompt_id, self.prompts_collection)
+            self._prompt_content = get_prompt(prompt_id)
         except ValueError as e:
             logger.debug(f"Invalid prompt ID '{prompt_id}': {str(e)}")
             self._prompt_content = None
@@ -1077,11 +1105,9 @@ class StreamProcessor:
             prompt_id = self.agent_config.get("prompt_id", "default")
             agentic_presets = {"default", "creative", "strict"}
             if agent_type in ("agentic", "research") and prompt_id in agentic_presets:
-                raw_prompt = get_prompt(
-                    f"agentic_{prompt_id}", self.prompts_collection
-                )
+                raw_prompt = get_prompt(f"agentic_{prompt_id}")
             else:
-                raw_prompt = get_prompt(prompt_id, self.prompts_collection)
+                raw_prompt = get_prompt(prompt_id)
             self._prompt_content = raw_prompt
 
         # Allow API callers to override the system prompt when the agent

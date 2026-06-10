@@ -879,57 +879,57 @@ class BaseAnswerResource:
         api_key = agent_config.get("user_api_key")
         if not api_key:
             return None
+        # One read-only connection serves both the agent lookup and the
+        # usage queries — opening a second connection per request was
+        # pure churn on the hot /stream path.
         with db_readonly() as conn:
             agent = AgentsRepository(conn).find_by_key(api_key)
+            if not agent:
+                return make_response(
+                    jsonify({"success": False, "message": "Invalid API key."}), 401
+                )
+            limited_token_mode_raw = agent.get("limited_token_mode", False)
+            limited_request_mode_raw = agent.get("limited_request_mode", False)
 
-        if not agent:
-            return make_response(
-                jsonify({"success": False, "message": "Invalid API key."}), 401
+            limited_token_mode = (
+                limited_token_mode_raw
+                if isinstance(limited_token_mode_raw, bool)
+                else limited_token_mode_raw == "True"
             )
-        limited_token_mode_raw = agent.get("limited_token_mode", False)
-        limited_request_mode_raw = agent.get("limited_request_mode", False)
+            limited_request_mode = (
+                limited_request_mode_raw
+                if isinstance(limited_request_mode_raw, bool)
+                else limited_request_mode_raw == "True"
+            )
 
-        limited_token_mode = (
-            limited_token_mode_raw
-            if isinstance(limited_token_mode_raw, bool)
-            else limited_token_mode_raw == "True"
-        )
-        limited_request_mode = (
-            limited_request_mode_raw
-            if isinstance(limited_request_mode_raw, bool)
-            else limited_request_mode_raw == "True"
-        )
+            # No limits configured — skip the usage queries entirely.
+            if not limited_token_mode and not limited_request_mode:
+                return None
 
-        token_limit = int(
-            agent.get("token_limit") or settings.DEFAULT_AGENT_LIMITS["token_limit"]
-        )
-        request_limit = int(
-            agent.get("request_limit") or settings.DEFAULT_AGENT_LIMITS["request_limit"]
-        )
+            token_limit = int(
+                agent.get("token_limit") or settings.DEFAULT_AGENT_LIMITS["token_limit"]
+            )
+            request_limit = int(
+                agent.get("request_limit")
+                or settings.DEFAULT_AGENT_LIMITS["request_limit"]
+            )
 
-        end_date = datetime.datetime.now(datetime.timezone.utc)
-        start_date = end_date - datetime.timedelta(hours=24)
+            end_date = datetime.datetime.now(datetime.timezone.utc)
+            start_date = end_date - datetime.timedelta(hours=24)
 
-        if limited_token_mode or limited_request_mode:
-            with db_readonly() as conn:
-                token_repo = TokenUsageRepository(conn)
-                if limited_token_mode:
-                    daily_token_usage = token_repo.sum_tokens_in_range(
-                        start=start_date, end=end_date, api_key=api_key,
-                    )
-                else:
-                    daily_token_usage = 0
-                if limited_request_mode:
-                    daily_request_usage = token_repo.count_in_range(
-                        start=start_date, end=end_date, api_key=api_key,
-                    )
-                else:
-                    daily_request_usage = 0
-        else:
-            daily_token_usage = 0
-            daily_request_usage = 0
-        if not limited_token_mode and not limited_request_mode:
-            return None
+            token_repo = TokenUsageRepository(conn)
+            if limited_token_mode:
+                daily_token_usage = token_repo.sum_tokens_in_range(
+                    start=start_date, end=end_date, api_key=api_key,
+                )
+            else:
+                daily_token_usage = 0
+            if limited_request_mode:
+                daily_request_usage = token_repo.count_in_range(
+                    start=start_date, end=end_date, api_key=api_key,
+                )
+            else:
+                daily_request_usage = 0
         token_exceeded = (
             limited_token_mode and token_limit > 0 and daily_token_usage >= token_limit
         )

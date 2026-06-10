@@ -161,6 +161,58 @@ def test_stream_token_usage_counts_tool_call_chunks(monkeypatch):
 
 
 @pytest.mark.unit
+def test_stream_token_usage_incremental_count_matches_per_chunk_batch(monkeypatch):
+    """The decorator counts each chunk as it is yielded (no O(answer)
+    buffer); the total must equal counting every chunk individually —
+    the exact semantic of the old buffer-then-count loop."""
+    captured = {}
+
+    def fake_update(decoded_token, user_api_key, token_usage, agent_id=None):
+        captured["token_usage"] = token_usage.copy()
+
+    monkeypatch.setattr("application.usage.update_token_usage", fake_update)
+
+    class ToolChunk:
+        def model_dump(self):
+            return {
+                "delta": {
+                    "tool_calls": [
+                        {
+                            "id": "call_1",
+                            "function": {
+                                "name": "get_weather",
+                                "arguments": '{"location":"Seattle"}',
+                            },
+                        }
+                    ]
+                }
+            }
+
+    class DummyLLM:
+        decoded_token = {"sub": "user_123"}
+        user_api_key = "api_key_123"
+        agent_id = "agent_123"
+        token_usage = {"prompt_tokens": 0, "generated_tokens": 0}
+
+    chunks = ["Hello ", "streaming ", "world!", ToolChunk(), ""]
+
+    @stream_token_usage
+    def wrapped(self, model, messages, stream, tools, **kwargs):
+        _ = (model, messages, stream, tools, kwargs)
+        yield from chunks
+
+    messages = [{"role": "user", "content": "hi"}]
+    consumed = list(wrapped(DummyLLM(), "gpt-4o", messages, True, None))
+
+    assert consumed == chunks  # chunks pass through unchanged, in order
+    expected_generated = sum(_count_tokens(chunk) for chunk in chunks)
+    assert captured["token_usage"]["generated_tokens"] == expected_generated
+    assert captured["token_usage"]["prompt_tokens"] == _count_prompt_tokens(
+        messages, tools=None
+    )
+
+
+@pytest.mark.unit
 def test_gen_token_usage_counts_tools_and_image_inputs(monkeypatch):
     captured = []
 
