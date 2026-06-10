@@ -64,6 +64,15 @@ class Settings(BaseSettings):
     FALLBACK_LLM_NAME: Optional[str] = None  # model name for fallback llm
     FALLBACK_LLM_API_KEY: Optional[str] = None  # api key for fallback llm
 
+    # Experimental per-agent reasoning override. OpenRouter reasoning is
+    # DISABLED by default for some models (see llm/open_router.py); for the
+    # agent UUIDs listed here it is instead ENABLED with a token budget —
+    # but only on calls that offer tools (the gate exists for tool-call
+    # routing; no-tool utility calls keep the model default/disable).
+    # CSV of agent UUIDs; empty = no override (every agent keeps the default).
+    REASONING_ENABLED_AGENT_IDS: Optional[str] = None
+    REASONING_MAX_TOKENS: int = 16000  # reasoning-token budget when enabled
+
     # OAuth redirect base for MCP server connections (mcp_tool.py).
     CONNECTOR_REDIRECT_BASE_URI: Optional[str] = (
         "http://127.0.0.1:7091/api/connectors/callback"
@@ -140,6 +149,13 @@ class Settings(BaseSettings):
     COMPRESSION_MODEL_OVERRIDE: Optional[str] = None  # Use different model for compression
     COMPRESSION_PROMPT_VERSION: str = "v1.0"  # Track prompt iterations
     COMPRESSION_MAX_HISTORY_POINTS: int = 3  # Keep only last N compression points to prevent DB bloat
+
+    @field_validator("REASONING_MAX_TOKENS", mode="after")
+    @classmethod
+    def _reasoning_budget_floor(cls, v: int) -> int:
+        # A 0 / negative budget would reach OpenRouter as an invalid
+        # ``reasoning.max_tokens``; clamp to a safe floor of 1.
+        return max(1, int(v))
 
     @field_validator("POSTGRES_URI", mode="before")
     @classmethod
