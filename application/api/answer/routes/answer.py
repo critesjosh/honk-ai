@@ -150,6 +150,15 @@ class AnswerResource(Resource, BaseAnswerResource):
                 extra={"error": str(e)},
             )
             return make_response({"error": str(e)}, 403)
+        except ValueError as e:
+            # Mirrors the /stream mapping: bad request data (unknown agent,
+            # invalid model_id, …) is a 400, not a 500.
+            message = "Malformed request body"
+            logger.error(
+                f"/api/answer - error: {message} - specific error: {str(e)} - traceback: {traceback.format_exc()}",
+                extra={"error": str(e), "traceback": traceback.format_exc()},
+            )
+            return make_response({"error": message}, 400)
         except Exception as e:
             logger.error(
                 f"/api/answer - error: {str(e)} - traceback: {traceback.format_exc()}",

@@ -524,6 +524,152 @@ class TestProcessResponseStream:
 
             assert result is not None
 
+    def test_literal_data_prefix_in_payload_preserved(self, mock_mongo_db, flask_app):
+        """A literal "data: " inside the JSON payload must survive parsing
+        (str.replace stripped it everywhere, corrupting the answer)."""
+        import json
+
+        from application.api.answer.routes.base import BaseAnswerResource
+
+        with flask_app.app_context():
+            resource = BaseAnswerResource()
+
+            answer_text = 'an SSE frame looks like data: {"type": "answer"}'
+            stream = [
+                f'data: {json.dumps({"type": "answer", "answer": answer_text})}\n\n',
+                f'data: {json.dumps({"type": "end"})}\n\n',
+            ]
+
+            result = resource.process_response_stream(iter(stream))
+
+            assert result["answer"] == answer_text
+
+    def test_thought_accumulates_across_deltas(self, mock_mongo_db, flask_app):
+        import json
+
+        from application.api.answer.routes.base import BaseAnswerResource
+
+        with flask_app.app_context():
+            resource = BaseAnswerResource()
+
+            stream = [
+                f'data: {json.dumps({"type": "thought", "thought": "first "})}\n\n',
+                f'data: {json.dumps({"type": "thought", "thought": "second"})}\n\n',
+                f'data: {json.dumps({"type": "end"})}\n\n',
+            ]
+
+            result = resource.process_response_stream(iter(stream))
+
+            assert result["thought"] == "first second"
+
+    def test_ping_comment_lines_ignored(self, mock_mongo_db, flask_app, caplog):
+        """SSE comment lines (": ping" heartbeats) are skipped without
+        logging a parse warning."""
+        import json
+        import logging
+
+        from application.api.answer.routes.base import BaseAnswerResource
+
+        with flask_app.app_context():
+            resource = BaseAnswerResource()
+
+            stream = [
+                ": ping\n\n",
+                f'data: {json.dumps({"type": "answer", "answer": "hi"})}\n\n',
+                ": ping\n\n",
+                f'data: {json.dumps({"type": "end"})}\n\n',
+            ]
+
+            with caplog.at_level(logging.WARNING):
+                result = resource.process_response_stream(iter(stream))
+
+            assert result["answer"] == "hi"
+            assert result["error"] is None
+            assert "Error parsing stream event" not in caplog.text
+
+
+@pytest.mark.unit
+class TestIterWithHeartbeat:
+    """Tests for the SSE heartbeat wrapper, including producer-thread
+    cancellation on client disconnect."""
+
+    @staticmethod
+    def _producer_threads(before):
+        import threading
+
+        return [
+            t
+            for t in threading.enumerate()
+            if t not in before and t.name == "sse-producer"
+        ]
+
+    def test_items_and_done_pass_through(self):
+        from application.api.answer.routes.base import _iter_with_heartbeat
+
+        out = list(_iter_with_heartbeat(iter([1, 2, 3]), interval=5.0))
+
+        assert out == [("item", 1), ("item", 2), ("item", 3)]
+
+    def test_heartbeat_emitted_on_silence(self):
+        import time
+
+        from application.api.answer.routes.base import _iter_with_heartbeat
+
+        def slow_source():
+            time.sleep(0.3)
+            yield "late"
+
+        events = list(_iter_with_heartbeat(slow_source(), interval=0.05))
+
+        assert events[0] == ("heartbeat", None)
+        assert events[-1] == ("item", "late")
+
+    def test_error_reraised_on_consumer(self):
+        from application.api.answer.routes.base import _iter_with_heartbeat
+
+        def bad_source():
+            yield "ok"
+            raise RuntimeError("boom")
+
+        gen = _iter_with_heartbeat(bad_source(), interval=5.0)
+
+        assert next(gen) == ("item", "ok")
+        with pytest.raises(RuntimeError, match="boom"):
+            next(gen)
+
+    def test_close_stops_producer_and_closes_source(self):
+        """Simulated client disconnect: closing the wrapper early must
+        terminate the producer thread (previously blocked forever on
+        ``q.put``) and run the source generator's ``finally``."""
+        import threading
+
+        from application.api.answer.routes.base import _iter_with_heartbeat
+
+        source_closed = threading.Event()
+
+        def infinite_source():
+            try:
+                while True:
+                    yield "chunk"
+            finally:
+                source_closed.set()
+
+        before = set(threading.enumerate())
+        wrapper = _iter_with_heartbeat(infinite_source(), interval=5.0)
+        assert next(wrapper) == ("item", "chunk")
+        producers = self._producer_threads(before)
+        assert producers, "producer thread not found"
+
+        # The fast source has filled the queue by now, so the producer is
+        # blocked in its put loop. Closing the wrapper raises GeneratorExit
+        # in it; its finally must unblock and stop the producer.
+        wrapper.close()
+
+        assert source_closed.wait(timeout=5.0), "source finally never ran"
+        for t in producers:
+            t.join(timeout=5.0)
+        assert all(not t.is_alive() for t in producers), "producer thread leaked"
+
 
 @pytest.mark.unit
 class TestErrorStreamGenerate:

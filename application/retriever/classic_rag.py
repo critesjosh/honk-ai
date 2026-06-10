@@ -63,7 +63,12 @@ class ClassicRAG(BaseRetriever):
                 self.vectorstores = [source["active_docs"]]
         else:
             self.vectorstores = []
-        self.question = self._rephrase_query()
+        # No LLM rephrase at construction time: every call site either
+        # passes the question via ``search(query)`` (which rephrases with
+        # chat history there) or seeds ``source["question"]`` without any
+        # chat history (``scripts/eval/eval_retrieval.py`` does this and
+        # calls ``_get_data()`` directly), so rephrasing here was a no-op.
+        self.question = self.original_question
         self.decoded_token = decoded_token
         self._validate_vectorstore_config()
 
@@ -103,9 +108,11 @@ class ClassicRAG(BaseRetriever):
             {"role": "user", "content": self.original_question},
         ]
 
+        # Deliberately not logged: the rephrased query is an LLM restatement
+        # of the user's question, and this repo hashes user questions before
+        # logging.
         try:
             rephrased_query = self.llm.gen(model=self.model_id, messages=messages)
-            print(f"Rephrased query: {rephrased_query}")
             return rephrased_query if rephrased_query else self.original_question
         except Exception as e:
             logging.error(f"Error rephrasing query: {e}", exc_info=True)

@@ -42,7 +42,10 @@ class InternalSearchTool(Tool):
                 user_api_key=self.config.get("user_api_key"),
                 agent_id=self.config.get("agent_id"),
                 llm_name=self.config.get("llm_name", settings.LLM_PROVIDER),
-                api_key=self.config.get("api_key", settings.API_KEY),
+                # Never default to settings.API_KEY — it's an agent UUID in
+                # prod, not a provider key (see CLAUDE.md). None lets the LLM
+                # backend's provider-key fallback resolve.
+                api_key=self.config.get("api_key"),
                 decoded_token=self.config.get("decoded_token"),
             )
         return self._retriever
@@ -452,7 +455,9 @@ def build_internal_tool_config(
         "user_api_key": user_api_key,
         "agent_id": agent_id,
         "llm_name": llm_name or settings.LLM_PROVIDER,
-        "api_key": api_key or settings.API_KEY,
+        # Same trap as above: settings.API_KEY is an agent UUID in prod, so
+        # an absent key must stay None for the provider-key fallback.
+        "api_key": api_key,
         "decoded_token": decoded_token,
         "has_directory_structure": has_directory_structure,
     }

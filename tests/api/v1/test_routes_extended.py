@@ -514,3 +514,85 @@ class TestChatCompletionsHappyPath:
         assert resp.mimetype == "text/event-stream"
 
 
+
+
+# ---------------------------------------------------------------------------
+# _stream_response — internal SSE re-parsing
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+class TestStreamResponseParsing:
+    """The internal-SSE re-parse loop must use prefix removal (not
+    str.replace) and skip comment/heartbeat lines."""
+
+    @staticmethod
+    def _run(lines):
+        """Drive _stream_response over ``lines``; return parsed event dicts."""
+        from application.api.v1.routes import _stream_response
+
+        helper = MagicMock()
+        helper.complete_stream.return_value = iter(lines)
+        processor = MagicMock()
+        processor.conversation_id = "conv-1"
+        processor.agent_config = {"user_api_key": None}
+        processor.decoded_token = {"sub": "u"}
+        processor.agent_id = None
+        processor.model_id = "m"
+
+        captured = []
+
+        def _capture(event_data, completion_id, model_name):
+            captured.append(event_data)
+            return []
+
+        with patch(
+            "application.api.v1.routes.translate_stream_event",
+            side_effect=_capture,
+        ):
+            list(
+                _stream_response(
+                    helper,
+                    "q",
+                    MagicMock(),
+                    processor,
+                    "model",
+                    None,
+                    True,
+                )
+            )
+        return captured
+
+    def test_ping_comment_lines_skipped(self):
+        # Guard the fix itself: comment lines must be skipped BEFORE JSON
+        # parsing — the old parser merely swallowed them via JSONDecodeError,
+        # so asserting on events alone would pass against the old code too.
+        import json as _json
+
+        real_loads = _json.loads
+        parsed: list = []
+
+        def spying_loads(s, *args, **kwargs):
+            parsed.append(s)
+            return real_loads(s, *args, **kwargs)
+
+        with patch("application.api.v1.routes.json.loads", side_effect=spying_loads):
+            events = self._run(
+                [
+                    ": ping\n\n",
+                    'data: {"type": "answer", "answer": "hi"}\n\n',
+                    ": ping\n\n",
+                ]
+            )
+        assert events == [{"type": "answer", "answer": "hi"}]
+        assert all("ping" not in str(s) for s in parsed)
+
+    def test_literal_data_prefix_in_payload_preserved(self):
+        events = self._run(
+            ['data: {"type": "answer", "answer": "echo data: frame"}\n\n']
+        )
+        assert events == [{"type": "answer", "answer": "echo data: frame"}]
+
+    def test_blank_lines_skipped(self):
+        events = self._run(["\n\n", 'data: {"type": "end"}\n\n'])
+        assert events == [{"type": "end"}]

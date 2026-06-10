@@ -945,7 +945,7 @@ class TestGetAgentKey:
         sp = self._make_sp()
         sp.agents_collection = MagicMock()
         sp.agents_collection.find_one.return_value = None
-        with pytest.raises(Exception, match="Agent not found"):
+        with pytest.raises(ValueError, match="Agent not found"):
             sp._get_agent_key("507f1f77bcf86cd799439011", "user1")
 
     @pytest.mark.unit
@@ -959,7 +959,7 @@ class TestGetAgentKey:
             "shared_with": [],
             "key": "agent_key",
         }
-        with pytest.raises(Exception, match="Unauthorized"):
+        with pytest.raises(PermissionError, match="Unauthorized"):
             sp._get_agent_key("507f1f77bcf86cd799439011", "user1")
 
     @pytest.mark.unit

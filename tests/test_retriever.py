@@ -164,52 +164,80 @@ class TestClassicRAGValidateVectorstore:
 
 @pytest.mark.unit
 class TestClassicRAGRephraseQuery:
-    def test_no_history_returns_original(self, _patch_llm_creator):
-        rag = _make_rag(
-            source={"question": "original", "active_docs": ["vs1"]},
-            chat_history=[],
-        )
-        assert rag.question == "original"
+    """Rephrasing happens via ``search(query)``; ``__init__`` only seeds
+    ``self.question`` from ``source["question"]`` without an LLM call
+    (the eval script relies on the seed and calls ``_get_data`` directly)."""
 
-    def test_no_vectorstores_returns_original(self, _patch_llm_creator):
-        rag = _make_rag(
-            source={"question": "original"},
-            chat_history=[{"prompt": "hi", "response": "hello"}],
-        )
-        assert rag.question == "original"
+    @staticmethod
+    def _search(rag, query):
+        """Run ``search`` with retrieval stubbed out; return rag.question."""
+        rag._get_data = Mock(return_value=[])
+        rag.search(query)
+        return rag.question
 
-    def test_chunks_zero_returns_original(self, _patch_llm_creator):
-        rag = _make_rag(
-            source={"question": "original", "active_docs": ["vs1"]},
-            chat_history=[{"prompt": "hi", "response": "hello"}],
-            chunks=0,
-        )
-        assert rag.question == "original"
-
-    def test_rephrase_called_with_history(self, _patch_llm_creator, mock_llm):
+    def test_init_seeds_question_without_llm_call(
+        self, _patch_llm_creator, mock_llm
+    ):
         mock_llm.gen = Mock(return_value="rephrased question")
         rag = _make_rag(
             source={"question": "original", "active_docs": ["vs1"]},
             chat_history=[{"prompt": "hi", "response": "hello"}],
         )
-        assert rag.question == "rephrased question"
+        assert rag.question == "original"
+        mock_llm.gen.assert_not_called()
+
+    def test_no_history_returns_original(self, _patch_llm_creator, mock_llm):
+        mock_llm.gen = Mock(return_value="rephrased question")
+        rag = _make_rag(
+            source={"active_docs": ["vs1"]},
+            chat_history=[],
+        )
+        assert self._search(rag, "original") == "original"
+        mock_llm.gen.assert_not_called()
+
+    def test_no_vectorstores_returns_original(self, _patch_llm_creator, mock_llm):
+        mock_llm.gen = Mock(return_value="rephrased question")
+        rag = _make_rag(
+            source={},
+            chat_history=[{"prompt": "hi", "response": "hello"}],
+        )
+        assert self._search(rag, "original") == "original"
+        mock_llm.gen.assert_not_called()
+
+    def test_chunks_zero_returns_original(self, _patch_llm_creator, mock_llm):
+        mock_llm.gen = Mock(return_value="rephrased question")
+        rag = _make_rag(
+            source={"active_docs": ["vs1"]},
+            chat_history=[{"prompt": "hi", "response": "hello"}],
+            chunks=0,
+        )
+        assert self._search(rag, "original") == "original"
+        mock_llm.gen.assert_not_called()
+
+    def test_rephrase_called_with_history(self, _patch_llm_creator, mock_llm):
+        mock_llm.gen = Mock(return_value="rephrased question")
+        rag = _make_rag(
+            source={"active_docs": ["vs1"]},
+            chat_history=[{"prompt": "hi", "response": "hello"}],
+        )
+        assert self._search(rag, "original") == "rephrased question"
         mock_llm.gen.assert_called_once()
 
     def test_rephrase_llm_returns_empty_falls_back(self, _patch_llm_creator, mock_llm):
         mock_llm.gen = Mock(return_value="")
         rag = _make_rag(
-            source={"question": "original", "active_docs": ["vs1"]},
+            source={"active_docs": ["vs1"]},
             chat_history=[{"prompt": "hi", "response": "hello"}],
         )
-        assert rag.question == "original"
+        assert self._search(rag, "original") == "original"
 
     def test_rephrase_llm_exception_falls_back(self, _patch_llm_creator, mock_llm):
         mock_llm.gen = Mock(side_effect=RuntimeError("boom"))
         rag = _make_rag(
-            source={"question": "original", "active_docs": ["vs1"]},
+            source={"active_docs": ["vs1"]},
             chat_history=[{"prompt": "hi", "response": "hello"}],
         )
-        assert rag.question == "original"
+        assert self._search(rag, "original") == "original"
 
 
 def _mock_global_docsearch(pairs):

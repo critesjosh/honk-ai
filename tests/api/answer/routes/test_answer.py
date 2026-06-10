@@ -143,6 +143,38 @@ class TestAnswerResourcePost:
             assert resp.status_code == 400
             assert resp.get_json()["error"] == "Stream error"
 
+    def test_value_error_returns_400(self, answer_client, mock_stream_processor):
+        """ValueError (unknown agent, invalid model_id, …) maps to 400,
+        mirroring /stream — previously it fell into the generic 500."""
+        mock_stream_processor.build_agent.side_effect = ValueError("Agent not found")
+        with patch(
+            "application.api.answer.routes.answer.AnswerResource.validate_request",
+            return_value=None,
+        ):
+            resp = answer_client.post(
+                "/api/answer",
+                data=json.dumps({"question": "test"}),
+                content_type="application/json",
+            )
+            assert resp.status_code == 400
+            assert resp.get_json()["error"] == "Malformed request body"
+
+    def test_permission_error_returns_403(self, answer_client, mock_stream_processor):
+        mock_stream_processor.build_agent.side_effect = PermissionError(
+            "Unauthorized access to the agent"
+        )
+        with patch(
+            "application.api.answer.routes.answer.AnswerResource.validate_request",
+            return_value=None,
+        ):
+            resp = answer_client.post(
+                "/api/answer",
+                data=json.dumps({"question": "test"}),
+                content_type="application/json",
+            )
+            assert resp.status_code == 403
+            assert resp.get_json()["error"] == "Unauthorized access to the agent"
+
     def test_exception_returns_500(self, answer_client, mock_stream_processor):
         with patch(
             "application.api.answer.routes.answer.AnswerResource.validate_request",

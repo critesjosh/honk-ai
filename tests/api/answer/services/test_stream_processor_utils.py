@@ -317,7 +317,7 @@ class TestGetAgentKey:
             StreamProcessor,
         )
         sp = StreamProcessor({}, {"sub": "u"})
-        with _patch_db(pg_conn), pytest.raises(Exception):
+        with _patch_db(pg_conn), pytest.raises(ValueError, match="Agent not found"):
             sp._get_agent_key(
                 "00000000-0000-0000-0000-000000000000", "u",
             )
@@ -349,7 +349,7 @@ class TestGetAgentKey:
             surface="web_ask", key="k", shared=False,
         )
         sp = StreamProcessor({}, {"sub": "not-owner"})
-        with _patch_db(pg_conn), pytest.raises(Exception):
+        with _patch_db(pg_conn), pytest.raises(PermissionError, match="Unauthorized"):
             sp._get_agent_key(str(agent["id"]), "not-owner")
 
 

@@ -218,12 +218,14 @@ def _stream_response(
     )
 
     for line in internal_stream:
-        if not line.strip():
+        event_str = line.strip()
+        # Skip blanks and SSE comment lines (": ping" heartbeats).
+        if not event_str or event_str.startswith(":"):
             continue
-        # Parse the internal SSE event
-        event_str = line.replace("data: ", "").strip()
+        # Parse the internal SSE event. removeprefix, NOT replace — a
+        # literal "data: " inside the JSON payload must survive.
         try:
-            event_data = json.loads(event_str)
+            event_data = json.loads(event_str.removeprefix("data: "))
         except (json.JSONDecodeError, TypeError):
             continue
 

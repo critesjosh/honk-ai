@@ -114,6 +114,29 @@ class TestStreamResourcePost:
             )
             assert resp.status_code == 429
 
+    def test_permission_error_returns_403_stream(
+        self, stream_client, mock_stream_processor
+    ):
+        """PermissionError (e.g. _get_agent_key unauthorized) maps to 403 —
+        not the misleading 400 'check your API configuration' that the old
+        bare Exception produced via sanitize_api_error."""
+        mock_stream_processor.build_agent.side_effect = PermissionError(
+            "Unauthorized access to the agent"
+        )
+        with patch(
+            "application.api.answer.routes.stream.StreamResource.validate_request",
+            return_value=None,
+        ):
+            resp = stream_client.post(
+                "/stream",
+                data=json.dumps({"question": "test"}),
+                content_type="application/json",
+            )
+            assert resp.status_code == 403
+            assert "text/event-stream" in resp.content_type
+            data = resp.get_data(as_text=True)
+            assert "Unauthorized access to the agent" in data
+
     def test_value_error_returns_400_stream(
         self, stream_client, mock_stream_processor
     ):

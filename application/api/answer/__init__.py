@@ -1,24 +1,18 @@
 from flask import Blueprint
 
 from application.api import api
-from application.api.answer.routes.answer import AnswerResource
-from application.api.answer.routes.base import answer_ns
-from application.api.answer.routes.feedback import SubmitFeedback  # noqa: F401  (registers /api/feedback on answer_ns)
-from application.api.answer.routes.search import SearchResource
-from application.api.answer.routes.stream import StreamResource
-from application.api.answer.routes.version import VersionResource
 
+# Importing each route module registers its Resource on ``answer_ns`` via
+# the ``@answer_ns.route`` decorator — keep these imports even though the
+# names are otherwise unused. Do NOT also ``api.add_resource`` them here:
+# that registered every route twice.
+from application.api.answer.routes.answer import AnswerResource  # noqa: F401
+from application.api.answer.routes.base import answer_ns
+from application.api.answer.routes.feedback import SubmitFeedback  # noqa: F401
+from application.api.answer.routes.search import SearchResource  # noqa: F401
+from application.api.answer.routes.stream import StreamResource  # noqa: F401
+from application.api.answer.routes.version import VersionResource  # noqa: F401
 
 answer = Blueprint("answer", __name__)
 
 api.add_namespace(answer_ns)
-
-
-def init_answer_routes():
-    api.add_resource(StreamResource, "/stream")
-    api.add_resource(AnswerResource, "/api/answer")
-    api.add_resource(SearchResource, "/api/search")
-    api.add_resource(VersionResource, "/api/version")
-
-
-init_answer_routes()

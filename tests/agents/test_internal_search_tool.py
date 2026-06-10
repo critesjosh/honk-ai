@@ -281,6 +281,18 @@ class TestInternalSearchToolGetRetriever:
         result = tool._get_retriever()
         assert result is mock_retriever
 
+    def test_get_retriever_api_key_defaults_to_none(self):
+        """An unset api_key must reach the retriever as None — defaulting
+        to settings.API_KEY (an agent UUID in prod) breaks the retriever's
+        rephrase LLM call with a 401 (CLAUDE.md rule)."""
+        tool = InternalSearchTool({"source": {}, "retriever_name": "classic"})
+        with patch(
+            "application.agents.tools.internal_search.RetrieverCreator"
+        ) as mock_rc:
+            tool._get_retriever()
+
+        assert mock_rc.create_retriever.call_args.kwargs["api_key"] is None
+
 
 @pytest.mark.unit
 class TestGetDirectoryStructure:

@@ -184,7 +184,7 @@ class SimpleDirectoryReader(BaseReader):
         if input_files:
             self.input_files = []
             for path in input_files:
-                print(path)
+                logging.debug(f"SimpleDirectoryReader input file: {path}")
                 input_file = Path(path)
                 self.input_files.append(input_file)
         elif input_dir:

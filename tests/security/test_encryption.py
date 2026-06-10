@@ -90,6 +90,43 @@ def test_decrypt_credentials_returns_empty_for_invalid_input(monkeypatch):
 
 
 @pytest.mark.unit
+def test_decrypt_failure_logs_warning_without_payload_details(monkeypatch):
+    """Crypto failures log a warning with the exception class only — the
+    message could embed key material or decrypted bytes.
+
+    The module logger is mocked directly (not caplog) so the assertion is
+    independent of global logging state mutated elsewhere in the suite.
+    """
+    from unittest.mock import patch
+
+    monkeypatch.setattr(encryption.settings, "ENCRYPTION_SECRET_KEY", "test-secret")
+
+    with patch.object(encryption.logger, "warning") as mock_warning:
+        assert encryption.decrypt_credentials("not-base64", "user-123") == {}
+
+    mock_warning.assert_called_once()
+    logged = " ".join(str(arg) for arg in mock_warning.call_args[0])
+    assert "Failed to decrypt credentials" in logged
+    assert "not-base64" not in logged
+
+
+@pytest.mark.unit
+def test_encrypt_failure_logs_warning(monkeypatch):
+    from unittest.mock import patch
+
+    monkeypatch.setattr(encryption.settings, "ENCRYPTION_SECRET_KEY", "test-secret")
+
+    class NonSerializable:
+        pass
+
+    with patch.object(encryption.logger, "warning") as mock_warning:
+        assert encryption.encrypt_credentials({"bad": NonSerializable()}, "u") == ""
+
+    mock_warning.assert_called_once()
+    assert "Failed to encrypt credentials" in str(mock_warning.call_args[0][0])
+
+
+@pytest.mark.unit
 def test_pad_and_unpad_are_inverse():
     original = b"secret-data"
 

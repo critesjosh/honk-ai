@@ -338,13 +338,18 @@ class StreamProcessor:
                 if agent is None:
                     agent = repo.get_by_legacy_id(str(agent_id))
             if agent is None:
-                raise Exception("Agent not found")
+                # ValueError → 400 in the answer/stream route handlers.
+                raise ValueError("Agent not found")
             agent_owner = agent.get("user_id")
             is_owner = agent_owner == user_id
             is_shared_with_user = bool(agent.get("shared", False))
 
             if not (is_owner or is_shared_with_user):
-                raise Exception("Unauthorized access to the agent")
+                # PermissionError → 403 in the answer/stream route handlers
+                # (a bare Exception fell into sanitize_api_error's
+                # "unauthorized" substring match and returned a misleading
+                # 400 "check your API configuration").
+                raise PermissionError("Unauthorized access to the agent")
             if is_owner:
                 now = datetime.datetime.now(datetime.timezone.utc)
                 try:

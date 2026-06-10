@@ -386,6 +386,12 @@ class TestBuildHelpers:
         assert config["chunks"] == 2
         assert config["doc_token_limit"] == 50000
 
+    def test_build_config_api_key_defaults_to_none(self):
+        """An absent api_key must stay None — settings.API_KEY is an agent
+        UUID in prod, not a provider key (CLAUDE.md rule)."""
+        config = build_internal_tool_config(source={"active_docs": ["abc"]})
+        assert config["api_key"] is None
+
     def test_internal_tool_id(self):
         assert INTERNAL_TOOL_ID == "internal"
 

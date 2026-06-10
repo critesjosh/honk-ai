@@ -1,5 +1,6 @@
 import base64
 import json
+import logging
 import os
 
 from cryptography.hazmat.backends import default_backend
@@ -8,6 +9,8 @@ from cryptography.hazmat.primitives.ciphers import algorithms, Cipher, modes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 
 from application.core.settings import settings
+
+logger = logging.getLogger(__name__)
 
 
 def _derive_key(user_id: str, salt: bytes) -> bytes:
@@ -45,7 +48,8 @@ def encrypt_credentials(credentials: dict, user_id: str) -> str:
         result = salt + iv + encrypted_data
         return base64.b64encode(result).decode()
     except Exception as e:
-        print(f"Warning: Failed to encrypt credentials: {e}")
+        # Exception class only — the message could embed key/plaintext bytes.
+        logger.warning("Failed to encrypt credentials (%s); returning empty string", type(e).__name__)
         return ""
 
 
@@ -69,7 +73,8 @@ def decrypt_credentials(encrypted_data: str, user_id: str) -> dict:
 
         return json.loads(decrypted_data.decode())
     except Exception as e:
-        print(f"Warning: Failed to decrypt credentials: {e}")
+        # Exception class only — decode errors can embed decrypted bytes.
+        logger.warning("Failed to decrypt credentials (%s); returning empty dict", type(e).__name__)
         return {}
 
 

@@ -703,34 +703,83 @@ def _iter_with_heartbeat(
     Real items are yielded as ``("item", value)``; errors from the
     producer are re-raised on the consumer.
 
+    Cancellation: when the consumer goes away (client disconnect closes
+    this generator, raising GeneratorExit here), the ``finally`` block
+    sets ``stop`` so the producer never blocks forever on a full queue,
+    and closes ``source_iter`` so the agent generator's own ``finally``
+    blocks run instead of silently draining the LLM to completion.
+
     The producer thread must not touch Flask request context.
     """
     q: "queue.Queue[Tuple[str, Any]]" = queue.Queue(maxsize=64)
+    stop = threading.Event()
+
+    def _close_source() -> None:
+        close = getattr(source_iter, "close", None)
+        if callable(close):
+            try:
+                close()
+            except ValueError:
+                # Generator is mid-``next()`` on the other thread; whichever
+                # side observes ``stop`` after it resolves will close it.
+                pass
+            except Exception:
+                logger.warning("Error closing SSE source iterator", exc_info=True)
+
+    def _put(msg: Tuple[str, Any]) -> bool:
+        """Blocking put that gives up once the consumer has gone away."""
+        while not stop.is_set():
+            try:
+                q.put(msg, timeout=0.25)
+                return True
+            except queue.Full:
+                continue
+        return False
 
     def _producer() -> None:
+        it = iter(source_iter)
         try:
-            for item in source_iter:
-                q.put(("item", item))
+            # Re-check ``stop`` before every advance so a disconnect
+            # observed mid-stream stops draining the LLM.
+            while not stop.is_set():
+                try:
+                    item = next(it)
+                except StopIteration:
+                    _put(("done", None))
+                    return
+                if not _put(("item", item)):
+                    return
         except BaseException as exc:  # noqa: BLE001 — re-raised on consumer
-            q.put(("error", exc))
-        else:
-            q.put(("done", None))
+            if not _put(("error", exc)):
+                logger.warning(
+                    "SSE producer raised after consumer disconnect", exc_info=exc
+                )
+        finally:
+            if stop.is_set():
+                _close_source()
 
     t = threading.Thread(target=_producer, daemon=True, name="sse-producer")
     t.start()
 
-    while True:
-        try:
-            kind, payload = q.get(timeout=interval)
-        except queue.Empty:
-            yield ("heartbeat", None)
-            continue
-        if kind == "item":
-            yield ("item", payload)
-        elif kind == "done":
-            return
-        elif kind == "error":
-            raise payload  # type: ignore[misc]
+    try:
+        while True:
+            try:
+                kind, payload = q.get(timeout=interval)
+            except queue.Empty:
+                yield ("heartbeat", None)
+                continue
+            if kind == "item":
+                yield ("item", payload)
+            elif kind == "done":
+                return
+            elif kind == "error":
+                raise payload  # type: ignore[misc]
+    finally:
+        # Runs on GeneratorExit (client disconnect) as well as normal
+        # completion: unblock the producer, then close the source so its
+        # finally blocks run (no-op if already exhausted).
+        stop.set()
+        _close_source()
 
 
 def _build_usage_frame(agent: Any, model_id: Optional[str]) -> Optional[Dict[str, Any]]:
@@ -1854,9 +1903,14 @@ class BaseAnswerResource:
         pending_tool_calls = None
 
         for line in stream:
+            event_data = line.strip()
+            # SSE comment lines (": ping" heartbeats) are not events.
+            if not event_data or event_data.startswith(":"):
+                continue
             try:
-                event_data = line.replace("data: ", "").strip()
-                event = json.loads(event_data)
+                # removeprefix, NOT replace — a literal "data: " inside the
+                # JSON payload must survive.
+                event = json.loads(event_data.removeprefix("data: "))
 
                 if event["type"] == "id":
                     conversation_id = event["id"]
@@ -1875,7 +1929,7 @@ class BaseAnswerResource:
                         "pending_tool_calls", []
                     )
                 elif event["type"] == "thought":
-                    thought = event["thought"]
+                    thought += event["thought"]
                 elif event["type"] == "error":
                     logger.error(f"Error from stream: {event['error']}")
                     return {
