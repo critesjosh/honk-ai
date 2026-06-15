@@ -1,6 +1,6 @@
 ---
 name: honk-report
-description: Generate a Honk AI usage report — reads Postgres conversations + backend/discord-bot logs across the docs widget, Discord bot, /ask page, and MCP surfaces, and produces an analysis of what users are asking, sentiment, factual errors, and recommendations. Optional integer arg = window in days (default 7). Examples: `/honk-report`, `/honk-report 14`. Also triggers on natural-language requests like "honk usage report", "weekly bot report", "what are users asking honk this week".
+description: Generate a Honk AI usage report — reads Postgres conversations + backend/discord-bot/slack-bot logs across the docs widget, Discord bot, Slack bot, /ask page, and MCP surfaces, and produces an analysis of what users are asking, sentiment, factual errors, and recommendations. Optional integer arg = window in days (default 7). Examples: `/honk-report`, `/honk-report 14`. Also triggers on natural-language requests like "honk usage report", "weekly bot report", "what are users asking honk this week".
 argument-hint: "[days]"
 ---
 
@@ -8,8 +8,8 @@ argument-hint: "[days]"
 
 Produces a markdown report covering all Honk AI surfaces from a single Claude
 Code session running on josh-box. Source of truth is Postgres (`conversations`
-+ `conversation_messages` + `agents.surface`) plus backend / discord-bot
-container logs.
++ `conversation_messages` + `agents.surface`) plus backend / discord-bot /
+slack-bot container logs.
 
 ## Arguments
 
@@ -33,16 +33,21 @@ Writes the report to `/mnt/user-data/josh/honk-reports/honk-report-YYYY-MM-DD.md
 
 ## Surfaces
 
-The four production-relevant `agents.surface` values:
+The five production-relevant `agents.surface` values:
 
 | surface  | agent `name`                | what it is                              |
 |----------|-----------------------------|-----------------------------------------|
 | `widget` | `docs.aztec.network`        | embedded chat on docs.aztec.network     |
-| `discord`| `Aztec 4.2.0`               | Honk AI Discord bot (@-mention / reply) |
+| `discord`| `Aztec 4.3.0`               | Honk AI Discord bot (@-mention / reply) |
+| `slack`  | `Honk AI — Slack`           | Honk AI Slack bot (Socket Mode, @-mention / thread reply) |
 | `web_ask`| `Ask Aztec — public web`    | public `/ask` page                      |
 | `mcp`    | `Aztec MCP` (per-user)      | `@aztec/mcp-server` consumers           |
 
-Skip `surface='eval'` — that's the harness, not real users.
+Skip `surface='eval'` — that's the harness, not real users. Note: the agent
+`name` drifts from the surface (e.g. Discord's display name tracks the corpus
+version, not the surface) — always filter on `surface`, never `name`. Per-user
+Slack MCP keys are `surface='mcp'` (distinguished structurally by
+`mcp_provider='slack'`); only the shared Slack *chat* agent is `surface='slack'`.
 
 ## Pre-flight
 
@@ -72,7 +77,7 @@ FROM conversation_messages cm
 JOIN conversations c ON c.id = cm.conversation_id
 JOIN agents a        ON a.id = c.agent_id
 WHERE cm.timestamp >= NOW() - INTERVAL '\$DAYS days'
-  AND a.surface IN ('widget','discord','web_ask','mcp')
+  AND a.surface IN ('widget','discord','web_ask','mcp','slack')
 GROUP BY a.surface
 ORDER BY messages DESC;
 "
@@ -99,7 +104,7 @@ FROM conversation_messages cm
 JOIN conversations c ON c.id = cm.conversation_id
 JOIN agents a        ON a.id = c.agent_id
 WHERE cm.timestamp >= NOW() - INTERVAL '\$DAYS days'
-  AND a.surface IN ('widget','discord','web_ask','mcp')
+  AND a.surface IN ('widget','discord','web_ask','mcp','slack')
 ORDER BY a.surface, RANDOM()
 LIMIT 200;
 " > /tmp/honk-sample.txt
@@ -108,22 +113,23 @@ LIMIT 200;
 Read the file with the Read tool; do NOT paste 200 rows into the bash output
 buffer.
 
-For Discord specifically, also pull thread-context follow-ups (multi-turn
-conversations are where sentiment / dissatisfaction is most visible):
+For the threaded chat surfaces (Discord + Slack), also pull thread-context
+follow-ups (multi-turn conversations are where sentiment / dissatisfaction is
+most visible):
 
 ```bash
 docker exec docsgpt-aztec-postgres-1 psql -U docsgpt -d docsgpt -P pager=off -c "
-SELECT cm.conversation_id, cm.position, cm.prompt, LEFT(cm.response, 600) AS resp
+SELECT a.surface, cm.conversation_id, cm.position, cm.prompt, LEFT(cm.response, 600) AS resp
 FROM conversation_messages cm
 JOIN conversations c ON c.id = cm.conversation_id
 JOIN agents a        ON a.id = c.agent_id
-WHERE a.surface = 'discord'
+WHERE a.surface IN ('discord','slack')
   AND cm.timestamp >= NOW() - INTERVAL '\$DAYS days'
   AND c.id IN (
     SELECT conversation_id FROM conversation_messages
     GROUP BY conversation_id HAVING COUNT(*) >= 3
   )
-ORDER BY cm.conversation_id, cm.position
+ORDER BY a.surface, cm.conversation_id, cm.position
 LIMIT 100;
 " > /tmp/honk-threads.txt
 ```
@@ -140,19 +146,22 @@ SELECT a.surface,
        COUNT(*) FILTER (WHERE jsonb_array_length(cm.message_metadata->'citation_filter'->'invalid_indices') > 0) AS invalid_indices,
        COUNT(*) FILTER (WHERE (cm.message_metadata->'citation_filter'->>'filtered_count')::int = 0
                            AND cm.message_metadata->'citation_filter'->>'marker_present' = 'true') AS zero_cited,
-       COUNT(*) FILTER (WHERE cm.feedback->>'rating' = 'positive' OR cm.feedback->>'feedback' = 'LIKE')    AS thumbs_up,
-       COUNT(*) FILTER (WHERE cm.feedback->>'rating' = 'negative' OR cm.feedback->>'feedback' = 'DISLIKE') AS thumbs_down,
+       COUNT(*) FILTER (WHERE cm.feedback->>'rating' = 'positive' OR cm.feedback->>'feedback' = 'LIKE' OR cm.feedback->>'text' = 'like')     AS thumbs_up,
+       COUNT(*) FILTER (WHERE cm.feedback->>'rating' = 'negative' OR cm.feedback->>'feedback' = 'DISLIKE' OR cm.feedback->>'text' = 'dislike') AS thumbs_down,
        COUNT(*) AS total_messages
 FROM conversation_messages cm
 JOIN conversations c ON c.id = cm.conversation_id
 JOIN agents a        ON a.id = c.agent_id
 WHERE cm.timestamp >= NOW() - INTERVAL '\$DAYS days'
-  AND a.surface IN ('widget','discord','web_ask','mcp')
+  AND a.surface IN ('widget','discord','web_ask','mcp','slack')
 GROUP BY a.surface;
 "
 ```
 
-Note: `feedback` JSONB shape varies — check actual values with
+Note: `feedback` JSONB shape varies — the shape observed in prod is
+`{"text": "like" | "dislike", "timestamp": …}` (handled by the `->>'text'`
+clauses above), but older rows may use `rating`/`feedback` keys, so keep all
+three. Always re-check actual values with
 `SELECT DISTINCT feedback FROM conversation_messages WHERE feedback IS NOT NULL LIMIT 20;`
 before reporting positive/negative counts. The bot writes via
 `POST /api/feedback`; widget uses thumbs-up/down differently.
@@ -189,6 +198,11 @@ docker compose -f deployment/docker-compose-hub.yaml --env-file .env \
   logs --since ${HOURS}h --no-color discord-bot 2>&1 \
   | grep -E "shared_429|breaker|cap_reached|cross_midnight|429" \
   > /tmp/honk-discord-telemetry.txt
+
+docker compose -f deployment/docker-compose-hub.yaml --env-file .env \
+  logs --since ${HOURS}h --no-color slack-bot 2>&1 \
+  | grep -E "shared_429|breaker|cap_reached|cross_midnight|429" \
+  > /tmp/honk-slack-telemetry.txt
 ```
 
 Counts to extract per surface from these files:
@@ -196,6 +210,7 @@ Counts to extract per surface from these files:
 - `llm.cited_missing` — model didn't emit citation marker (fail-open)
 - `llm.cited_malformed` / `llm.cited_invalid_index` — model emitted bad indices
 - Discord breaker trips, shared-429 hits, per-guild cap exhaustion
+- Slack breaker trips, shared-429 hits, per-workspace cap exhaustion
 
 ## Step 5 — Top sources cited
 
@@ -210,7 +225,7 @@ WITH src AS (
   JOIN conversations c ON c.id = cm.conversation_id
   JOIN agents a        ON a.id = c.agent_id
   WHERE cm.timestamp >= NOW() - INTERVAL '\$DAYS days'
-    AND a.surface IN ('widget','discord','web_ask','mcp')
+    AND a.surface IN ('widget','discord','web_ask','mcp','slack')
 )
 SELECT surface, source_path, COUNT(*) AS hits
 FROM src
@@ -298,5 +313,9 @@ cross-surface drift, model behaviour differences.
 - Compression-on agents (default ON, see CLAUDE.md "Discord reaction →
   feedback" → known limitations) will record an extra row per conversation.
   Filter to `position % 2 = 0` or similar if message counts look inflated.
-- Discord pseudonyms (`discord_p_v1:<hex>`) cannot be reversed — that's a
-  feature ([[project_agent_surface_map]]). Talk about cohorts, not individuals.
+- Discord pseudonyms (`discord_p_v1:<hex>`) and Slack pseudonyms
+  (`slack_p_v1:<hex>`) cannot be reversed — that's a feature
+  ([[project_agent_surface_map]]). Talk about cohorts, not individuals. Slack
+  raw identity is workspace-scoped (`team_id:user_id`, or
+  `enterprise_id:team_id:user_id` on Grid) before hashing, so the same human in
+  two workspaces is two distinct pseudonyms — don't dedupe across them.
