@@ -469,7 +469,17 @@ def main(argv: Optional[List[str]] = None) -> int:
         "--corpus",
         action="append",
         help="Build only the named corpus slug(s) (repeatable). "
-             "Defaults to all 15.",
+             "Defaults to all corpora.",
+    )
+    parser.add_argument(
+        "--version",
+        help="Build only one version's bundle. Pass an Aztec version "
+             "(e.g. v5.0.0-rc.1 or v4.3.1) to build that version's corpora, or "
+             "'shared' for the unversioned corpora (networks page / participate "
+             "/ awesome-aztec). The KB carries two versions, each built from its "
+             "OWN source roots (release tag + that tag's noir pin) — run once per "
+             "version with the matching --aztec-pkg/--noir, plus once with "
+             "--version shared. Mutually exclusive with --corpus.",
     )
     parser.add_argument("--verbose", "-v", action="store_true")
     args = parser.parse_args(argv)
@@ -489,10 +499,23 @@ def main(argv: Optional[List[str]] = None) -> int:
     if args.awesome_aztec:
         roots["awesome-aztec"] = Path(args.awesome_aztec).resolve()
 
-    explicitly_selected = bool(args.corpus)
-    selected = (
-        [get_corpus(s) for s in args.corpus] if args.corpus else list(CORPORA)
-    )
+    if args.corpus and args.version:
+        raise SystemExit("--corpus and --version are mutually exclusive")
+    explicitly_selected = bool(args.corpus or args.version)
+    if args.corpus:
+        selected = [get_corpus(s) for s in args.corpus]
+    elif args.version == "shared":
+        selected = [c for c in CORPORA if c.network == "shared"]
+    elif args.version:
+        selected = [c for c in CORPORA if c.version == args.version]
+        if not selected:
+            known = sorted({c.version for c in CORPORA if c.version})
+            raise SystemExit(
+                f"--version {args.version!r}: no corpora with that version. "
+                f"Known versions: {known} (or 'shared')."
+            )
+    else:
+        selected = list(CORPORA)
 
     out_dir = Path(args.out).resolve()
     out_dir.mkdir(parents=True, exist_ok=True)

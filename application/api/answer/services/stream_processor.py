@@ -27,6 +27,11 @@ from application.storage.db.repositories.prompts import PromptsRepository
 from application.storage.db.repositories.user_tools import UserToolsRepository
 from application.storage.db.session import db_readonly, db_session
 from application.retriever.retriever_creator import RetrieverCreator
+from application.retriever.version_scope import (
+    DEFAULT_VERSION,
+    narrow_sources,
+    select_active_version,
+)
 from application.utils import (
     calculate_doc_token_budget,
     limit_chat_history,
@@ -134,6 +139,11 @@ class StreamProcessor:
         self.agent_id = self.data.get("agent_id")
         self.agent_key = None
         self.model_id: Optional[str] = None
+        # Doc version this request is scoped to (two-version KB). Chosen in
+        # pre_fetch_docs once the question + history are known; defaults to
+        # testnet/v5. Read by the route to thread into complete_stream's
+        # source-frame URL rewrite. See application/retriever/version_scope.py.
+        self.active_version: str = DEFAULT_VERSION
         self.conversation_service = ConversationService()
         self.compression_orchestrator = CompressionOrchestrator(
             self.conversation_service
@@ -540,6 +550,31 @@ class StreamProcessor:
             return False
         return True
 
+    def _narrow_active_docs_to_version(self) -> None:
+        """Narrow ``self.source['active_docs']` to ``self.active_version``.
+
+        Two-version KB scoping: drop sources whose ``sources.metadata.version``
+        is the *other* version, keeping the active version + shared sources.
+        In-place so the retriever built from ``self.source`` searches the
+        reduced set. No-op for the single-source / ``"default"`` / unstamped
+        cases (``narrow_sources`` returns the input unchanged), so live
+        single-version behaviour is preserved until the cutover.
+        """
+        active_docs = self.source.get("active_docs") if self.source else None
+        # Only a multi-source list can be narrowed; a bare string source or
+        # the ``"default"`` sentinel is left untouched.
+        if not isinstance(active_docs, list) or len(active_docs) < 2:
+            return
+        narrowed = narrow_sources(active_docs, self.active_version)
+        if narrowed != active_docs:
+            logger.info(
+                "version narrowing: %d → %d sources for active_version=%s",
+                len(active_docs),
+                len(narrowed),
+                self.active_version,
+            )
+        self.source["active_docs"] = narrowed
+
     def _resolve_agent_id(self) -> Optional[str]:
         """Resolve agent_id from request, then fall back to conversation context."""
         request_agent_id = self.data.get("agent_id")
@@ -714,6 +749,13 @@ class StreamProcessor:
             logger.info("Pre-fetch skipped: no active docs configured")
             return None, None
         try:
+            # Two-version KB: pick the doc version this answer is scoped to
+            # (from the question + conversation history) and narrow the
+            # source set to {active version} + {shared} BEFORE retrieval, so a
+            # single answer never mixes versions. No-op until the cutover
+            # stamps sources.metadata.version (unstamped sources are kept).
+            self.active_version = select_active_version(question, self.history)
+            self._narrow_active_docs_to_version()
             retriever = self.create_retriever()
             logger.info(
                 f"Pre-fetching docs with chunks={retriever.chunks}, doc_token_limit={retriever.doc_token_limit}"

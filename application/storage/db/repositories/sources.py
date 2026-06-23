@@ -198,6 +198,46 @@ class SourcesRepository:
         )
         return {str(row.id): row_to_dict(row) for row in result.fetchall()}
 
+    def version_metadata_for_ids(self, ids: list[str]) -> dict[str, dict]:
+        """Return ``{id_str: {"version": str|None, "network": str|None}}``.
+
+        Reads ONLY the two version-scoping keys from each source's
+        ``metadata`` JSONB. Backs the two-version retrieval narrowing
+        (``application/retriever/version_scope.py``): a source whose
+        ``metadata.version`` matches the active version (or whose
+        ``network`` is ``"shared"``) is searched; a source declaring a
+        different version is dropped before retrieval.
+
+        NOT user-scoped: the ``ids`` already come from an authorized agent
+        source set (``agents.source_id`` + ``extra_source_ids``), so the
+        ownership check has already happened upstream. Non-UUID-shaped ids
+        are dropped before the cast so a malformed caller can't crash the
+        query. One SQL round-trip regardless of input size.
+
+        Today's prod sources carry no ``version`` key, so every entry comes
+        back ``{"version": None, "network": None}`` and the resolver treats
+        them as shared/always-included — i.e. a no-op until the cutover
+        stamps version metadata at ingest.
+        """
+        if not ids:
+            return {}
+        id_strs = [str(x) for x in ids if looks_like_uuid(str(x))]
+        if not id_strs:
+            return {}
+        result = self._conn.execute(
+            text(
+                "SELECT id, "
+                "       metadata->>'version' AS version, "
+                "       metadata->>'network' AS network "
+                "FROM sources WHERE id = ANY(CAST(:ids AS uuid[]))"
+            ),
+            {"ids": id_strs},
+        )
+        return {
+            str(r.id): {"version": r.version, "network": r.network}
+            for r in result.fetchall()
+        }
+
     def list_for_user(
         self,
         user_id: str,

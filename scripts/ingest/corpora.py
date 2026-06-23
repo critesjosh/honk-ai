@@ -108,17 +108,20 @@ class Corpus:
     # source roots. Four roots exist because the corpora are pinned at
     # *different* upstream commits per release:
     #   - ``aztec-packages``       → the aztec-packages release tag
-    #     (e.g. ``v4.3.0``). Used for code corpora (aztec.js, CLI, e2e,
-    #     L1, examples, circuits, aztec-nr apiref) and the
-    #     auto-generated TypeScript API reference.
+    #     (e.g. ``v5.0.0-rc.1``). Used for the code corpora (aztec.js,
+    #     CLI, e2e, L1, examples, circuits, aztec-nr apiref) — real
+    #     source code at the tag.
     #   - ``aztec-packages-docs``  → a snapshot commit on aztec-packages'
     #     ``next`` branch where the new ``version-vX.Y.Z/`` Docusaurus
     #     folder lives. The docs version snapshot is taken from a
     #     moving branch, so the literal release tag does NOT contain
     #     the matching ``version-vX.Y.Z/`` folder — see comment block
     #     in ``application/api/answer/routes/base.py`` for the long
-    #     story. Used for the three rendered-docs corpora (developer
-    #     docs / network docs / site-root networks page).
+    #     story. Used for the rendered-docs corpora (developer docs /
+    #     network docs / site-root networks page / participate) AND the
+    #     auto-generated TypeScript API reference — its current copy
+    #     lives on ``next`` under ``testnet/``, not the tag (see that
+    #     corpus's comment).
     #   - ``noir``                 → the noir-lang/noir commit pinned
     #     by aztec-packages' ``noir/noir-repo`` submodule at the
     #     release tag. Used for noir docs + noir stdlib apiref.
@@ -139,6 +142,15 @@ class Corpus:
     # source list. The build CLI marks the manifest accordingly so
     # the swap-sources step knows which UUIDs to wire in.
     in_production_agent: bool = True
+    # The Aztec release this corpus's content is pinned to ("v4.3.1" |
+    # "v5.0.0-rc.1"), or "" for genuinely unversioned/shared corpora. Stamped
+    # into ``sources.metadata`` at upload; consumed by the retrieval
+    # version-scoping resolver and the version-aware source-URL rewriter.
+    version: str = ""
+    # Which live network this corpus serves: "mainnet" | "testnet" | "shared".
+    # "shared" corpora are always retrieved regardless of the active version;
+    # versioned corpora are only retrieved when their version is active.
+    network: str = "shared"
 
     @property
     def rel_prefix(self) -> str:
@@ -154,153 +166,246 @@ class Corpus:
         return tuple(t.path for t in self.trees)
 
 
-# ── The 15 corpora ─────────────────────────────────────────────────────────
+# ── Corpora ──────────────────────────────────────────────────────────────
+#
+# The KB serves TWO live networks at once: mainnet (v4.3.1) and testnet
+# (v5.0.0-rc.1). 12 of the 15 corpora are version-specific (their content
+# differs per release) and are generated once per active version by
+# ``_versioned_corpora`` below; the other 3 are genuinely unversioned/shared
+# (networks page, participate docs, awesome-aztec) and ingested once.
+#
+# Per-version corpora carry ``version`` + ``network`` (stamped into
+# ``sources.metadata`` at upload and read by the retrieval version-scoping
+# resolver and the version-aware source-URL rewriter); their ``slug`` is
+# suffixed with the version so v4.3.1 and v5 sources never collide. Shared
+# corpora keep their bare slug and ``network="shared"`` so they are retrieved
+# regardless of the active version.
+#
+# Build/ingest note: each version's bundle is built from THAT version's source
+# roots — ``--aztec-pkg`` at the matching release tag, ``--noir`` at that tag's
+# pinned commit, ``--aztec-pkg-docs`` at the shared ``next`` snapshot (which
+# carries every ``version-vX.Y.Z/`` folder + ``typescript-api/{mainnet,testnet}``).
+# Use ``build.py --version <v>`` to build just one version's corpora.
 
 
-CORPORA: Tuple[Corpus, ...] = (
-    # ---- Markdown / docs corpora (passthrough) -------------------------
-    Corpus(
-        name="Aztec Developer Docs v4.3.0",
-        slug="aztec_developer_docs",
-        # NB: source_root="aztec-packages-docs", not "aztec-packages".
-        # version-v4.3.0/ only exists on the ``next`` branch — see the
-        # docstring on ``source_root`` for the full story.
-        source_root="aztec-packages-docs",
-        trees=(
-            SourceTree(
-                "docs/developer_versioned_docs/version-v4.3.0",
-                # ``zip_prefix`` is the top-level dir each file lands
-                # under in the zip. The source tree already has
-                # ``docs/`` as a subfolder alongside top-level files
-                # (``overview.md``, ``ai_tooling.md``, …); prefix with
-                # ``version-v4.3.0`` alone so files preserve their
-                # relative path and metadata.source ends up like
-                # ``version-v4.3.0/docs/aztec-js/foo.md`` (single
-                # ``docs/``, what the URL rewriter expects), not
-                # ``version-v4.3.0/docs/docs/aztec-js/foo.md``.
-                "version-v4.3.0",
-                exclude_paths=(
-                    # Migration notes accumulate every renamed identifier
-                    # in both old and new spellings, so they dominate
-                    # identifier-shaped queries despite never being the
-                    # canonical answer. Biggest single source of
-                    # off-target citations in the widget at v4.2.0
-                    # (~285 chunks). If we ever need migration content
-                    # again, carve it into a separate corpus that's
-                    # only included for migration-shaped queries.
-                    "docs/resources/migration_notes.*",
+def _vslug(version: str) -> str:
+    """``v5.0.0-rc.1`` -> ``v5_0_0_rc_1`` for use as a slug suffix."""
+    return version.replace(".", "_").replace("-", "_")
+
+
+def _versioned_corpora(version: str, network: str, ts_api_folder: str) -> Tuple[Corpus, ...]:
+    """The 12 version-specific corpora for one Aztec release.
+
+    ``ts_api_folder`` is the rendered TypeScript-API network folder on the
+    ``next`` snapshot: ``mainnet`` (=v4.3.1) or ``testnet`` (=v5.0.0-rc.1) —
+    the release tag does NOT keep that artifact current, so it always comes
+    from ``next`` (see the TS-API corpus comment).
+    """
+    s = _vslug(version)
+    docs_folder = f"version-{version}"
+    return (
+        # ---- Markdown / docs corpora (passthrough) ---------------------
+        Corpus(
+            name=f"Aztec Developer Docs {version}",
+            slug=f"aztec_developer_docs_{s}",
+            # source_root="aztec-packages-docs": version-<version>/ lives on
+            # the ``next`` branch, NOT the release tag — see the source_root
+            # docstring. zip_prefix is just ``version-<version>`` so files keep
+            # their relative path (single ``docs/``) and metadata.source ends up
+            # like ``version-<version>/docs/aztec-js/foo.md`` — what the URL
+            # rewriter expects.
+            source_root="aztec-packages-docs",
+            trees=(
+                SourceTree(
+                    f"docs/developer_versioned_docs/{docs_folder}",
+                    docs_folder,
+                    # Migration notes accumulate every renamed identifier in
+                    # both spellings, so they dominate identifier-shaped queries
+                    # despite never being the canonical answer (~285 off-target
+                    # chunks at v4.2.0). Carve into a separate migration-only
+                    # corpus if ever needed.
+                    exclude_paths=("docs/resources/migration_notes.*",),
                 ),
             ),
+            include_extensions=(".md", ".mdx", ".json"),
+            transform="passthrough",
+            version=version,
+            network=network,
         ),
-        include_extensions=(".md", ".mdx", ".json"),
-        transform="passthrough",
-    ),
-    Corpus(
-        name="Aztec Network Docs v4.3.0",
-        slug="aztec_network_docs",
-        source_root="aztec-packages-docs",
-        trees=(
-            SourceTree(
-                "docs/network_versioned_docs/version-v4.3.0",
-                # Same single-prefix structure as the developer tree:
-                # the source has ``operators/`` and ``reference/`` as
-                # siblings, so a prefix of ``version-v4.3.0/operators``
-                # would both duplicate (``…/operators/operators/…``)
-                # and misroute ``reference/*`` under ``operators/``.
-                "version-v4.3.0",
-                # Same logic as migration_notes above — release notes
-                # mention every renamed config / flag / RPC method
-                # but aren't the canonical reference for any of them.
-                exclude_paths=(
-                    "operators/reference/changelog/*",
-                    "reference/changelog/*",
+        Corpus(
+            name=f"Aztec Network Docs {version}",
+            slug=f"aztec_network_docs_{s}",
+            source_root="aztec-packages-docs",
+            trees=(
+                SourceTree(
+                    f"docs/network_versioned_docs/{docs_folder}",
+                    # Single-prefix (``version-<version>``) for the same reason
+                    # as the developer tree: ``operators/`` and ``reference/``
+                    # are siblings, so a deeper prefix would duplicate/misroute.
+                    docs_folder,
+                    # Release-note changelogs mention every renamed config /
+                    # flag / RPC method but aren't the canonical reference.
+                    exclude_paths=(
+                        "operators/reference/changelog/*",
+                        "reference/changelog/*",
+                    ),
                 ),
             ),
+            include_extensions=(".md",),
+            transform="passthrough",
+            version=version,
+            network=network,
         ),
-        include_extensions=(".md",),
-        transform="passthrough",
-    ),
+        Corpus(
+            name=f"Aztec TypeScript API {version}",
+            slug=f"aztec_typescript_api_{s}",
+            # TS API sources from the ``next`` snapshot, NOT the release tag.
+            # The rendered reference is an auto-generated artifact under
+            # ``docs/static/typescript-api/`` that the tag does NOT keep current
+            # (at the v5.0.0-rc.1 tag the only folder, ``mainnet/``, still
+            # declares Version: v4.3.0). On ``next`` it is split by LIVE NETWORK:
+            # ``mainnet/`` = v4.3.1, ``testnet/`` = v5.0.0-rc.1. Because the
+            # source is a moving branch, the GitHub blob links in
+            # ``_aztec_source_url`` for the ``typescript-api/`` prefix resolve
+            # against the pinned ``next`` snapshot (per active version).
+            source_root="aztec-packages-docs",
+            trees=(SourceTree(f"docs/static/typescript-api/{ts_api_folder}", "typescript-api"),),
+            include_extensions=(".md", ".txt"),
+            transform="passthrough",
+            notes="auto-generated from yarn-project/* tsdoc; the corpus is "
+                  "the rendered output, not the .ts source",
+            version=version,
+            network=network,
+        ),
+        Corpus(
+            name=f"Noir Language Docs {version}",
+            slug=f"noir_language_docs_{s}",
+            source_root="noir",
+            trees=(SourceTree("docs/docs", "noir-docs"),),
+            include_extensions=(".md", ".mdx"),
+            transform="passthrough",
+            notes=f"from noir-lang/noir at the commit pinned by aztec-packages "
+                  f"{version} (see CLAUDE.md for the canonical commit hash)",
+            version=version,
+            network=network,
+        ),
+        # ---- Apiref corpora (noir_apiref transform) --------------------
+        Corpus(
+            name=f"Aztec.nr Framework {version} (apiref)",
+            slug=f"aztec_nr_apiref_{s}",
+            source_root="aztec-packages",
+            trees=(SourceTree("noir-projects/aztec-nr", "aztec-nr"),),
+            include_extensions=(".nr",),
+            transform="noir_apiref",
+            notes="public-surface only: doc comments + signatures",
+            version=version,
+            network=network,
+        ),
+        Corpus(
+            name=f"Noir stdlib {version} (apiref)",
+            slug=f"noir_stdlib_apiref_{s}",
+            source_root="noir",
+            trees=(SourceTree("noir_stdlib/src", "noir-stdlib"),),
+            include_extensions=(".nr",),
+            transform="noir_apiref",
+            notes="public-surface only: doc comments + signatures",
+            version=version,
+            network=network,
+        ),
+        # ---- Body-bearing code corpora (rename_code_to_txt) ------------
+        Corpus(
+            name=f"Aztec Example Contracts {version}",
+            slug=f"aztec_example_contracts_{s}",
+            source_root="aztec-packages",
+            trees=(SourceTree("noir-projects/noir-contracts/contracts", "noir-contracts"),),
+            include_extensions=(".nr",),
+            transform="rename_code_to_txt",
+            notes="kept body-bearing: examples are the implementation",
+            version=version,
+            network=network,
+        ),
+        Corpus(
+            name=f"Aztec Protocol Circuits {version}",
+            slug=f"aztec_protocol_circuits_{s}",
+            source_root="aztec-packages",
+            trees=(SourceTree("noir-projects/noir-protocol-circuits", "noir-protocol-circuits"),),
+            include_extensions=(".nr",),
+            transform="rename_code_to_txt",
+            version=version,
+            network=network,
+        ),
+        Corpus(
+            name=f"aztec.js SDK {version}",
+            slug=f"aztec_js_sdk_{s}",
+            source_root="aztec-packages",
+            trees=(SourceTree("yarn-project/aztec.js/src", "aztec.js"),),
+            include_extensions=(".ts",),
+            transform="rename_code_to_txt",
+            version=version,
+            network=network,
+        ),
+        Corpus(
+            name=f"Aztec CLI {version}",
+            slug=f"aztec_cli_{s}",
+            source_root="aztec-packages",
+            # CLI ships as two yarn packages with separate zip prefixes so the
+            # source-URL mapping routes each to its yarn-project subdirectory.
+            trees=(
+                SourceTree("yarn-project/cli/src", "cli"),
+                SourceTree("yarn-project/cli-wallet/src", "cli-wallet"),
+            ),
+            include_extensions=(".ts",),
+            transform="rename_code_to_txt",
+            notes="bundles both cli/ and cli-wallet/ packages with distinct prefixes",
+            version=version,
+            network=network,
+        ),
+        Corpus(
+            name=f"Aztec E2E Tests {version}",
+            slug=f"aztec_e2e_tests_{s}",
+            source_root="aztec-packages",
+            trees=(SourceTree("yarn-project/end-to-end/src", "end-to-end"),),
+            include_extensions=(".ts",),
+            transform="rename_code_to_txt",
+            version=version,
+            network=network,
+        ),
+        Corpus(
+            name=f"Aztec L1 Contracts {version}",
+            slug=f"aztec_l1_contracts_{s}",
+            source_root="aztec-packages",
+            trees=(SourceTree("l1-contracts", "l1-contracts"),),
+            include_extensions=(".sol",),
+            transform="rename_code_to_txt",
+            version=version,
+            network=network,
+        ),
+    )
+
+
+# ---- Shared (unversioned) corpora — ingested once, retrieved for any version
+_SHARED_CORPORA: Tuple[Corpus, ...] = (
     Corpus(
-        name="Aztec TypeScript API v4.3.0",
-        slug="aztec_typescript_api",
-        # TS API stays on the release tag: the v4.3.0 tag still ships
-        # the auto-generated reference under ``testnet/``; the
-        # ``mainnet/`` rename only landed on ``next`` after the tag was
-        # cut. Re-source-rooting this to ``aztec-packages-docs`` (and
-        # switching to ``mainnet/``) would mean the GitHub blob links
-        # in source citations 404, since the tag has no ``mainnet/``.
-        source_root="aztec-packages",
-        trees=(SourceTree("docs/static/typescript-api/testnet", "typescript-api"),),
-        include_extensions=(".md", ".txt"),
-        transform="passthrough",
-        notes="auto-generated from yarn-project/* tsdoc; the corpus is "
-              "the rendered output, not the .ts source",
-    ),
-    Corpus(
-        name="Noir Language Docs v4.3.0",
-        slug="noir_language_docs",
-        source_root="noir",
-        trees=(SourceTree("docs/docs", "noir-docs"),),
-        include_extensions=(".md", ".mdx"),
-        transform="passthrough",
-        notes="from noir-lang/noir at the commit pinned by aztec-packages "
-              "v4.3.0 (see CLAUDE.md for the canonical commit hash)",
-    ),
-    Corpus(
-        # Site-root unversioned pages in aztec-packages that the
-        # versioned developer/network docs explicitly defer to. The
-        # only entry today is ``networks.md`` — the canonical L1
-        # contract address table comparing mainnet vs. Sepolia
-        # (Governance Staking Escrow, Rollup, Registry, etc.). The
-        # versioned network docs hardcode mainnet addresses with a
-        # "for mainnet" qualifier and point operators here for the
-        # testnet column; without this corpus the bot has no way to
-        # produce the testnet GSE address and tends to serve the
-        # mainnet one for testnet questions.
-        name="Aztec Site Networks Page v4.3.0",
+        # Site-root unversioned ``networks.md`` — the canonical L1 contract
+        # address table comparing mainnet vs. testnet (GSE, Rollup, Registry).
+        # The versioned network docs hardcode mainnet addresses and defer here
+        # for the testnet column. Network-specific CONTENT but unversioned on
+        # ``next`` (one file, covers both networks) → shared.
+        name="Aztec Site Networks Page",
         slug="aztec_site_networks",
-        # Site-root pages live alongside the versioned docs in
-        # ``docs/docs/`` — and ``networks.md`` was updated in the same
-        # PR (#23375) that cut version-v4.3.0/. Sourcing from
-        # aztec-packages-docs ensures we pick up the updated address
-        # table; the v4.3.0 tag still has the older copy.
         source_root="aztec-packages-docs",
-        trees=(
-            SourceTree(
-                "docs/docs",
-                "aztec-site",
-                include_paths=("networks.md",),
-            ),
-        ),
+        trees=(SourceTree("docs/docs", "aztec-site", include_paths=("networks.md",)),),
         include_extensions=(".md", ".mdx"),
         transform="passthrough",
+        network="shared",
         notes="single-file corpus: docs/docs/networks.md, rendered at "
-              "docs.aztec.network/networks. Add more site-root pages "
-              "here by extending include_paths.",
+              "docs.aztec.network/networks. Unversioned (covers both networks).",
     ),
     Corpus(
-        # Unversioned "Participate" docs (``docs-participate/``) — the
-        # educational governance/staking content. NOT in the versioned
-        # developer/network trees, so it was never ingested; the widget
-        # had no crisp source for "can a delegator vote?" or the
-        # unstaking/withdrawal flow and the model filled the gap with
-        # hallucinated method names (``completeUnstake``) and a wrong
-        # "1-week cooldown". See honk-report 2026-05-27.
-        #
-        # CURATED SUBSET: only ``token/`` + ``governance/`` — the slice
-        # that closes that gap. ``basics/`` is deliberately excluded: it
-        # overlaps the versioned developer concept docs and would risk
-        # the off-target-citation duplication that ``migration_notes`` /
-        # changelogs already cause. Widen via ``include_paths`` after
-        # measuring citation overlap.
-        #
-        # Unversioned, same as ``networks.md``: sourced from the
-        # ``next`` snapshot (``aztec-packages-docs``); rendered at
-        # ``docs.aztec.network/participate/<rest>`` (Docusaurus instance
-        # ``routeBasePath: "participate"``). The ``aztec-participate/``
-        # zip prefix is wired into ``_aztec_source_url`` (routes/base.py)
-        # and ``SOURCE_PREFIXES`` (eval_retrieval.py).
-        name="Aztec Participate Docs v4.3.0",
+        # Unversioned "Participate" docs — educational governance/staking
+        # content (curated to token/ + governance/). Rendered at
+        # docs.aztec.network/participate/<rest>; unversioned → shared.
+        name="Aztec Participate Docs",
         slug="aztec_participate_docs",
         source_root="aztec-packages-docs",
         trees=(
@@ -312,135 +417,38 @@ CORPORA: Tuple[Corpus, ...] = (
         ),
         include_extensions=(".md", ".mdx"),
         transform="passthrough",
+        network="shared",
         notes="curated subset (token/ + governance/) of the unversioned "
-              "docs-participate tree, rendered at "
-              "docs.aztec.network/participate/<rest>. Widen include_paths "
-              "after measuring citation overlap with the versioned docs.",
+              "docs-participate tree, rendered at docs.aztec.network/participate/.",
     ),
     Corpus(
-        # Community resource list — the single ``README.md`` from
-        # AztecProtocol/awesome-aztec (curated links to faucets, block
-        # explorers, learning material, tooling). The versioned docs
-        # carry almost none of these external links, so the widget can
-        # name a resource (e.g. "the testnet faucet") but not produce
-        # its URL. See honk-report 2026-06-01.
-        #
-        # MOVING TARGET: unlike every other corpus, awesome-aztec is a
-        # community repo NOT pinned to an Aztec release tag — its
-        # ``source_root`` ("awesome-aztec") is just whatever checkout is
-        # passed via ``--awesome-aztec`` at build time. Source URLs map
-        # to the GitHub blob on ``main`` (``_aztec_source_url`` in
-        # api/answer/routes/base.py), not docs.aztec.network.
-        #
-        # Promoted to production (in_production_agent=True) and added to
-        # ``_CANONICAL_ORDER`` after the held-out build was uploaded and
-        # wired into the prod widget agent on 2026-06-02 (source
-        # 5afa85e2-…, awesome-aztec pin 280f24f0). Retrieval probes
-        # confirmed external URLs survive ingest and are retrieved
-        # (e.g. dashboard/explorer queries cite this corpus). Because the
-        # repo is a moving target, each re-ingest re-pins to the current
-        # ``main``; re-run with ``--awesome-aztec <checkout>``.
+        # Community resource list — the single awesome-aztec README (faucets,
+        # explorers, tooling). NOT release-pinned (moving community repo); source
+        # URLs map to the GitHub blob on ``main``. Re-pins to current main each
+        # ingest (``--awesome-aztec <checkout>``). Live since 2026-06-02.
         name="Awesome Aztec (community resources)",
         slug="awesome_aztec",
         source_root="awesome-aztec",
-        trees=(
-            SourceTree(
-                ".",
-                "awesome-aztec",
-                include_paths=("README.md",),
-            ),
-        ),
+        trees=(SourceTree(".", "awesome-aztec", include_paths=("README.md",)),),
         include_extensions=(".md",),
-        # NOT passthrough: the shared markdown parser strips every
-        # ``[label](url)`` to ``label`` (remove_hyperlinks=True), which
-        # would delete the external URLs that are this corpus's entire
-        # value. ``inline_external_links`` pre-inlines external URLs as
-        # plain text (and strips internal/relative links to labels) so
-        # they survive the parser. See _inline_external_links in build.py.
+        # NOT passthrough: ``inline_external_links`` pre-inlines external URLs
+        # (and strips internal links) so the URLs — this corpus's whole value —
+        # survive the shared markdown parser's link stripping.
         transform="inline_external_links",
         in_production_agent=True,
-        notes="single-file corpus: the awesome-aztec README link list. "
-              "Moving community repo (not release-pinned); source URLs "
-              "link to the GitHub blob on main. External links are inlined "
-              "as text (internal links stripped) so URLs survive ingest. "
-              "Live in the prod widget agent since 2026-06-02.",
+        network="shared",
+        notes="single-file corpus: the awesome-aztec README link list. Moving "
+              "community repo; external links inlined so URLs survive ingest.",
     ),
-    # ---- Apiref corpora (noir_apiref transform) ------------------------
-    Corpus(
-        name="Aztec.nr Framework v4.3.0 (apiref)",
-        slug="aztec_nr_apiref",
-        source_root="aztec-packages",
-        trees=(SourceTree("noir-projects/aztec-nr", "aztec-nr"),),
-        include_extensions=(".nr",),
-        transform="noir_apiref",
-        notes="public-surface only: doc comments + signatures",
-    ),
-    Corpus(
-        name="Noir stdlib v4.3.0 (apiref)",
-        slug="noir_stdlib_apiref",
-        source_root="noir",
-        trees=(SourceTree("noir_stdlib/src", "noir-stdlib"),),
-        include_extensions=(".nr",),
-        transform="noir_apiref",
-        notes="public-surface only: doc comments + signatures",
-    ),
-    # ---- Body-bearing code corpora (rename_code_to_txt) ----------------
-    Corpus(
-        name="Aztec Example Contracts v4.3.0",
-        slug="aztec_example_contracts",
-        source_root="aztec-packages",
-        trees=(SourceTree("noir-projects/noir-contracts/contracts", "noir-contracts"),),
-        include_extensions=(".nr",),
-        transform="rename_code_to_txt",
-        notes="kept body-bearing: examples are the implementation",
-    ),
-    Corpus(
-        name="Aztec Protocol Circuits v4.3.0",
-        slug="aztec_protocol_circuits",
-        source_root="aztec-packages",
-        trees=(SourceTree("noir-projects/noir-protocol-circuits", "noir-protocol-circuits"),),
-        include_extensions=(".nr",),
-        transform="rename_code_to_txt",
-    ),
-    Corpus(
-        name="aztec.js SDK v4.3.0",
-        slug="aztec_js_sdk",
-        source_root="aztec-packages",
-        trees=(SourceTree("yarn-project/aztec.js/src", "aztec.js"),),
-        include_extensions=(".ts",),
-        transform="rename_code_to_txt",
-    ),
-    Corpus(
-        name="Aztec CLI v4.3.0",
-        slug="aztec_cli",
-        source_root="aztec-packages",
-        # CLI ships as two yarn packages with separate zip prefixes
-        # so the source-URL mapping in api/answer/routes/base.py
-        # routes each to its correct yarn-project subdirectory.
-        trees=(
-            SourceTree("yarn-project/cli/src", "cli"),
-            SourceTree("yarn-project/cli-wallet/src", "cli-wallet"),
-        ),
-        include_extensions=(".ts",),
-        transform="rename_code_to_txt",
-        notes="bundles both cli/ and cli-wallet/ packages with distinct prefixes",
-    ),
-    Corpus(
-        name="Aztec E2E Tests v4.3.0",
-        slug="aztec_e2e_tests",
-        source_root="aztec-packages",
-        trees=(SourceTree("yarn-project/end-to-end/src", "end-to-end"),),
-        include_extensions=(".ts",),
-        transform="rename_code_to_txt",
-    ),
-    Corpus(
-        name="Aztec L1 Contracts v4.3.0",
-        slug="aztec_l1_contracts",
-        source_root="aztec-packages",
-        trees=(SourceTree("l1-contracts", "l1-contracts"),),
-        include_extensions=(".sol",),
-        transform="rename_code_to_txt",
-    ),
+)
+
+
+# Active versions in the KB: mainnet (v4.3.1) + testnet (v5.0.0-rc.1).
+# The rendered TS-API folder on ``next`` is per network (mainnet/testnet).
+CORPORA: Tuple[Corpus, ...] = (
+    *_versioned_corpora("v4.3.1", "mainnet", ts_api_folder="mainnet"),
+    *_versioned_corpora("v5.0.0-rc.1", "testnet", ts_api_folder="testnet"),
+    *_SHARED_CORPORA,
 )
 
 

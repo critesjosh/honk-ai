@@ -8,6 +8,11 @@ from flask_restx import fields, Resource
 from application.api.answer.routes.base import _aztec_source_url, answer_ns
 from application.core.settings import settings
 from application.retriever.apiref_resolver import resolve_canonical_apiref
+from application.retriever.version_scope import (
+    DEFAULT_VERSION,
+    narrow_sources,
+    select_active_version,
+)
 from application.storage.db.repositories.agents import AgentsRepository
 from application.storage.db.repositories.user_logs import UserLogsRepository
 from application.storage.db.session import db_readonly, db_session
@@ -174,7 +179,11 @@ class SearchResource(Resource):
         return max(_MIN_CHUNKS, min(_MAX_CHUNKS, value))
 
     def _search_global(
-        self, query: str, source_ids: List[str], chunks: int
+        self,
+        query: str,
+        source_ids: List[str],
+        chunks: int,
+        active_version: str = DEFAULT_VERSION,
     ) -> List[Dict[str, Any]]:
         """Global rerank across all ``source_ids`` in a single SQL query.
 
@@ -287,7 +296,9 @@ class SearchResource(Resource):
                 continue
             seen_keys.add(dedup_key)
 
-            public_source = _aztec_source_url(raw_source) if raw_source else raw_source
+            public_source = (
+                _aztec_source_url(raw_source, active_version) if raw_source else raw_source
+            )
 
             # Title preference: ingest-stamped title → filename (with
             # parser extensions stripped) → first ~50 chars of content.
@@ -418,8 +429,15 @@ class SearchResource(Resource):
 
         try:
             source_ids = self._get_sources_from_agent(agent)
+            # Two-version KB: scope this search to one doc version. /api/search
+            # is stateless (no conversation), so the selector sees only the
+            # query; default is testnet/v5. Narrowing + the URL rewrite both
+            # key off it. No-op until sources.metadata.version is stamped.
+            active_version = select_active_version(question)
+            if source_ids:
+                source_ids = narrow_sources(source_ids, active_version)
             results = (
-                self._search_global(question, source_ids, chunks)
+                self._search_global(question, source_ids, chunks, active_version)
                 if source_ids
                 else []
             )

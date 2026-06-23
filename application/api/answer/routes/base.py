@@ -57,42 +57,76 @@ _FAIL_OPEN_MAX_SOURCES = 3
 #   - Everything else (code, non-developer-docs markdown) → GitHub at v4.3.0
 # Widget renders `source.source` as the <a href>, so we rewrite that field
 # in-place before emitting.
-_AZTEC_DOCS_BASE = "https://docs.aztec.network/developers/docs"
-# Top-level developer docs (overview, ai_tooling, getting_started_*) live
-# directly under /developers/ on the rendered site, NOT /developers/docs/.
-_AZTEC_DEV_TOP_BASE = "https://docs.aztec.network/developers"
-# Network docs (sequencer/prover/operator content) are rendered under
-# /operate/ on the site even though the corpus prefix is `operators/`.
-_AZTEC_OPERATE_BASE = "https://docs.aztec.network/operate"
-# Unversioned site-root pages from aztec-packages' ``docs/docs/`` —
-# e.g. ``networks.md`` rendered at /networks. Lives in the
-# ``aztec_site_networks`` corpus (zip prefix ``aztec-site/``).
 _AZTEC_SITE_BASE = "https://docs.aztec.network"
 # Unversioned "Participate" docs (``docs-participate/``) — educational
 # governance/staking content rendered at /participate/<rest> on the site
 # (Docusaurus instance ``routeBasePath: "participate"``). Lives in the
 # ``aztec_participate_docs`` corpus (zip prefix ``aztec-participate/``).
 _AZTEC_PARTICIPATE_BASE = "https://docs.aztec.network/participate"
-_AZTEC_GITHUB_BASE = (
-    "https://github.com/AztecProtocol/aztec-packages/blob/v4.3.0"
-)
 # Rendered Noir language docs — point at the canonical site rather than
 # the GitHub source. Stripping the markdown extension matches the
 # Docusaurus URL scheme; trailing /index segments are also stripped.
 _NOIR_DOCS_BASE = "https://noir-lang.org/docs"
-# Noir is a separate repo; aztec-packages v4.3.0 pins it at this commit via
-# the noir/noir-repo submodule. Used for noir-stdlib apiref source files
-# (those are real .nr source code, not rendered docs). Update this commit
-# when bumping Aztec versions.
-_NOIR_GITHUB_BASE = (
-    "https://github.com/noir-lang/noir/blob/1d9727a6e0a9df75a71bb9c87daacbe30659ba09"
-)
 # awesome-aztec is a moving community repo (not release-pinned), so its
 # source URLs point at the GitHub blob on ``main`` rather than a tag.
 # Lives in the ``awesome_aztec`` corpus (zip prefix ``awesome-aztec/``).
 _AWESOME_AZTEC_GITHUB_BASE = (
     "https://github.com/AztecProtocol/awesome-aztec/blob/main"
 )
+
+# ── Version-aware routing ────────────────────────────────────────────────
+# The KB serves TWO doc versions (mainnet v4.3.1 + testnet v5.0.0-rc.1).
+# docs.aztec.network serves the mainnet (current/``lastVersion``) docs at the
+# BARE path and other versions under a Docusaurus ``path:`` segment (see
+# docusaurus.config.js). Confirmed live:
+#   v4.3.1 (mainnet)      → bare:    /developers/docs/<r>, /developers/<top>, /operate/operators/<r>
+#   v5.0.0-rc.1 (testnet) → /testnet/: /developers/testnet/docs/<r>, /operate/testnet/operators/<r>
+# Rendered-docs source paths carry their version (``version-vX.Y.Z/…``), so the
+# docs URL is derived from the path itself. Code / TS-API / noir-stdlib paths are
+# version-LESS, so those use the request's ``active_version`` (the retrieval
+# version selector guarantees every cited chunk in one answer is that version).
+#
+# Per-version Docusaurus site path infix (mainnet/current = bare ""; others
+# under their version path). Unknown versions fall back to bare (treated as
+# current) — safe for a future bump before this map is updated.
+_DOCS_SITE_INFIX = {"v4.3.1": "", "v5.0.0-rc.1": "testnet"}
+# Per-version aztec-packages release tag (code-corpus GitHub blobs).
+_CODE_TAG = {"v4.3.1": "v4.3.1", "v5.0.0-rc.1": "v5.0.0-rc.1"}
+# Per-version noir-lang/noir commit (noir/noir-repo submodule pin at that tag;
+# noir-stdlib apiref blobs). noir didn't move v4.3.0→v4.3.1.
+_NOIR_PIN = {
+    "v4.3.1": "1d9727a6e0a9df75a71bb9c87daacbe30659ba09",
+    "v5.0.0-rc.1": "c57152f91260ecdb9faad4efc20abb14b6d2ece7",
+}
+# Per-version rendered TS-API network folder on the ``next`` snapshot.
+_TS_API_FOLDER = {"v4.3.1": "mainnet", "v5.0.0-rc.1": "testnet"}
+# Default active version when a caller doesn't pass one (testnet/v5 — primary
+# audience). The retrieval path threads the real active_version explicitly.
+_DEFAULT_DOC_VERSION = "v5.0.0-rc.1"
+_AZTEC_GITHUB = "https://github.com/AztecProtocol/aztec-packages/blob"
+_NOIR_GITHUB = "https://github.com/noir-lang/noir/blob"
+# Pinned ``next`` snapshot the docs corpora + rendered TS-API are built from
+# (the per-version TS-API folder differs; the snapshot SHA is shared). MUST equal
+# the ``--aztec-pkg-docs`` snapshot used in scripts/ingest/corpora.py's build.
+_AZTEC_DOCS_SNAPSHOT_SHA = "d69ab88adc2bef952696ff4b6ab8b109ae4b75ac"
+# Matches the Docusaurus version-folder prefix (``version-vX.Y.Z/``). Digit-guarded
+# so it only matches real version folders, not an arbitrary ``version-v…`` prefix.
+_VERSIONED_DOCS_RE = re.compile(r"^version-v\d[^/]*/")
+
+
+def _docs_site_bases(version: str) -> Tuple[str, str, str]:
+    """(docs_base, dev_top_base, operate_base) site URLs for a doc version.
+
+    Bare for the mainnet/current version; under the version's path segment
+    (e.g. ``/testnet``) otherwise. Unknown version → bare (current) fallback.
+    """
+    infix = _DOCS_SITE_INFIX.get(version, "")
+    seg = f"/{infix}" if infix else ""
+    return (
+        f"{_AZTEC_SITE_BASE}/developers{seg}/docs",
+        f"{_AZTEC_SITE_BASE}/developers{seg}",
+        f"{_AZTEC_SITE_BASE}/operate{seg}",
+    )
 
 # Corpus prefix → GitHub repo prefix. First match wins, so put the more
 # specific prefixes before their catch-alls.
@@ -117,11 +151,10 @@ _SOURCE_TO_REPO_PREFIX: List[Tuple[str, str]] = [
     ("noir-contracts/",           "noir-projects/noir-contracts/contracts/"),
     ("noir-protocol-circuits/",   "noir-projects/noir-protocol-circuits/"),
     ("l1-contracts/",             "l1-contracts/"),
-    # Auto-generated TypeScript API reference. The v4.3.0 tag still has
-    # this under ``docs/static/typescript-api/testnet/`` — the rename to
-    # ``mainnet/`` only landed on ``next`` after the tag was cut, so
-    # sticking with ``testnet/`` keeps the URLs reachable at the tag.
-    ("typescript-api/",           "docs/static/typescript-api/testnet/"),
+    # NOTE: ``typescript-api/`` is intentionally NOT here. Its v5 content
+    # lives on the ``next`` snapshot (under ``testnet/``), not the release
+    # tag, so it has a dedicated branch in ``_aztec_source_url`` that points
+    # at ``_AZTEC_DOCS_SNAPSHOT_BASE`` rather than the tag.
 ]
 
 
@@ -143,67 +176,67 @@ def _strip_index_suffix(path: str) -> str:
     return path
 
 
-def _aztec_source_url(source_path: str) -> str:
+def _aztec_source_url(source_path: str, active_version: str = _DEFAULT_DOC_VERSION) -> str:
     """Translate a corpus `metadata.source` path to a clickable public URL.
 
-    Unknown patterns fall back to the original string; the widget will
-    still render the title — just without a working href.
+    ``active_version`` is the doc version this answer is scoped to (from the
+    retrieval version selector; source-id narrowing keeps an answer single-version).
+    Rendered-docs URLs derive their version from the source path itself; the
+    version-LESS corpora (code / TS-API / noir-stdlib) use ``active_version`` to
+    pick the release tag / noir pin / TS-API network folder.
 
-    Routing summary:
-      * Rendered Aztec developer docs under `docs/`  → docs.aztec.network/developers/docs/<rest>
-      * Top-level developer docs (overview, etc.)     → docs.aztec.network/developers/<rest>
-      * Network / operator docs                       → docs.aztec.network/operate/operators/<rest>
-      * Unversioned site-root pages (networks.md)    → docs.aztec.network/<rest>
-      * Noir language docs + stdlib                   → github.com/noir-lang/noir at pinned commit
-      * Aztec source code (TS / Sol / Noir)           → github.com/AztecProtocol/aztec-packages at v4.3.0
+    Unknown patterns fall back to the original string; the widget will still
+    render the title — just without a working href.
+
+    Routing summary (mainnet v4.3.1 = bare path; testnet v5 = /testnet/):
+      * Rendered developer docs under `docs/`  → /developers[/testnet]/docs/<rest>
+      * Top-level developer docs               → /developers[/testnet]/<rest>
+      * Network / operator docs                → /operate[/testnet]/operators/<rest>
+      * Unversioned site-root / participate    → docs.aztec.network/<rest>
+      * Noir language docs                     → noir-lang.org/docs
+      * Noir stdlib (apiref source)            → github noir at the version's pin
+      * Aztec source code                      → github aztec-packages at the version's tag
+      * TypeScript API reference               → pinned next snapshot, version's network folder
     """
     if not source_path or not isinstance(source_path, str):
         return source_path
 
-    # Network / operator docs — rendered at /operate/operators/<rest> on
-    # the site. The corpus path is `version-v4.3.0/operators/<rest>` per
-    # the way the network docs are ingested.
+    # Rendered developer/network docs — ingested under ``version-vX.Y.Z/``. The
+    # version is IN the path, so the site URL (and its /testnet/ infix for the
+    # non-current version) is derived from the path directly.
     #
-    # ``apply_slug_override`` swaps the final path segment when the
-    # source file declares ``id:`` in its Docusaurus frontmatter (e.g.
-    # ``registering-sequencer.md`` declares ``id: registering_sequencer``
-    # so the site serves it at ``.../registering_sequencer``, not the
-    # filename slug).
-    if source_path.startswith("version-v4.3.0/operators/"):
+    # ``apply_slug_override`` swaps the final path segment when the source file
+    # declares ``id:`` in its Docusaurus frontmatter (keyed on the version-prefixed
+    # path; needs that version's slug map regenerated — until then the filename
+    # slug is used, which is a graceful fallback).
+    _vm = _VERSIONED_DOCS_RE.match(source_path)
+    if _vm:
+        doc_version = _vm.group(0)[len("version-"):].rstrip("/")  # e.g. "v5.0.0-rc.1"
+        docs_base, dev_top_base, operate_base = _docs_site_bases(doc_version)
         source_no_ext = _strip_doc_ext(source_path)
-        rest = source_path[len("version-v4.3.0/"):]  # keep "operators/<rest>"
-        rest = _strip_index_suffix(_strip_doc_ext(rest))
-        rest = apply_slug_override(rest, source_no_ext)
-        return f"{_AZTEC_OPERATE_BASE}/{rest}".rstrip("/")
+        rest_raw = source_path[_vm.end():]  # path after "version-vX.Y.Z/"
 
-    # Rendered Aztec developer docs — files under `docs/` subfolder.
-    if source_path.startswith("version-v4.3.0/docs/"):
-        source_no_ext = _strip_doc_ext(source_path)
-        rest = source_path[len("version-v4.3.0/docs/"):]
-        rest = _strip_index_suffix(_strip_doc_ext(rest))
-        rest = apply_slug_override(rest, source_no_ext)
-        return f"{_AZTEC_DOCS_BASE}/{rest}".rstrip("/")
+        # Network / operator docs → /operate[/testnet]/operators/<rest>.
+        if rest_raw.startswith("operators/"):
+            rest = apply_slug_override(_strip_index_suffix(_strip_doc_ext(rest_raw)), source_no_ext)
+            return f"{operate_base}/{rest}".rstrip("/")
 
-    # Top-level developer docs (overview, ai_tooling, getting_started_*)
-    # — these live directly under `version-v4.3.0/<file>.md` in the
-    # corpus and are rendered at /developers/<filename> on the site, NOT
-    # under /developers/docs/.
-    #
-    # Gap: the *network* corpus also has a top-level ``reference/``
-    # sibling to ``operators/`` (at v4.3.0 it contains only
-    # ``changelog/*`` which we filter out via ``exclude_paths``), so no
-    # chunks reach the rewriter from there in the current corpus shape.
-    # If a future network release puts non-changelog content under
-    # ``reference/``, this catch-all would misroute it to
-    # ``/developers/reference/<rest>``. Add a dedicated
-    # ``version-vX.Y.Z/reference/`` → ``/operate/reference/`` case
-    # before this block if/when that happens.
-    if source_path.startswith("version-v4.3.0/"):
-        source_no_ext = _strip_doc_ext(source_path)
-        rest = source_path[len("version-v4.3.0/"):]
-        rest = _strip_index_suffix(_strip_doc_ext(rest))
-        rest = apply_slug_override(rest, source_no_ext)
-        return f"{_AZTEC_DEV_TOP_BASE}/{rest}".rstrip("/")
+        # Developer docs under ``docs/`` → /developers[/testnet]/docs/<rest>.
+        if rest_raw.startswith("docs/"):
+            rest = apply_slug_override(
+                _strip_index_suffix(_strip_doc_ext(rest_raw[len("docs/"):])), source_no_ext
+            )
+            return f"{docs_base}/{rest}".rstrip("/")
+
+        # Top-level developer docs (overview, ai_tooling, getting_started_*) →
+        # /developers[/testnet]/<file>.
+        #
+        # Gap (unchanged): the *network* corpus has a top-level ``reference/``
+        # sibling to ``operators/`` (filtered to ``changelog/*`` via exclude_paths).
+        # A future non-changelog ``reference/`` file would misroute here; add a
+        # dedicated ``reference/`` → ``/operate[/testnet]/reference/`` case then.
+        rest = apply_slug_override(_strip_index_suffix(_strip_doc_ext(rest_raw)), source_no_ext)
+        return f"{dev_top_base}/{rest}".rstrip("/")
 
     # Unversioned aztec-packages ``docs/docs/`` pages — rendered at
     # the site root (e.g. ``aztec-site/networks.md`` →
@@ -241,17 +274,30 @@ def _aztec_source_url(source_path: str) -> str:
         rest = _strip_index_suffix(_strip_doc_ext(rest))
         return f"{_NOIR_DOCS_BASE}/{rest}".rstrip("/")
 
-    # Noir-stdlib stays on GitHub: those are real `.nr` source files
-    # (apiref output of `noir_stdlib/src/`), not rendered docs pages.
+    # Noir-stdlib apiref — real ``.nr`` source at the active version's noir pin.
     if source_path.startswith("noir-stdlib/"):
         rest = source_path[len("noir-stdlib/"):]
         for suffix in (".txt", ".md"):
             if rest.endswith(suffix):
                 rest = rest[: -len(suffix)]
                 break
-        return f"{_NOIR_GITHUB_BASE}/noir_stdlib/src/{rest}"
+        pin = _NOIR_PIN.get(active_version, _NOIR_PIN[_DEFAULT_DOC_VERSION])
+        return f"{_NOIR_GITHUB}/{pin}/noir_stdlib/src/{rest}"
 
-    # Code / non-developer-docs → GitHub blob at v4.3.0
+    # Auto-generated TS-API reference — lives only on the pinned ``next``
+    # snapshot, in the active version's network folder (mainnet=v4.3.1 /
+    # testnet=v5). Passthrough corpus: the real ``.md`` / ``.txt`` extension is
+    # part of the filename, so KEEP it (the blob URL needs the real path).
+    if source_path.startswith("typescript-api/"):
+        rest = source_path[len("typescript-api/"):]
+        folder = _TS_API_FOLDER.get(active_version, _TS_API_FOLDER[_DEFAULT_DOC_VERSION])
+        return (
+            f"{_AZTEC_GITHUB}/{_AZTEC_DOCS_SNAPSHOT_SHA}"
+            f"/docs/static/typescript-api/{folder}/{rest}"
+        )
+
+    # Code corpora → GitHub blob at the active version's release tag.
+    tag = _CODE_TAG.get(active_version, _CODE_TAG[_DEFAULT_DOC_VERSION])
     for corpus_prefix, repo_prefix in _SOURCE_TO_REPO_PREFIX:
         if source_path.startswith(corpus_prefix):
             rest = source_path[len(corpus_prefix):]
@@ -267,7 +313,7 @@ def _aztec_source_url(source_path: str) -> str:
                 if rest.endswith(suffix):
                     rest = rest[: -len(suffix)]
                     break
-            return f"{_AZTEC_GITHUB_BASE}/{repo_prefix}{rest}"
+            return f"{_AZTEC_GITHUB}/{tag}/{repo_prefix}{rest}"
 
     return source_path
 
@@ -656,6 +702,7 @@ def _fail_open_sources(
 
 def _build_source_frame(
     source_log_docs: List[Dict[str, Any]],
+    active_version: str = _DEFAULT_DOC_VERSION,
 ) -> Optional[str]:
     """Render the truncated/rewritten/deduped/capped source list as a
     ready-to-yield SSE frame, or ``None`` when no sources survive
@@ -665,6 +712,12 @@ def _build_source_frame(
     ``complete_stream`` — extracted so the citation filter can apply
     the rewrite *after* index-based filtering against the raw retrieval
     list (avoiding the index-vs-truncated mismatch flagged by Codex).
+
+    ``active_version`` is the doc version this answer is scoped to (chosen
+    pre-retrieval by the version selector); it's passed to
+    ``_aztec_source_url`` so the version-LESS corpora (code / TS-API /
+    noir-stdlib) link the right release tag / snapshot folder / noir pin.
+    Source-id narrowing guarantees every cited chunk is that version.
     """
     if not source_log_docs:
         return None
@@ -680,7 +733,7 @@ def _build_source_frame(
             )
         raw_path = truncated_source.get("source")
         if raw_path:
-            public_url = _aztec_source_url(raw_path)
+            public_url = _aztec_source_url(raw_path, active_version)
             if public_url in seen_urls:
                 continue
             seen_urls.add(public_url)
@@ -966,6 +1019,7 @@ class BaseAnswerResource:
         is_shared_usage: bool = False,
         shared_token: Optional[str] = None,
         model_id: Optional[str] = None,
+        active_version: str = _DEFAULT_DOC_VERSION,
         _continuation: Optional[Dict] = None,
     ) -> Generator[str, None, None]:
         """
@@ -1451,7 +1505,7 @@ class BaseAnswerResource:
             # structured_answer / id / usage / end frame so v1
             # translator's [DONE] sentinel and the widget/Discord
             # ordering assumptions still hold.
-            deferred_source_frame = _build_source_frame(source_log_docs)
+            deferred_source_frame = _build_source_frame(source_log_docs, active_version)
             if deferred_source_frame:
                 yield f"data: {deferred_source_frame}\n\n"
 

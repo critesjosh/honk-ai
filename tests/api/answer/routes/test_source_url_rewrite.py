@@ -278,7 +278,17 @@ class TestNoirRepoMappings:
     def test_noir_stdlib_still_routes_to_github(self):
         # apiref ingest emits `hash/mod.nr.md` → strip to `hash/mod.nr`.
         # Stdlib stays on GitHub because those are source files, not docs.
+        # Default active_version is v5 → the v5 noir pin.
         url = _aztec_source_url("noir-stdlib/hash/mod.nr.md")
+        assert url == (
+            "https://github.com/noir-lang/noir/blob/c57152f91260ecdb9faad4efc20abb14b6d2ece7/"
+            "noir_stdlib/src/hash/mod.nr"
+        )
+
+    def test_noir_stdlib_uses_mainnet_pin_for_v4_3_1(self):
+        # noir-stdlib is version-LESS in the path, so it follows active_version:
+        # a mainnet (v4.3.1) answer must link the v4.3.1 noir pin, NOT the v5 one.
+        url = _aztec_source_url("noir-stdlib/hash/mod.nr.md", active_version="v4.3.1")
         assert url == (
             "https://github.com/noir-lang/noir/blob/1d9727a6e0a9df75a71bb9c87daacbe30659ba09/"
             "noir_stdlib/src/hash/mod.nr"
@@ -286,7 +296,7 @@ class TestNoirRepoMappings:
 
 
 class TestCodeRepoMappings:
-    """Body-bearing code corpora → AztecProtocol/aztec-packages at v4.3.0."""
+    """Body-bearing code corpora → AztecProtocol/aztec-packages at the release tag."""
 
     @pytest.mark.parametrize(
         "corpus_path,expected_repo_path",
@@ -315,15 +325,46 @@ class TestCodeRepoMappings:
                 "cli/index.ts.txt",
                 "yarn-project/cli/src/index.ts",
             ),
-            (
-                "typescript-api/aztec.js.md",
-                "docs/static/typescript-api/testnet/aztec.js",
-            ),
         ],
     )
     def test_strips_extension_hack(self, corpus_path, expected_repo_path):
+        # Default active_version is v5 → the v5.0.0-rc.1 release tag.
         assert _aztec_source_url(corpus_path) == (
-            f"https://github.com/AztecProtocol/aztec-packages/blob/v4.3.0/{expected_repo_path}"
+            f"https://github.com/AztecProtocol/aztec-packages/blob/v5.0.0-rc.1/{expected_repo_path}"
+        )
+
+    def test_code_corpus_uses_mainnet_tag_for_v4_3_1(self):
+        # Code corpora are version-LESS in the path, so they follow
+        # active_version: a mainnet (v4.3.1) answer links the v4.3.1 tag.
+        assert _aztec_source_url(
+            "aztec.js/account/account.ts.txt", active_version="v4.3.1"
+        ) == (
+            "https://github.com/AztecProtocol/aztec-packages/blob/v4.3.1/"
+            "yarn-project/aztec.js/src/account/account.ts"
+        )
+
+    def test_typescript_api_routes_to_next_snapshot(self):
+        # The TS API reference's v5 content lives ONLY on the ``next`` snapshot
+        # under ``testnet/`` (the release tag's copy is stale v4.3.0), so it
+        # links to the pinned next snapshot, NOT the release tag. It's a
+        # passthrough corpus, so the real ``.md`` / ``.txt`` extension is KEPT
+        # (the GitHub blob needs the real filename). Default active_version v5.
+        base = (
+            "https://github.com/AztecProtocol/aztec-packages/blob/"
+            "d69ab88adc2bef952696ff4b6ab8b109ae4b75ac/docs/static/typescript-api/testnet/"
+        )
+        assert _aztec_source_url("typescript-api/aztec.js.md") == base + "aztec.js.md"
+        assert _aztec_source_url("typescript-api/llm-summary.txt") == base + "llm-summary.txt"
+
+    def test_typescript_api_uses_mainnet_folder_for_v4_3_1(self):
+        # Same pinned next snapshot SHA, but the network folder follows
+        # active_version: mainnet (v4.3.1) → ``mainnet/`` (testnet/v5 → ``testnet/``).
+        assert _aztec_source_url(
+            "typescript-api/aztec.js.md", active_version="v4.3.1"
+        ) == (
+            "https://github.com/AztecProtocol/aztec-packages/blob/"
+            "d69ab88adc2bef952696ff4b6ab8b109ae4b75ac/docs/static/typescript-api/mainnet/"
+            "aztec.js.md"
         )
 
 
@@ -354,3 +395,58 @@ class TestEdgeCases:
         url = _aztec_source_url("version-v4.3.0/operators/setup/quickstart.md")
         assert "github.com" not in url
         assert url.startswith("https://docs.aztec.network/operate/operators/")
+
+    def test_v4_3_1_docs_route_to_bare_mainnet(self):
+        # v4.3.1 is the mainnet/current Docusaurus version → BARE site paths
+        # (no version segment), matching the live docs.aztec.network scheme.
+        assert _aztec_source_url("version-v4.3.1/overview.md") == (
+            "https://docs.aztec.network/developers/overview"
+        )
+        assert _aztec_source_url("version-v4.3.1/docs/aztec-js/index.md") == (
+            "https://docs.aztec.network/developers/docs/aztec-js"
+        )
+        assert _aztec_source_url("version-v4.3.1/operators/setup/quickstart.md") == (
+            "https://docs.aztec.network/operate/operators/setup/quickstart"
+        )
+
+    def test_v5_docs_route_to_testnet_infix(self):
+        # v5.0.0-rc.1 is the testnet version → the docs URL carries the
+        # ``/testnet/`` path segment (derived from the source path's version
+        # prefix, NOT from the active_version arg). Paths with no slug override.
+        assert _aztec_source_url("version-v5.0.0-rc.1/overview.md") == (
+            "https://docs.aztec.network/developers/testnet/overview"
+        )
+        assert _aztec_source_url("version-v5.0.0-rc.1/docs/aztec-js/index.md") == (
+            "https://docs.aztec.network/developers/testnet/docs/aztec-js"
+        )
+        assert _aztec_source_url("version-v5.0.0-rc.1/operators/setup/quickstart.md") == (
+            "https://docs.aztec.network/operate/testnet/operators/setup/quickstart"
+        )
+
+    def test_same_doc_routes_per_version(self):
+        # The version is IN the source path, so the SAME doc tail routes to a
+        # different site URL per version: mainnet (v4.3.1) bare vs testnet (v5)
+        # under /testnet/. Guards against a regression back to version-agnostic
+        # stripping (where both produced the same URL).
+        for tail in ("docs/aztec-js/index.md", "operators/setup/quickstart.md", "overview.md"):
+            v4 = _aztec_source_url(f"version-v4.3.1/{tail}")
+            v5 = _aztec_source_url(f"version-v5.0.0-rc.1/{tail}")
+            assert "/testnet/" not in v4
+            assert "/testnet/" in v5
+            assert v4 != v5
+
+    def test_v5_slug_override_falls_back_to_filename(self):
+        # The slug-override map (aztec_doc_slugs.py) is still keyed on
+        # version-v4.3.0 paths, so a v5 path falls back to the FILENAME slug.
+        # KNOWN GAP (cutover blocker, task #5): the live canonical page uses the
+        # ``id:`` override ``registering_sequencer`` (underscore), so this
+        # filename fallback (``registering-sequencer``, hyphen) 404s until the
+        # slug map is regenerated for BOTH v4.3.1 + v5. The version segment
+        # (/operate/testnet/) is correct — it derives from the path prefix.
+        v5 = _aztec_source_url(
+            "version-v5.0.0-rc.1/operators/setup/registering-sequencer.md"
+        )
+        assert v5 == (
+            "https://docs.aztec.network/operate/testnet/operators/setup/"
+            "registering-sequencer"  # filename slug; regenerated map → underscore (#5)
+        )

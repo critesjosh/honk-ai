@@ -126,6 +126,7 @@ class AnswerResource(Resource, BaseAnswerResource):
                     is_shared_usage=processor.is_shared_usage,
                     shared_token=processor.shared_token,
                     model_id=processor.model_id,
+                    active_version=processor.active_version,
                 )
 
             stream_result = self.process_response_stream(stream)

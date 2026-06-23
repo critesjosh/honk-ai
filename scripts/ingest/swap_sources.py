@@ -34,13 +34,29 @@ import sys
 from pathlib import Path
 from typing import List, Optional
 
-# corpora module imported indirectly via the canonical-order list.
-# We don't need CORPORA itself — the slug ordering is captured below.
+from scripts.ingest.corpora import CORPORA, _vslug
+
+# Version suffixes used by the per-version corpus slugs (e.g. ``_v5_0_0_rc_1``),
+# derived from the active versions so this stays in sync with corpora.py.
+_VERSION_SUFFIXES = tuple(
+    "_" + _vslug(v) for v in sorted({c.version for c in CORPORA if c.version})
+)
 
 
-# Canonical retrieval order (developer-question-weighted). Mirror of
-# the AZTEC_SOURCE_IDS comment block in .env.
-_CANONICAL_ORDER: tuple = (
+def _base_kind(slug: str) -> str:
+    """Strip the version suffix from a per-version slug
+    (``aztec_nr_apiref_v5_0_0_rc_1`` -> ``aztec_nr_apiref``); shared/unversioned
+    slugs (``awesome_aztec``) are returned unchanged."""
+    for suf in _VERSION_SUFFIXES:
+        if slug.endswith(suf):
+            return slug[: -len(suf)]
+    return slug
+
+
+# Developer-question-weighted retrieval order, by corpus KIND (version-agnostic).
+# Mirror of the AZTEC_SOURCE_IDS comment block in .env. Each kind expands to its
+# per-version variants in ``_CANONICAL_ORDER`` below; shared corpora appear once.
+_BASE_KIND_ORDER: tuple = (
     "aztec_developer_docs",
     "aztec_nr_apiref",
     "noir_language_docs",
@@ -50,21 +66,29 @@ _CANONICAL_ORDER: tuple = (
     "noir_stdlib_apiref",
     "aztec_cli",
     "aztec_network_docs",
-    # Single-file companion to aztec_network_docs — the unversioned
-    # networks page (mainnet vs. testnet L1 contract address table)
-    # that the versioned operator docs explicitly defer to.
+    # Single-file companion to aztec_network_docs — the unversioned networks
+    # page (mainnet vs. testnet L1 contract address table).
     "aztec_site_networks",
-    # Unversioned Participate docs (curated token/ + governance/) — the
-    # governance/staking educational content that the versioned operator
-    # docs are thin on. Grouped with the operator-facing cluster.
+    # Unversioned Participate docs (curated token/ + governance/).
     "aztec_participate_docs",
     "aztec_e2e_tests",
     "aztec_protocol_circuits",
     "aztec_l1_contracts",
-    # Community resource list (awesome-aztec README). Supplementary, so
-    # ordered last. Moving community repo — re-pinned to current main on
-    # each re-ingest (build with --awesome-aztec <checkout>).
+    # Community resource list (awesome-aztec README). Supplementary, ordered last.
     "awesome_aztec",
+)
+
+
+# Concrete canonical order over ALL production corpora (both versions), DERIVED
+# from CORPORA so a newly-added corpus or version can't silently drift out of
+# the swap order (the old hand-maintained list let that happen). Within a kind,
+# the two version variants are ordered by version string (deterministic).
+_CANONICAL_ORDER: tuple = tuple(
+    c.slug
+    for c in sorted(
+        (c for c in CORPORA if c.in_production_agent),
+        key=lambda c: (_BASE_KIND_ORDER.index(_base_kind(c.slug)), c.version),
+    )
 )
 
 
@@ -139,7 +163,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             "in the agent's extra_source_ids with the NEW apiref UUIDs:"
         )
         for u in uploads:
-            if u["slug"] in ("aztec_nr_apiref", "noir_stdlib_apiref"):
+            if _base_kind(u["slug"]) in ("aztec_nr_apiref", "noir_stdlib_apiref"):
                 sql_lines.append(f"--   {u['slug']:25s} → {u['source_id']}")
         sql_lines.append(
             "-- Inspect the current array first:"
