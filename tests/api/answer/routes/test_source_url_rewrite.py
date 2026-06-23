@@ -99,51 +99,53 @@ class TestDocusaurusIdOverrides:
     """Files whose Docusaurus ``id:`` frontmatter differs from the
     filename get a different URL slug — keeping the filename slug 404s.
 
-    Spot-checks a handful of the 14 known overrides recorded in
-    ``application.api.answer.routes.aztec_doc_slugs``; the full set is
-    covered by the data file itself.
+    The slug map (``application.api.answer.routes.aztec_doc_slugs``) is a UNION
+    over both KB versions (28 entries = 14 per version). The override applies
+    regardless of version; the version segment (bare for v4.3.1 mainnet,
+    ``/testnet/`` for v5) is layered on by the path-derived routing. These
+    spot-check a handful per version; the full set is covered by the data file.
     """
 
-    def test_registering_sequencer_uses_id_slug(self):
-        # File: docs/network_versioned_docs/version-v4.3.0/operators/setup/registering-sequencer.md
-        # Frontmatter: id: registering_sequencer
-        # Live URL: .../operate/operators/setup/registering_sequencer (200)
-        # Filename-slug URL (.../registering-sequencer) returns 404.
-        assert _aztec_source_url(
-            "version-v4.3.0/operators/setup/registering-sequencer.md"
-        ) == (
-            "https://docs.aztec.network/operate/operators/setup/registering_sequencer"
+    # (corpus tail, expected slug) — same id: override exists for both versions.
+    _OVERRIDE_CASES = [
+        ("operators/setup/registering-sequencer.md", "operators/setup/registering_sequencer"),
+        ("operators/setup/staking-provider.md", "operators/setup/become_a_staking_provider"),
+        ("operators/setup/sequencer-setup.md", "operators/setup/sequencer_management"),
+        (
+            "operators/sequencer-management/governance-participation.md",
+            "operators/sequencer-management/creating_and_voting_on_proposals",
+        ),
+    ]
+
+    @pytest.mark.parametrize("tail,expected", _OVERRIDE_CASES)
+    def test_override_applied_v4_3_1_mainnet_bare(self, tail, expected):
+        # v4.3.1 (mainnet) → BARE /operate path + the id: slug override.
+        assert _aztec_source_url(f"version-v4.3.1/{tail}") == (
+            f"https://docs.aztec.network/operate/{expected}"
         )
 
-    def test_staking_provider_uses_id_slug(self):
-        # id: become_a_staking_provider (drastically different from filename)
-        assert _aztec_source_url(
-            "version-v4.3.0/operators/setup/staking-provider.md"
-        ) == (
-            "https://docs.aztec.network/operate/operators/setup/become_a_staking_provider"
+    @pytest.mark.parametrize("tail,expected", _OVERRIDE_CASES)
+    def test_override_applied_v5_testnet_infix(self, tail, expected):
+        # v5.0.0-rc.1 (testnet) → /operate/testnet path + the SAME slug override.
+        assert _aztec_source_url(f"version-v5.0.0-rc.1/{tail}") == (
+            f"https://docs.aztec.network/operate/testnet/{expected}"
         )
 
-    def test_sequencer_setup_uses_id_slug(self):
-        # id: sequencer_management (file lives under setup/, but id moves it to /setup/sequencer_management)
-        assert _aztec_source_url(
-            "version-v4.3.0/operators/setup/sequencer-setup.md"
-        ) == (
-            "https://docs.aztec.network/operate/operators/setup/sequencer_management"
-        )
-
-    def test_governance_participation_uses_id_slug(self):
-        # id: creating_and_voting_on_proposals (under sequencer-management/)
-        assert _aztec_source_url(
-            "version-v4.3.0/operators/sequencer-management/governance-participation.md"
-        ) == (
-            "https://docs.aztec.network/operate/operators/sequencer-management/creating_and_voting_on_proposals"
+    @pytest.mark.parametrize("tail,expected", _OVERRIDE_CASES)
+    def test_override_retained_for_legacy_v4_3_0(self, tail, expected):
+        # Pre-cutover safety net: the still-served v4.3.0 corpus keeps its slug
+        # overrides (retained in the generator), routed BARE like mainnet via
+        # the unknown-version→bare fallback. Without this, deploying the
+        # two-version image against the current v4.3.0 corpus would 404 these.
+        assert _aztec_source_url(f"version-v4.3.0/{tail}") == (
+            f"https://docs.aztec.network/operate/{expected}"
         )
 
     def test_unmapped_operator_doc_falls_back_to_filename(self):
         # claiming-rewards.md has no `id:` frontmatter — must not be
         # remapped. Confirmed 200 on the live site at the filename slug.
         assert _aztec_source_url(
-            "version-v4.3.0/operators/sequencer-management/claiming-rewards.md"
+            "version-v4.3.1/operators/sequencer-management/claiming-rewards.md"
         ) == (
             "https://docs.aztec.network/operate/operators/sequencer-management/claiming-rewards"
         )
@@ -153,9 +155,9 @@ class TestDocusaurusIdOverrides:
         # but Docusaurus serves index files at the parent path regardless
         # of the declared id. We must NOT inject the id into the URL here.
         assert _aztec_source_url(
-            "version-v4.3.0/operators/keystore/index.md"
+            "version-v5.0.0-rc.1/operators/keystore/index.md"
         ) == (
-            "https://docs.aztec.network/operate/operators/keystore"
+            "https://docs.aztec.network/operate/testnet/operators/keystore"
         )
 
     def test_apply_slug_override_defensive_index_guard(self):
@@ -435,18 +437,13 @@ class TestEdgeCases:
             assert "/testnet/" in v5
             assert v4 != v5
 
-    def test_v5_slug_override_falls_back_to_filename(self):
-        # The slug-override map (aztec_doc_slugs.py) is still keyed on
-        # version-v4.3.0 paths, so a v5 path falls back to the FILENAME slug.
-        # KNOWN GAP (cutover blocker, task #5): the live canonical page uses the
-        # ``id:`` override ``registering_sequencer`` (underscore), so this
-        # filename fallback (``registering-sequencer``, hyphen) 404s until the
-        # slug map is regenerated for BOTH v4.3.1 + v5. The version segment
-        # (/operate/testnet/) is correct — it derives from the path prefix.
-        v5 = _aztec_source_url(
+    def test_v5_slug_override_now_applied(self):
+        # Regression guard for the closed gap: the slug map is now a UNION over
+        # both versions, so a v5 path WITH an ``id:`` override uses the override
+        # (underscore), not the filename — alongside the /testnet/ version
+        # segment. (Was a documented fallback gap before the map regen.)
+        assert _aztec_source_url(
             "version-v5.0.0-rc.1/operators/setup/registering-sequencer.md"
-        )
-        assert v5 == (
-            "https://docs.aztec.network/operate/testnet/operators/setup/"
-            "registering-sequencer"  # filename slug; regenerated map → underscore (#5)
+        ) == (
+            "https://docs.aztec.network/operate/testnet/operators/setup/registering_sequencer"
         )

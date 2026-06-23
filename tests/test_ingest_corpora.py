@@ -85,6 +85,57 @@ def test_every_production_corpus_in_swap_order():
     assert not missing, f"production corpora missing from swap order: {missing}"
 
 
+def test_metadata_stamp_emits_version_and_network_for_versioned_source():
+    # The producer half of the two-version KB: swap_sources stamps
+    # sources.metadata.{version,network} so the retrieval resolver can narrow.
+    from scripts.ingest.swap_sources import _metadata_stamp_lines
+
+    lines = _metadata_stamp_lines(
+        [{"slug": "aztec_developer_docs_v4_3_1", "source_id": "11111111-1111-1111-1111-111111111111"}]
+    )
+    body = "\n".join(lines)
+    assert "11111111-1111-1111-1111-111111111111" in body
+    assert '"version": "v4.3.1"' in body
+    assert '"network": "mainnet"' in body
+    assert "UPDATE sources SET metadata" in body
+
+
+def test_metadata_stamp_shared_has_network_no_version():
+    # Shared corpora must be retrievable for EITHER active version, so they get
+    # network=shared and NO version key (the resolver keeps version-less sources).
+    from scripts.ingest.swap_sources import _metadata_stamp_lines
+
+    body = "\n".join(
+        _metadata_stamp_lines(
+            [{"slug": "awesome_aztec", "source_id": "22222222-2222-2222-2222-222222222222"}]
+        )
+    )
+    assert '"network": "shared"' in body
+    assert '"version":' not in body  # no version KEY in the stamped JSON
+
+
+def test_metadata_stamp_skips_unknown_slug_and_missing_id():
+    from scripts.ingest.swap_sources import _metadata_stamp_lines
+
+    # Unknown slug → no metadata to stamp; missing source_id → can't target a row.
+    assert _metadata_stamp_lines([{"slug": "not_a_corpus", "source_id": "x"}]) == []
+    assert _metadata_stamp_lines([{"slug": "awesome_aztec", "source_id": None}]) == []
+    assert _metadata_stamp_lines([]) == []
+
+
+def test_metadata_stamp_covers_every_production_corpus():
+    # Every production corpus must be stampable (have a version/network entry),
+    # else its sources stay unversioned and narrowing silently drops/keeps them
+    # wrong. Guards against a corpus added without version/network fields.
+    from scripts.ingest.swap_sources import _SLUG_META
+
+    for c in CORPORA:
+        if c.in_production_agent:
+            assert c.slug in _SLUG_META
+            version, network = _SLUG_META[c.slug]
+            assert network, f"{c.slug} has empty network"
+
+
 def test_awesome_aztec_corpus_in_canonical_list():
     slugs = [c.slug for c in CORPORA]
     assert "awesome_aztec" in slugs

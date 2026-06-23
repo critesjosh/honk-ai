@@ -56,11 +56,26 @@ _MARKER_LEAK_RE = re.compile(
 
 GOLDEN_QUERIES_PATH = Path(__file__).parent / "golden_queries.json"
 
+# Rendered docs are ingested under a Docusaurus ``version-vX.Y.Z/`` prefix.
+# Collapse any such prefix to a version-agnostic ``version/`` sentinel so the
+# eval works across corpus version bumps (v4.3.0, v5.0.0-rc.1, …) — mirrors the
+# version-agnostic routing in ``api/answer/routes/base.py:_aztec_source_url``.
+# Digit-guarded (``version-v\d…``) to match the backend's _VERSIONED_DOCS_RE so
+# a non-version prefix like ``version-vault/`` can't be mis-normalized.
+_VERSION_PREFIX_RE = re.compile(r"^version-v\d[^/]*/")
+
+
+def normalize_version(path: str) -> str:
+    if not isinstance(path, str):
+        return path
+    return _VERSION_PREFIX_RE.sub("version/", path)
+
+
 SOURCE_PREFIXES = (
     "noir-docs/", "noir-stdlib/", "typescript-api/", "aztec-nr/",
     "aztec.js/", "cli/", "cli-wallet/", "end-to-end/", "l1-contracts/",
-    "noir-contracts/", "noir-protocol-circuits/", "version-v4.3.0/docs/",
-    "version-v4.3.0/", "aztec-participate/", "awesome-aztec/",
+    "noir-contracts/", "noir-protocol-circuits/", "version/docs/",
+    "version/", "aztec-participate/", "awesome-aztec/",
 )
 
 # Path prefixes considered "apiref-shaped". A retrieval/citation is an
@@ -73,6 +88,7 @@ APIREF_PREFIXES = ("aztec-nr/", "noir-stdlib/")
 def bucket(path: str) -> str:
     if not isinstance(path, str):
         return "(none)"
+    path = normalize_version(path)
     for pfx in SOURCE_PREFIXES:
         if path.startswith(pfx):
             return pfx.rstrip("/")
@@ -149,11 +165,13 @@ def run_retriever_eval(settings_module: str = "application.core.settings"):
         tally = Counter(bucket(d.get("source", "")) for d in docs)
         distinct_sources = len(tally)
 
-        # Check expected prefixes
+        # Check expected prefixes. Normalize the expected prefix's version
+        # folder (tally keys are already normalized via bucket()), so a v4.3.0
+        # golden prefix matches a v5.0.0-rc.1 retrieved path and vice-versa.
         missing = [
             pfx.rstrip("/")
             for pfx in expected
-            if not any(k.startswith(pfx.rstrip("/")) for k in tally)
+            if not any(k.startswith(normalize_version(pfx).rstrip("/")) for k in tally)
         ]
         source_pass = len(missing) == 0
 
@@ -165,7 +183,10 @@ def run_retriever_eval(settings_module: str = "application.core.settings"):
         top3_apiref_hit = False
         first_source_path = _strip_txt(docs[0].get("source", "")) if docs else ""
         first_is_concept = bool(
-            expected_concept_prefix and first_source_path.startswith(expected_concept_prefix)
+            expected_concept_prefix
+            and normalize_version(first_source_path).startswith(
+                normalize_version(expected_concept_prefix)
+            )
         )
 
         if bucket_name == "identifier":

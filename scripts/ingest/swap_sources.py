@@ -4,6 +4,12 @@ This script does NOT execute SQL by default. It prints the UPDATE
 statements you need to run via ``psql`` against the production
 Postgres, plus the ``AZTEC_SOURCE_IDS`` block to paste into ``.env``.
 
+For the two-version KB it ALSO emits ``UPDATE sources SET metadata`` lines
+stamping ``{version, network}`` on each uploaded source (from ``corpora.py``).
+That stamp is the producer half the retrieval version-scoping resolver
+(``application/retriever/version_scope.py``) reads — without it, every source
+looks unversioned and the per-request narrowing is a permanent no-op.
+
 Why dry-run by default
 ----------------------
 Production agent edits via the UI are blocked
@@ -97,6 +103,51 @@ def _ordered(uploads: dict) -> List[dict]:
     return [by_slug[s] for s in _CANONICAL_ORDER if s in by_slug]
 
 
+# slug → (version, network) from the single source of truth. Used to stamp
+# ``sources.metadata`` so the retrieval version-scoping resolver
+# (``application/retriever/version_scope.py``) can narrow per request.
+_SLUG_META = {c.slug: (c.version, c.network) for c in CORPORA}
+
+
+def _metadata_stamp_lines(uploads_to_stamp: List[dict]) -> List[str]:
+    """SQL to stamp ``sources.metadata.{version,network}`` for uploaded sources.
+
+    THIS is the producer half of the two-version KB: the retrieval narrowing
+    reads ``metadata.version`` / ``metadata.network``, so without this stamp
+    every source looks unversioned and narrowing is a permanent no-op (an
+    unstamped source is always kept). ``jsonb ||`` shallow-merges, so any other
+    metadata keys are preserved and a re-run overwrites a stale stamp.
+
+    Shared corpora get ``{"network":"shared"}`` and NO version key (so they're
+    retrieved for either active version); versioned corpora get both.
+    """
+    lines = [
+        "-- Stamp sources.metadata.{version,network} for the version-scoping",
+        "-- resolver (application/retriever/version_scope.py). WITHOUT this the",
+        "-- narrowing is a no-op and both versions are returned for every query.",
+    ]
+    stamped = 0
+    for u in uploads_to_stamp:
+        sid = u.get("source_id")
+        meta = _SLUG_META.get(u["slug"])
+        if not sid or meta is None:
+            continue
+        version, network = meta
+        obj = {"network": network}
+        if version:
+            obj["version"] = version
+        payload = json.dumps(obj)
+        lines.append(
+            f"UPDATE sources SET metadata = COALESCE(metadata, '{{}}'::jsonb) "
+            f"|| '{payload}'::jsonb WHERE id = '{sid}'::uuid;  -- {u['slug']}"
+        )
+        stamped += 1
+    if not stamped:
+        return []
+    lines.append("")
+    return lines
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(
         description="Generate SQL to swap agent source lists after re-ingest."
@@ -110,9 +161,10 @@ def main(argv: Optional[List[str]] = None) -> int:
                              "preserves the rest of the agent's source list")
     parser.add_argument("--allow-partial", action="store_true",
                         help="Allow default-mode SQL generation even when the "
-                             "upload manifest is missing some of the 14 canonical "
-                             "corpora. WITHOUT this flag, default mode refuses to "
-                             "emit SQL that would truncate the agent's source list.")
+                             "upload manifest is missing some canonical corpora "
+                             f"(currently {len(_CANONICAL_ORDER)}). WITHOUT this "
+                             "flag, default mode refuses to emit SQL that would "
+                             "truncate the agent's source list.")
     parser.add_argument("--prompt-id", default=None,
                         help="If set, also UPDATE prompt_id on the agent")
     parser.add_argument("--out", default=None,
@@ -127,9 +179,9 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     # Default-mode safety: refuse to emit a partial UPDATE that would
     # silently truncate the agent's source list. The full UPDATE
-    # overwrites extra_source_ids, so a manifest missing 11 of 12
-    # corpora would leave the agent with only the uploaded one. The
-    # operator must opt in via --allow-partial OR --apiref-only.
+    # overwrites extra_source_ids, so a manifest missing most of the
+    # canonical corpora would leave the agent with only the uploaded one.
+    # The operator must opt in via --allow-partial OR --apiref-only.
     if not args.apiref_only and not args.allow_partial:
         present = {u["slug"] for u in ordered}
         missing = [s for s in _CANONICAL_ORDER if s not in present]
@@ -141,7 +193,8 @@ def main(argv: Optional[List[str]] = None) -> int:
                 + "list to only the uploaded corpora. Use one of:\n"
                 + "  --apiref-only      (rotate just the apiref UUIDs)\n"
                 + "  --allow-partial    (acknowledge the partial set)\n"
-                + "  or upload all 15 production corpora before generating SQL.",
+                + f"  or upload all {len(_CANONICAL_ORDER)} production corpora "
+                + "before generating SQL.",
                 file=sys.stderr,
             )
             return 2
@@ -162,9 +215,12 @@ def main(argv: Optional[List[str]] = None) -> int:
             "-- TODO(operator): replace the OLD aztec-nr / noir-stdlib UUIDs "
             "in the agent's extra_source_ids with the NEW apiref UUIDs:"
         )
-        for u in uploads:
-            if _base_kind(u["slug"]) in ("aztec_nr_apiref", "noir_stdlib_apiref"):
-                sql_lines.append(f"--   {u['slug']:25s} → {u['source_id']}")
+        apiref_uploads = [
+            u for u in uploads
+            if _base_kind(u["slug"]) in ("aztec_nr_apiref", "noir_stdlib_apiref")
+        ]
+        for u in apiref_uploads:
+            sql_lines.append(f"--   {u['slug']:25s} → {u['source_id']}")
         sql_lines.append(
             "-- Inspect the current array first:"
         )
@@ -172,6 +228,9 @@ def main(argv: Optional[List[str]] = None) -> int:
             f"-- SELECT source_id, extra_source_ids FROM agents "
             f"WHERE id = '{args.agent_id}';"
         )
+        sql_lines.append("")
+        # The rotated apiref sources still need their version/network stamp.
+        sql_lines += _metadata_stamp_lines(apiref_uploads)
     else:
         sql_lines += [
             "UPDATE agents",
@@ -186,6 +245,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                 f" WHERE id = '{args.agent_id}'::uuid;",
                 "",
             ]
+        sql_lines += _metadata_stamp_lines(ordered)
 
     sql_lines += ["COMMIT;", ""]
 

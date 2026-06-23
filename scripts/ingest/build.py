@@ -1,33 +1,40 @@
 """Build the Aztec corpora as zip files ready for upload.
 
-15 corpora are defined, all shipped to the production agent — so the
-default 'build all' run needs every source root (including
---awesome-aztec). Any held-out corpus (in_production_agent=False) whose
-root isn't supplied is skipped with a warning (see _skip_for_missing_root);
-there are none today.
+Two-version KB: ``corpora.py`` defines 27 corpora — 12 for v4.3.1 (mainnet),
+12 for v5.0.0-rc.1 (testnet), and 3 version-agnostic shared. Select a bundle
+with ``--version`` (``v4.3.1`` / ``v5.0.0-rc.1`` / ``shared``); no selector
+builds all 27. Build each version's bundle from THAT version's source roots
+(code/noir at its tag/pin), then ``--version shared`` once. Any held-out corpus
+(in_production_agent=False) whose root isn't supplied is skipped with a warning
+(see _skip_for_missing_root); there are none today.
 
 Usage::
 
+    # one version at a time, into the SAME --out (manifest merges by slug):
     python -m scripts.ingest.build \
-        --aztec-pkg      /tmp/aztec-v4.3.0 \
-        --aztec-pkg-docs /tmp/aztec-v4.3.0-docs \
-        --noir           /tmp/noir-v4.3.0 \
-        --out            /tmp/aztec-corpora-build \
-        [--corpus aztec_nr_apiref]   # optional: limit to one corpus
+        --version        v5.0.0-rc.1 \
+        --aztec-pkg      /tmp/aztec-v5.0.0-rc.1 \
+        --aztec-pkg-docs /tmp/aztec-next-docs \
+        --noir           /tmp/noir-v5.0.0-rc.1 \
+        --out            /tmp/aztec-corpora-build
+    # ... repeat for v4.3.1, then --version shared (--awesome-aztec required).
+    # Or build a single corpus by its version-suffixed slug:
+        [--corpus aztec_nr_apiref_v5_0_0_rc_1]
 
 Four source roots are accepted ("Option B" — the four-root layout
 shipped by PR #150) because the corpora are pinned at different
 upstream commits:
 
   * ``--aztec-pkg``      → aztec-packages at the release tag
-                           (``v4.3.0``). Used for code corpora + the
-                           auto-generated TypeScript API reference.
+                           (``v4.3.1`` / ``v5.0.0-rc.1``). Used for the
+                           code corpora.
   * ``--aztec-pkg-docs`` → aztec-packages at a ``next``-branch snapshot
-                           commit that contains the new
-                           ``version-vX.Y.Z/`` Docusaurus folder. The
-                           docs version snapshot is taken from a
-                           moving branch so the literal release tag
-                           does NOT have it.
+                           commit that contains the ``version-vX.Y.Z/``
+                           Docusaurus folders (ONE snapshot carries both
+                           versions). Used for the rendered-docs corpora
+                           AND the auto-generated TypeScript-API reference
+                           (``docs/static/typescript-api/<network>/`` —
+                           the release tag's copy is stale).
   * ``--noir``           → noir-lang/noir at the commit pinned by
                            aztec-packages' ``noir/noir-repo`` submodule
                            at the release tag.
@@ -37,15 +44,17 @@ upstream commits:
                            ``awesome_aztec`` corpus.
 
 A flag is required only if one of the selected corpora actually needs
-that root — single-corpus builds (``--corpus aztec_nr_apiref``) can
+that root — single-corpus builds (``--corpus <slug>``) can
 omit unrelated flags.
 
 For each corpus this writes:
   ``<out>/zips/<slug>.zip``         the upload-ready zip
   ``<out>/manifests/<slug>.json``   per-corpus build manifest
-  ``<out>/build_manifest.json``     overall build summary
+  ``<out>/build_manifest.json``     overall build summary (MERGED by slug
+                                    across runs, so per-version builds into
+                                    one --out accumulate for a single upload)
 
-Re-run is idempotent: existing outputs are overwritten.
+Re-run is idempotent: a re-built slug overwrites its zip + manifest entry.
 """
 
 from __future__ import annotations
@@ -520,7 +529,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     out_dir = Path(args.out).resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    overall = {"out": str(out_dir), "corpora": []}
+    built: List[dict] = []
     for c in selected:
         if _skip_for_missing_root(c, roots, explicitly_selected):
             flag = _SOURCE_ROOT_TO_FLAG.get(c.source_root, "<unknown>")
@@ -530,11 +539,37 @@ def main(argv: Optional[List[str]] = None) -> int:
                 c.slug, c.source_root, flag, c.slug,
             )
             continue
-        overall["corpora"].append(build_corpus(c, out_dir, roots))
+        built.append(build_corpus(c, out_dir, roots))
 
+    # MERGE into build_manifest.json by slug rather than overwrite, so the
+    # two-version workflow (build --version v4.3.1, then v5.0.0-rc.1, then
+    # shared into the SAME --out) accumulates all bundles. upload.py reads this
+    # manifest, so an overwrite would silently upload only the last run's
+    # corpora. A re-built slug replaces its prior entry (latest zip wins).
     overall_path = out_dir / "build_manifest.json"
+    existing: dict = {}
+    if overall_path.is_file():
+        # A corrupt/old prior manifest must not crash AFTER the zips are built.
+        # Warn and start the manifest fresh from this run's corpora instead.
+        try:
+            prior = json.loads(overall_path.read_text())
+            existing = {
+                e["corpus"]["slug"]: e
+                for e in prior.get("corpora", [])
+                if isinstance(e, dict) and isinstance(e.get("corpus"), dict)
+                and e["corpus"].get("slug")
+            }
+        except (json.JSONDecodeError, OSError) as exc:
+            logger.warning(
+                "ignoring unreadable prior build_manifest.json (%s); "
+                "rewriting it from this run's corpora only", exc,
+            )
+    for e in built:
+        existing[e["corpus"]["slug"]] = e
+    overall = {"out": str(out_dir), "corpora": list(existing.values())}
     overall_path.write_text(json.dumps(overall, indent=2), encoding="utf-8")
-    print(f"\nbuilt {len(overall['corpora'])} corpora → {out_dir}")
+    print(f"\nbuilt {len(built)} corpora this run; "
+          f"{len(overall['corpora'])} total in manifest → {out_dir}")
     print(f"build manifest: {overall_path}")
     return 0
 

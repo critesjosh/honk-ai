@@ -1,11 +1,20 @@
 # Aztec corpus ingest toolkit
 
 This directory holds the tooling for (re-)ingesting the corpora that
-make up the Aztec DocsGPT knowledge base (15 corpora, all shipped to the
-production agent). It exists so that bumping to
-a new aztec-packages release (e.g. `v4.3.0` → `v4.3.0`) is a small
-number of commands instead of a folkloric afternoon of `zip` calls and
-SQL guesses.
+make up the Aztec DocsGPT knowledge base. It exists so that bumping to
+a new aztec-packages release is a small number of commands instead of a
+folkloric afternoon of `zip` calls and SQL guesses.
+
+**Two-version KB (in flight — see `PLAN-two-version-kb.md`).** `corpora.py`
+now emits **27 corpora**: 12 for **v4.3.1 (mainnet)** + 12 for **v5.0.0-rc.1
+(testnet)** + 3 version-agnostic shared corpora (`awesome_aztec`,
+`aztec_site_networks`, `aztec_participate_docs`). Per-version corpora carry
+`version`/`network` fields and a version-suffixed slug (e.g.
+`aztec_developer_docs_v5_0_0_rc_1`). Retrieval is scoped to ONE version per
+request (`application/retriever/version_scope.py`); the swap wires BOTH bundles
+into the agent so the source-id narrowing can pick per request. (Until the
+cutover stamps `sources.metadata.version`, prod still runs the single v4.3.0
+corpus — this tooling builds the replacement.)
 
 ## Files
 
@@ -20,20 +29,29 @@ SQL guesses.
 
 ## What the corpora are
 
-15 corpora, all shipped to the production agent, built from upstream
-git repos pinned at specific revisions per Aztec release:
+Per version (×2: v4.3.1 mainnet, v5.0.0-rc.1 testnet) the corpora are built
+from upstream git repos pinned at that release's revisions:
 
-  * `aztec-packages` at the release tag (`v4.3.0` etc.) — used for code corpora.
+  * `aztec-packages` at the release tag (`v4.3.1` / `v5.0.0-rc.1`) — code corpora.
   * `aztec-packages` at a `next`-branch snapshot commit that contains
-    `version-vNEW/` — used for the three rendered-docs corpora. The
-    docs version snapshot is taken from a moving branch; the literal
-    release tag does NOT contain `version-vNEW/`. For v4.3.0 the
-    snapshot is `3f7cbc05e9a522ca81f5416278e99633dc47ee91` (PR
-    #23375's merge commit on `next`).
-  * `noir-lang/noir` at the commit pinned by aztec-packages'
-    `noir/noir-repo` submodule (run `git -C aztec-packages submodule
-    status noir/noir-repo` to find this commit). At v4.3.0 it's
-    `1d9727a6e0a9df75a71bb9c87daacbe30659ba09`.
+    `version-<version>/` — rendered-docs corpora. The docs version snapshot is
+    taken from a moving branch; the literal release tag does NOT contain
+    `version-<version>/`. **Both versions live on the SAME `next` snapshot**
+    (`d69ab88adc…` carries both `version-v4.3.1/` and `version-v5.0.0-rc.1/`).
+    The rendered **TypeScript-API** artifact also comes from this snapshot, split
+    by network folder: `mainnet/` = v4.3.1, `testnet/` = v5 (it is NOT on the
+    release tag — the tag's copy is stale).
+  * `noir-lang/noir` at the commit pinned by that tag's `noir/noir-repo`
+    submodule (`git -C aztec-packages submodule status noir/noir-repo`). v4.3.1
+    & v4.3.0 share `1d9727a6…`; v5.0.0-rc.1 is `c57152f9…`.
+
+Plus **3 shared (version-agnostic) corpora** built once: `awesome_aztec`,
+`aztec_site_networks`, `aztec_participate_docs`.
+
+Selecting a bundle at build time: `--version v4.3.1` / `--version v5.0.0-rc.1`
+builds that version's 12 corpora; `--version shared` builds the 3 shared ones;
+no selector builds all 27. (`--corpus <slug>` still selects individual corpora
+by their version-suffixed slug.)
   * `AztecProtocol/awesome-aztec` — the community resource list (`awesome_aztec`
     corpus, built via `--awesome-aztec <checkout>`). This is a **moving**
     community repo, NOT release-pinned; source URLs link to the GitHub blob
@@ -88,27 +106,35 @@ the wanted slice is far smaller than the source tree. Currently:
 
 Outline; details below.
 
+For the two-version KB you do steps 1–2 once PER version (v4.3.1 + v5.0.0-rc.1),
+plus the shared bundle once; the SAME `next`-snapshot docs worktree serves both
+versions (it carries both `version-v*` folders), so only the code/noir checkouts
+differ per version. Steps 4–7 run once over the combined build dir.
+
 ```bash
-# 1. Get clean checkouts of the FOUR source trees ("Option B" — the
-#    four-root layout shipped by PR #150, the v4.3.0 corpus bump).
-#    The docs version snapshot is taken from a
-#    moving branch, so the release tag does NOT contain version-vNEW/.
+# 1. Get clean checkouts of the source trees ("Option B" — the four-root
+#    layout shipped by PR #150). $V is the release, e.g. v4.3.1 or v5.0.0-rc.1.
+#    The docs snapshot is taken from a moving branch (release tag lacks
+#    version-<V>/); ONE next snapshot carries BOTH versions' docs folders.
 #    awesome-aztec is a moving community repo — just clone current main.
-git -C ../aztec-packages worktree add --detach /tmp/aztec-vNEW      vNEW
-git -C ../aztec-packages worktree add --detach /tmp/aztec-vNEW-docs <next-snapshot-sha>
-NOIR_PIN=$(git -C ../aztec-packages -C /tmp/aztec-vNEW submodule status noir/noir-repo | awk '{print $1}' | tr -d -)
-git clone https://github.com/noir-lang/noir /tmp/noir-vNEW
-git -C /tmp/noir-vNEW checkout "$NOIR_PIN"
+git -C ../aztec-packages worktree add --detach /tmp/aztec-$V       $V
+git -C ../aztec-packages worktree add --detach /tmp/aztec-next-docs <next-snapshot-sha>   # shared by both versions
+NOIR_PIN=$(git -C /tmp/aztec-$V submodule status noir/noir-repo | awk '{print $1}' | tr -d -)
+git clone https://github.com/noir-lang/noir /tmp/noir-$V
+git -C /tmp/noir-$V checkout "$NOIR_PIN"
 git clone --depth 1 https://github.com/AztecProtocol/awesome-aztec /tmp/awesome-aztec
 
-# 2. Build all 15 zips. Idempotent; rerunnable. --awesome-aztec is
-#    required (it's a production corpus); a missing root hard-errors.
+# 2. Build this version's 12 zips (--version selects the bundle). Idempotent.
+#    Run once per version, then once with --version shared for the 3 shared
+#    corpora (--awesome-aztec required there — it's a production corpus).
 python -m scripts.ingest.build \
-    --aztec-pkg      /tmp/aztec-vNEW \
-    --aztec-pkg-docs /tmp/aztec-vNEW-docs \
-    --noir           /tmp/noir-vNEW \
+    --version        $V \
+    --aztec-pkg      /tmp/aztec-$V \
+    --aztec-pkg-docs /tmp/aztec-next-docs \
+    --noir           /tmp/noir-$V \
     --awesome-aztec  /tmp/awesome-aztec \
     --out            /tmp/aztec-corpora-build
+# ... repeat for the other version, then: --version shared (same --out dir).
 
 # 3. Review the build manifests — especially the apiref ones.
 cat /tmp/aztec-corpora-build/manifests/aztec_nr_apiref.json | jq
@@ -127,19 +153,24 @@ python -m scripts.ingest.upload \
     --token     "$INTERNAL_KEY" \
     --out       /tmp/aztec-corpora-build/upload_manifest.json
 
-# 5. Generate the SQL to swap the production agent's source list.
-#    REVIEW BEFORE EXECUTING. Then run via psql.
+# 5. Generate the SQL to swap the production agent's source list. This SQL
+#    ALSO stamps sources.metadata.{version,network} on each uploaded source —
+#    the producer half the retrieval version-scoping resolver reads, WITHOUT
+#    which the per-request narrowing stays a no-op. REVIEW BEFORE EXECUTING.
 python -m scripts.ingest.swap_sources \
     --upload-manifest /tmp/aztec-corpora-build/upload_manifest.json \
     --agent-id $PROD_AGENT_ID \
     --out     /tmp/swap.sql
 psql "$POSTGRES_URI" -f /tmp/swap.sql
 
-# 6. Update AZTEC_SOURCE_IDS in .env (the swap_sources output prints
-#    the canonical-order block to copy) and bump AZTEC_CORPUS_VERSION.
-#    Then rebuild + force-recreate. ``discord-bot`` is included because
-#    the agent display-name and citation footer may have changed across
-#    a version bump.
+# 6. Update AZTEC_SOURCE_IDS in .env (the swap_sources output prints the
+#    canonical-order block — now spans BOTH versions' source ids + shared)
+#    and set AZTEC_CORPUS_VERSION (GET /api/version; two-version → use a
+#    combined label like "v4.3.1+v5.0.0-rc.1"). Also roll the two-version
+#    system prompt to the three Postgres prompt ids (see PLAN §5 / CLAUDE.md
+#    "Postgres is source of truth for prompts"). Then rebuild + force-recreate.
+#    ``discord-bot`` is included because the agent display-name and citation
+#    footer may have changed across a version bump.
 docker compose -f deployment/docker-compose-hub.yaml --env-file .env \
     build backend worker discord-bot
 docker compose -f deployment/docker-compose-hub.yaml --env-file .env \
@@ -165,13 +196,16 @@ psql "$POSTGRES_URI" -c "DELETE FROM sources WHERE name LIKE '% vOLD%';"
 If you only want to swap the apiref corpora (e.g. iterating on the
 `noir_apiref.py` transform without redoing every other corpus):
 
+Corpus slugs are version-suffixed now, so target the version you're iterating
+on (e.g. `aztec_nr_apiref_v5_0_0_rc_1` / `noir_stdlib_apiref_v5_0_0_rc_1`):
+
 ```bash
 python -m scripts.ingest.build \
-    --aztec-pkg /tmp/aztec-v4.3.0 \
-    --noir      /tmp/noir-v4.3.0 \
+    --aztec-pkg /tmp/aztec-v5.0.0-rc.1 \
+    --noir      /tmp/noir-v5.0.0-rc.1 \
     --out       /tmp/aztec-corpora-build \
-    --corpus    aztec_nr_apiref \
-    --corpus    noir_stdlib_apiref
+    --corpus    aztec_nr_apiref_v5_0_0_rc_1 \
+    --corpus    noir_stdlib_apiref_v5_0_0_rc_1
 
 python -m scripts.ingest.upload \
     --build-dir /tmp/aztec-corpora-build \
@@ -179,8 +213,8 @@ python -m scripts.ingest.upload \
     --user      local \
     --token     "$INTERNAL_KEY" \
     --out       /tmp/aztec-corpora-build/upload_manifest.json \
-    --corpus    aztec_nr_apiref \
-    --corpus    noir_stdlib_apiref
+    --corpus    aztec_nr_apiref_v5_0_0_rc_1 \
+    --corpus    noir_stdlib_apiref_v5_0_0_rc_1
 
 python -m scripts.ingest.swap_sources \
     --upload-manifest /tmp/aztec-corpora-build/upload_manifest.json \
@@ -317,15 +351,18 @@ ideally set `is_public=true` on success. Tracked as a follow-up.
 ### `swap_sources.py --allow-partial`
 
 By default `swap_sources.py` refuses to emit SQL when the upload
-manifest is missing any of the 15 canonical corpora. The default
-mode rewrites `extra_source_ids` wholesale — a partial manifest
-would silently truncate the agent's source list. Use one of:
+manifest is missing any production corpus in `_CANONICAL_ORDER` (now
+derived from `corpora.py`, so it spans BOTH versions + shared = 27).
+The default mode rewrites `extra_source_ids` wholesale — a partial
+manifest would silently truncate the agent's source list. Use one of:
 
-  * `--apiref-only` to rotate just the apiref UUIDs in place via
-    `array_replace` (preserves all other slot positions)
+  * `--apiref-only` to rotate just the apiref sources: emits a commented
+    OLD→NEW UUID guide + an inspect `SELECT` for you to hand-edit
+    `extra_source_ids`, plus the `metadata` stamp UPDATEs for the new
+    apiref sources (preserves all other slot positions)
   * `--allow-partial` to acknowledge that you intentionally only
     uploaded a subset
-  * Upload all 15 corpora before generating SQL
+  * Upload every production corpus before generating SQL
 
 For an in-place rotation of a small subset (e.g. just `apiref`, or
 just `(clean)` rebuilds), prefer the `--apiref-only`-style approach

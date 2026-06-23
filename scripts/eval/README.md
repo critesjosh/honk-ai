@@ -417,7 +417,7 @@ Field meanings:
 | `tag` | both | Short identifier shown in PASS/FAIL output. |
 | `query` | both | The user question. |
 | `history` | stream | Optional conversation history (list of `[user, assistant]` pairs) for multi-turn tests. |
-| `expected_source_prefixes` | retriever | Path prefixes that must appear in retrieved docs. Buckets are normalized to one of `noir-docs/`, `noir-stdlib/`, `typescript-api/`, `aztec-nr/`, `aztec.js/`, `cli/`, `cli-wallet/`, `end-to-end/`, `l1-contracts/`, `noir-contracts/`, `noir-protocol-circuits/`, `version-v4.3.0/`. |
+| `expected_source_prefixes` | retriever | Path prefixes that must appear in retrieved docs. Buckets are normalized to one of `noir-docs/`, `noir-stdlib/`, `typescript-api/`, `aztec-nr/`, `aztec.js/`, `cli/`, `cli-wallet/`, `end-to-end/`, `l1-contracts/`, `noir-contracts/`, `noir-protocol-circuits/`, `version/`. **Version-agnostic:** any `version-vX.Y.Z/` prefix (a golden's literal OR a retrieved path) is collapsed to a `version/` sentinel by `normalize_version()` before comparison, so the same goldens hold across corpus bumps and across BOTH KB versions (v4.3.1 mainnet + v5.0.0-rc.1 testnet). Per-version retrieval assertions are a post-cutover capability (require `sources.metadata.version` stamping — see `PLAN-two-version-kb.md`). |
 | `min_distinct_sources` | both | Floor on bucket count. Cross-source queries set this ≥ 2. |
 | `banned_identifiers` | stream | Substrings that must NOT appear in the answer. Use to lock down hallucinated APIs (e.g. an old method name that was renamed in v4.3.0). |
 | `max_response_time_s` | stream | Wall-time SLA. Defaults to 15. |

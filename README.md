@@ -123,8 +123,10 @@ architectural diff and
   emitted on `/stream` rewrites each chunk's in-corpus path into a
   clickable public URL: rendered Developer Docs → `docs.aztec.network`,
   everything else (code, non-rendered docs) → GitHub blob at the
-  `v4.3.0` tag. Sources are deduped by rewritten URL and capped at 10
-  per answer.
+  corpus's release tag. The rewriter is version-aware (`_aztec_source_url`):
+  it routes per the doc version in the source path (mainnet bare vs testnet
+  `/testnet/`) and picks the release tag / noir pin by the request's active
+  version. Sources are deduped by rewritten URL and capped at 10 per answer.
 - **RAG context cap** (`RAG_MAX_DOC_TOKENS`, default 6k, prod 10k) —
   upstream feeds the model's full context window (~198k tokens) of
   retrieved docs on every query, which made answers take 60s+. The
@@ -159,9 +161,11 @@ architectural diff and
   prompt / source list / model against the live agent before shipping
   the change. See `scripts/eval/README.md`.
 - **Reasoning-disable shim** — auto-injects
-  `extra_body={"reasoning": {"exclude": true}}` for reasoning-mode
+  `extra_body={"reasoning": {"enabled": false}}` for reasoning-mode
   OpenRouter models (e.g. `x-ai/grok-4.1-fast`) that would otherwise
-  stream 100% chain-of-thought tokens with no visible answer.
+  stream 100% chain-of-thought tokens with no visible answer. (`enabled:
+  false` actually skips reasoning; `exclude: true` would still run — and
+  bill — it, just hidden. See `llm/open_router.py`.)
 - **CORS glob patterns** — `CORS_ALLOWED_ORIGINS` supports shell-style
   globs so Netlify preview URLs (`https://deploy-preview-*--aztec-docs-dev.netlify.app`)
   and local dev (`http://localhost:*`) don't have to be re-added per PR.

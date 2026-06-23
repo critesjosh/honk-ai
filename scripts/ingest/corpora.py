@@ -144,8 +144,8 @@ class Corpus:
     in_production_agent: bool = True
     # The Aztec release this corpus's content is pinned to ("v4.3.1" |
     # "v5.0.0-rc.1"), or "" for genuinely unversioned/shared corpora. Stamped
-    # into ``sources.metadata`` at upload; consumed by the retrieval
-    # version-scoping resolver and the version-aware source-URL rewriter.
+    # into ``sources.metadata`` by ``swap_sources.py`` at swap time (NOT at
+    # upload); consumed by the retrieval version-scoping resolver.
     version: str = ""
     # Which live network this corpus serves: "mainnet" | "testnet" | "shared".
     # "shared" corpora are always retrieved regardless of the active version;
@@ -174,12 +174,15 @@ class Corpus:
 # ``_versioned_corpora`` below; the other 3 are genuinely unversioned/shared
 # (networks page, participate docs, awesome-aztec) and ingested once.
 #
-# Per-version corpora carry ``version`` + ``network`` (stamped into
-# ``sources.metadata`` at upload and read by the retrieval version-scoping
-# resolver and the version-aware source-URL rewriter); their ``slug`` is
-# suffixed with the version so v4.3.1 and v5 sources never collide. Shared
-# corpora keep their bare slug and ``network="shared"`` so they are retrieved
-# regardless of the active version.
+# Per-version corpora carry ``version`` + ``network``. These are NOT set by
+# ``/api/upload`` — ``swap_sources.py`` stamps them into ``sources.metadata``
+# (the UPDATE SQL it emits, keyed by slug→source_id from the upload manifest)
+# at swap time; the retrieval version-scoping resolver
+# (``application/retriever/version_scope.py``) then reads them. Until that stamp
+# runs, every source looks unversioned and narrowing is a no-op. Each
+# per-version ``slug`` is suffixed with the version so v4.3.1 and v5 sources
+# never collide. Shared corpora keep their bare slug and ``network="shared"`` so
+# they are retrieved regardless of the active version.
 #
 # Build/ingest note: each version's bundle is built from THAT version's source
 # roots — ``--aztec-pkg`` at the matching release tag, ``--noir`` at that tag's

@@ -54,9 +54,9 @@
     "bucket": "concept",
     "query": "How do I write a private function in an Aztec contract that updates storage?",
     "expected_source_prefixes": [
-      "version-v4.3.0/"
+      "version-v5.0.0-rc.1/"
     ],
-    "expected_concept_prefix": "version-v4.3.0/",
+    "expected_concept_prefix": "version-v5.0.0-rc.1/",
     "banned_identifiers": [
       "UNCONSTRAINED_ONCHAIN",
       "MessageDelivery.OFFCHAIN_CONSTRAINED"
@@ -95,9 +95,9 @@
     "bucket": "concept",
     "query": "How do I deploy a contract using the Aztec CLI?",
     "expected_source_prefixes": [
-      "version-v4.3.0/"
+      "version-v5.0.0-rc.1/"
     ],
-    "expected_concept_prefix": "version-v4.3.0/",
+    "expected_concept_prefix": "version-v5.0.0-rc.1/",
     "banned_identifiers": [],
     "max_response_time_s": 15,
     "min_distinct_sources": 2
@@ -123,9 +123,9 @@
     "bucket": "concept",
     "query": "What are the different MessageDelivery modes in Aztec?",
     "expected_source_prefixes": [
-      "version-v4.3.0/"
+      "version-v5.0.0-rc.1/"
     ],
-    "expected_concept_prefix": "version-v4.3.0/",
+    "expected_concept_prefix": "version-v5.0.0-rc.1/",
     "banned_identifiers": [
       "UNCONSTRAINED_ONCHAIN",
       "CONSTRAINED_OFFCHAIN"
@@ -150,9 +150,9 @@
     "bucket": "concept",
     "query": "What is a note in Aztec and how does it differ from public state?",
     "expected_source_prefixes": [
-      "version-v4.3.0/"
+      "version-v5.0.0-rc.1/"
     ],
-    "expected_concept_prefix": "version-v4.3.0/",
+    "expected_concept_prefix": "version-v5.0.0-rc.1/",
     "banned_identifiers": [],
     "max_response_time_s": 15,
     "min_distinct_sources": 2
@@ -177,7 +177,7 @@
     "bucket": "concept",
     "query": "Walk me through sending a private transaction from aztec.js including what happens in the contract.",
     "expected_source_prefixes": [
-      "version-v4.3.0/"
+      "version-v5.0.0-rc.1/"
     ],
     "banned_identifiers": [
       "UNCONSTRAINED_ONCHAIN"
@@ -196,9 +196,9 @@
       }
     ],
     "expected_source_prefixes": [
-      "version-v4.3.0/"
+      "version-v5.0.0-rc.1/"
     ],
-    "expected_concept_prefix": "version-v4.3.0/",
+    "expected_concept_prefix": "version-v5.0.0-rc.1/",
     "banned_identifiers": [],
     "max_response_time_s": 15,
     "min_distinct_sources": 2,
@@ -362,7 +362,7 @@
     "bucket": "concept",
     "query": "Can you tell me about the tokenomics in Aztec?",
     "expected_source_prefixes": [
-      "version-v4.3.0/"
+      "version-v5.0.0-rc.1/"
     ],
     "banned_identifiers": [
       "Aztec Productivity Token",
