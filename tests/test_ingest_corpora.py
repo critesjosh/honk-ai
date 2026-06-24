@@ -136,6 +136,41 @@ def test_metadata_stamp_covers_every_production_corpus():
             assert network, f"{c.slug} has empty network"
 
 
+def test_source_id_from_task_reads_worker_result():
+    # upload.py captures the created source UUID from the ingest task result
+    # (the ingest worker now returns ``source_id``), replacing the removed
+    # GET /api/sources lookup that 404'd and left the manifest empty.
+    from scripts.ingest.upload import _source_id_from_task
+
+    # Primary: worker returns source_id in result.
+    assert _source_id_from_task(
+        {"status": "SUCCESS", "result": {"source_id": "abc-123", "user": "local"}}
+    ) == "abc-123"
+    # Fallback to a bare ``id`` key.
+    assert _source_id_from_task({"result": {"id": "def-456"}}) == "def-456"
+    # Older backend (no source_id in result) → None (caller reconstructs from DB).
+    assert _source_id_from_task({"result": {"user": "local"}}) is None
+    assert _source_id_from_task({"status": "SUCCESS"}) is None
+    assert _source_id_from_task({"result": "not-a-dict"}) is None
+    assert _source_id_from_task(None) is None  # type: ignore[arg-type]
+
+
+def test_ingest_worker_result_includes_source_id():
+    # Guard the producer side: the ingest worker's return dict must carry
+    # ``source_id`` so it flows through /api/task_status to upload.py.
+    import ast
+    src = (Path(__file__).resolve().parents[1] / "application" / "workers" / "ingest.py").read_text()
+    tree = ast.parse(src)
+    # find ingest_worker's final return dict and assert a "source_id" key
+    keys = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Return) and isinstance(node.value, ast.Dict):
+            for k in node.value.keys:
+                if isinstance(k, ast.Constant):
+                    keys.add(k.value)
+    assert "source_id" in keys, "ingest_worker return must include source_id"
+
+
 def test_awesome_aztec_corpus_in_canonical_list():
     slugs = [c.slug for c in CORPORA]
     assert "awesome_aztec" in slugs

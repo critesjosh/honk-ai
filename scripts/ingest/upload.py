@@ -3,9 +3,10 @@
 Workflow:
   1. POST <zip> to /api/upload  →  task_id
   2. Poll  /api/task_status?task_id=...  until SUCCESS or FAILURE
-  3. Read the new sources.id row by name (the upload endpoint creates a
-     ``sources`` row keyed by the ``name`` form field) and record it
-     in the upload manifest.
+  3. Read the created source UUID from the finished task's ``result``
+     (the ingest worker returns ``source_id``, surfaced under ``result``
+     by /api/task_status) and record it in the upload manifest. (The old
+     ``GET /api/sources`` listing endpoint was removed with the admin SPA.)
 
 Usage::
 
@@ -99,40 +100,25 @@ def _poll_task(
     raise TimeoutError(f"task {task_id} did not finish within {timeout_s:.0f}s")
 
 
-def _resolve_source_id(
-    base_url: str, token: Optional[str], name: str, user: str,
-    host_header: Optional[str] = None,
-) -> Optional[str]:
-    """Look up the source UUID for a freshly-uploaded corpus.
+def _source_id_from_task(final: dict) -> Optional[str]:
+    """Extract the created source UUID from a finished ingest task result.
 
-    Tries the public ``GET /api/sources`` endpoint and matches the row
-    by ``name``. Returns ``None`` if not found — the caller should fall
-    back to a manual SQL lookup.
+    The ingest worker returns ``source_id`` in its result dict (see
+    ``application/workers/ingest.py``), which ``GET /api/task_status``
+    surfaces under ``result``. This replaces the old ``GET /api/sources``
+    lookup — that listing endpoint was removed with the admin SPA and now
+    404s, so the manifest captured no UUIDs. Falls back to ``None`` (the
+    caller can reconstruct from the DB by name) for an older backend whose
+    task result predates this field.
     """
-    import requests
-
-    headers = {}
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
-    if host_header:
-        headers["Host"] = host_header
-    try:
-        r = requests.get(
-            f"{base_url.rstrip('/')}/api/sources",
-            headers=headers,
-            timeout=30,
-        )
-        r.raise_for_status()
-        rows = r.json()
-        if isinstance(rows, dict) and "sources" in rows:
-            rows = rows["sources"]
-        for row in rows:
-            if row.get("name") == name and row.get("user") in (user, None):
-                return row.get("id") or row.get("source_id")
+    if not isinstance(final, dict):
         return None
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("could not list sources via /api/sources: %s", exc)
-        return None
+    result = final.get("result")
+    if isinstance(result, dict):
+        sid = result.get("source_id") or result.get("id")
+        if sid:
+            return str(sid)
+    return None
 
 
 def upload_corpus(
@@ -158,7 +144,13 @@ def upload_corpus(
             "error": final,
             "source_id": None,
         }
-    source_id = _resolve_source_id(base_url, token, name, user, host_header=host_header)
+    source_id = _source_id_from_task(final)
+    if not source_id:
+        logger.warning(
+            "no source_id in task result for %s — manifest will need a DB "
+            "fallback (older backend, or ingest worker not yet rebuilt)",
+            corpus_slug,
+        )
     return {
         "slug": corpus_slug,
         "name": name,

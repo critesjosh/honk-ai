@@ -2,7 +2,7 @@
 
 RAG-backed knowledge-base assistant for the Aztec Network.
 Live at **[aztec.adjacentpossible.dev](https://aztec.adjacentpossible.dev)**.
-Corpus pinned to [`aztec-packages@v4.3.0`](https://github.com/AztecProtocol/aztec-packages/tree/v4.3.0).
+Knowledge base covers **two versions**: [`v4.3.1`](https://github.com/AztecProtocol/aztec-packages/tree/v4.3.1) (mainnet) and [`v5.0.0-rc.1`](https://github.com/AztecProtocol/aztec-packages/tree/v5.0.0-rc.1) (testnet); retrieval is scoped to one version per request.
 
 This repo is a heavily-modified fork of [`arc53/DocsGPT`](https://github.com/arc53/DocsGPT)
 starting from tag `0.17.0`; the upstream admin SPA, OAuth connectors,
@@ -182,8 +182,8 @@ architectural diff and
   sentinel via `respond` so health checks don't 404.
 - **`/api/version` endpoint** — public, unauthenticated `GET`/`POST`
   returning `{aztec_corpus_version, source_count}` from the
-  `AZTEC_CORPUS_VERSION` setting (`unknown` when unset; production
-  pins it to `v4.3.0`).
+  `AZTEC_CORPUS_VERSION` setting (`unknown` when unset; production is the
+  two-version label `v4.3.1+v5.0.0-rc.1`).
   [`@aztec/mcp-server`](https://github.com/AztecProtocol/mcp-server)
   reads this to gate against version drift between the MCP client and
   the deployed corpus. POST exists because Cloudflare Access gates GET

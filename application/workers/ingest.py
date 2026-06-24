@@ -215,5 +215,10 @@ def ingest_worker(
         "name_job": job_name,
         "filename": filename,
         "user": user,
+        # Surface the created source UUID so callers polling /api/task_status
+        # can capture it without a separate sources-listing endpoint (the admin
+        # SPA's GET /api/sources was removed). scripts/ingest/upload.py reads
+        # this from the task result. ``id`` is the source PK created above.
+        "source_id": str(id),
         "limited": False,
     }

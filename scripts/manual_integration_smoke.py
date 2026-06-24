@@ -433,21 +433,13 @@ DocsGPT provides:
             if response.status_code == 200:
                 result = response.json()
                 if result.get('status') == 'SUCCESS':
-                    # Task completed, now find the source
-                    # Query sources collection to find the latest source
-                    sources_response = requests.get(
-                        f"{self.base_url}/api/sources",
-                        headers=self.headers,
-                        timeout=10
-                    )
-                    if sources_response.status_code == 200:
-                        sources = sources_response.json()
-                        # Filter out the "Default" source and get user sources only
-                        user_sources = [s for s in sources if s.get('date') != 'default']
-                        if user_sources and len(user_sources) > 0:
-                            # Get the most recent source (first one, as they're sorted by date desc)
-                            latest_source = user_sources[0]
-                            return latest_source.get('id')
+                    # The ingest worker returns the created source UUID in its
+                    # result, surfaced under ``result`` by /api/task_status.
+                    # (The old GET /api/sources listing endpoint was removed
+                    # with the admin SPA, so don't query it.)
+                    task_result = result.get('result')
+                    if isinstance(task_result, dict):
+                        return task_result.get('source_id') or task_result.get('id')
             return None
         except Exception as e:
             self.print_error(f"Error getting source ID: {str(e)}")
