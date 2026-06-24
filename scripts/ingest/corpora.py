@@ -105,8 +105,9 @@ class Corpus:
     # Short slug used for the zip filename and as a CLI argument.
     slug: str
     # Where the source files live, relative to one of the supported
-    # source roots. Four roots exist because the corpora are pinned at
-    # *different* upstream commits per release:
+    # source roots. Four UPSTREAM roots exist because the corpora are pinned at
+    # *different* upstream commits per release (a fifth, ``curated``, is in-repo
+    # hand-authored content — see its bullet below):
     #   - ``aztec-packages``       → the aztec-packages release tag
     #     (e.g. ``v5.0.0-rc.1``). Used for the code corpora (aztec.js,
     #     CLI, e2e, L1, examples, circuits, aztec-nr apiref) — real
@@ -129,7 +130,13 @@ class Corpus:
     #     community repo. NOT release-pinned (moving target); whatever
     #     checkout is passed at build time. Used only for the
     #     ``awesome_aztec`` resource-list corpus.
-    source_root: str  # "aztec-packages" | "aztec-packages-docs" | "noir" | "awesome-aztec"
+    #   - ``curated``              → hand-authored Markdown that lives IN
+    #     THIS REPO under ``scripts/ingest/curated/`` (not an upstream
+    #     checkout). Used for operator-troubleshooting entries we write
+    #     ourselves to close a coverage gap upstream docs don't cover.
+    #     ``build.py`` defaults this root to the in-repo directory, so no
+    #     CLI flag is needed (``--curated`` overrides).
+    source_root: str  # "aztec-packages" | "aztec-packages-docs" | "noir" | "awesome-aztec" | "curated"
     # One or more source trees that contribute to this corpus.
     trees: Tuple[SourceTree, ...]
     # Extensions to copy into the zip. Use lower-case.
@@ -169,10 +176,11 @@ class Corpus:
 # ── Corpora ──────────────────────────────────────────────────────────────
 #
 # The KB serves TWO live networks at once: mainnet (v4.3.1) and testnet
-# (v5.0.0-rc.1). 12 of the 15 corpora are version-specific (their content
+# (v5.0.0-rc.1). 12 of the 16 corpus *kinds* are version-specific (their content
 # differs per release) and are generated once per active version by
-# ``_versioned_corpora`` below; the other 3 are genuinely unversioned/shared
-# (networks page, participate docs, awesome-aztec) and ingested once.
+# ``_versioned_corpora`` below; the other 4 are genuinely unversioned/shared
+# (networks page, participate docs, awesome-aztec, curated operator
+# troubleshooting) and ingested once.
 #
 # Per-version corpora carry ``version`` + ``network``. These are NOT set by
 # ``/api/upload`` — ``swap_sources.py`` stamps them into ``sources.metadata``
@@ -442,6 +450,28 @@ _SHARED_CORPORA: Tuple[Corpus, ...] = (
         network="shared",
         notes="single-file corpus: the awesome-aztec README link list. Moving "
               "community repo; external links inlined so URLs survive ingest.",
+    ),
+    Corpus(
+        # Hand-authored operator-troubleshooting entries that upstream docs
+        # don't cover. Version-agnostic (the failure mode + diagnosis logic
+        # apply to every release) → ``shared`` so it is retrieved regardless of
+        # the active version; the entries defer to ``networks.md`` for the live
+        # version NUMBERS rather than hardcoding them, so they don't become a
+        # stale-version landmine when a network is bumped. Source files live in
+        # this repo under ``scripts/ingest/curated/operator-troubleshooting/``;
+        # ``_aztec_source_url`` routes the ``curated-troubleshooting/`` prefix to
+        # the operator-FAQ page (no upstream blob exists for curated content).
+        name="Aztec Operator Troubleshooting (curated)",
+        slug="aztec_operator_troubleshooting",
+        source_root="curated",
+        trees=(SourceTree("operator-troubleshooting", "curated-troubleshooting"),),
+        include_extensions=(".md",),
+        transform="passthrough",
+        in_production_agent=True,
+        network="shared",
+        notes="in-repo hand-authored operator troubleshooting (e.g. the "
+              "genesis-archive-root-mismatch / standby-mode error). Shared / "
+              "version-agnostic; defers version numbers to networks.md.",
     ),
 )
 

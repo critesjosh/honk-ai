@@ -253,6 +253,37 @@ class TestAwesomeAztec:
         assert "docs.aztec.network" not in url
 
 
+class TestCuratedTroubleshooting:
+    """Files at `curated-troubleshooting/...` are hand-authored in-repo docs
+    (scripts/ingest/curated/) with no upstream blob. They route to the
+    version-aware operator-FAQ page — the canonical operator-trouble landing
+    page — so the citation has a working, on-topic href instead of a dead
+    raw-path string."""
+
+    def test_routes_to_operator_faq_default_version(self):
+        # Default active_version is v5.0.0-rc.1 (testnet), so the default
+        # carries the /testnet infix.
+        assert _aztec_source_url(
+            "curated-troubleshooting/genesis-archive-root-mismatch.md"
+        ) == "https://docs.aztec.network/operate/testnet/operators/operator-faq"
+
+    def test_mainnet_active_version_drops_infix(self):
+        assert _aztec_source_url(
+            "curated-troubleshooting/genesis-archive-root-mismatch.md", "v4.3.1"
+        ) == "https://docs.aztec.network/operate/operators/operator-faq"
+
+    def test_testnet_active_version_keeps_infix(self):
+        assert _aztec_source_url(
+            "curated-troubleshooting/genesis-archive-root-mismatch.md", "v5.0.0-rc.1"
+        ) == "https://docs.aztec.network/operate/testnet/operators/operator-faq"
+
+    def test_unknown_version_falls_back_to_bare(self):
+        # Unknown version → bare (current) operate base, same as _docs_site_bases.
+        assert _aztec_source_url(
+            "curated-troubleshooting/genesis-archive-root-mismatch.md", "v9.9.9"
+        ) == "https://docs.aztec.network/operate/operators/operator-faq"
+
+
 class TestNoirRepoMappings:
     """noir-docs/ → rendered noir-lang.org/docs (NOT GitHub).
     noir-stdlib/ stays on GitHub since those are real `.nr` source files."""

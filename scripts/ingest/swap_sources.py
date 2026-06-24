@@ -80,6 +80,8 @@ _BASE_KIND_ORDER: tuple = (
     "aztec_e2e_tests",
     "aztec_protocol_circuits",
     "aztec_l1_contracts",
+    # Hand-authored operator-troubleshooting (shared/unversioned). Supplementary.
+    "aztec_operator_troubleshooting",
     # Community resource list (awesome-aztec README). Supplementary, ordered last.
     "awesome_aztec",
 )

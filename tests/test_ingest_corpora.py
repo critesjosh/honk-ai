@@ -203,6 +203,54 @@ def test_awesome_aztec_promoted_to_prod_agent():
     assert "awesome_aztec" in _CANONICAL_ORDER
 
 
+def test_operator_troubleshooting_corpus_in_canonical_list():
+    slugs = [c.slug for c in CORPORA]
+    assert "aztec_operator_troubleshooting" in slugs
+
+
+def test_operator_troubleshooting_corpus_shape():
+    # Hand-authored in-repo curated content: shared/version-agnostic so it's
+    # retrieved for BOTH live networks, sourced from the in-repo ``curated``
+    # root, plain markdown passthrough.
+    c = get_corpus("aztec_operator_troubleshooting")
+    assert c.transform == "passthrough"
+    assert c.source_root == "curated"
+    assert c.network == "shared"
+    assert c.version == ""  # unversioned → resolver keeps it for either version
+    assert c.in_production_agent is True
+    assert len(c.trees) == 1
+    tree = c.trees[0]
+    assert tree.path == "operator-troubleshooting"
+    assert tree.zip_prefix == "curated-troubleshooting"
+
+
+def test_operator_troubleshooting_default_root_resolves_in_repo():
+    # The ``curated`` root defaults to the in-repo dir, so a standard build
+    # picks it up with no --curated flag. Guard that the default path exists
+    # and actually contains the troubleshooting source files.
+    from scripts.ingest.build import _DEFAULT_CURATED_ROOT
+
+    c = get_corpus("aztec_operator_troubleshooting")
+    src = _DEFAULT_CURATED_ROOT / c.trees[0].path
+    assert src.is_dir(), f"curated source dir missing: {src}"
+    assert any(src.glob("*.md")), "curated troubleshooting dir has no .md files"
+
+
+def test_operator_troubleshooting_shared_stamp_has_no_version():
+    # Shared corpus → metadata stamp must carry network=shared and NO version
+    # key, so the resolver keeps it for either active version.
+    from scripts.ingest.swap_sources import _metadata_stamp_lines
+
+    body = "\n".join(
+        _metadata_stamp_lines(
+            [{"slug": "aztec_operator_troubleshooting",
+              "source_id": "33333333-3333-3333-3333-333333333333"}]
+        )
+    )
+    assert '"network": "shared"' in body
+    assert '"version":' not in body
+
+
 def test_inline_external_links_keeps_external_urls():
     # External links: the bare URL must survive (as plain text) so the
     # downstream markdown parser can't strip it.

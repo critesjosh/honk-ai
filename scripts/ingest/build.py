@@ -43,6 +43,12 @@ upstream commits:
                            release tag. Used only for the
                            ``awesome_aztec`` corpus.
 
+A fifth root, ``--curated``, is hand-authored Markdown that lives IN THIS
+REPO under ``scripts/ingest/curated/`` (operator-troubleshooting entries we
+write ourselves). It is NOT an upstream checkout, so it defaults to that
+in-repo dir and needs no flag in the normal case — pass ``--curated`` only to
+build curated content from a different location.
+
 A flag is required only if one of the selected corpora actually needs
 that root — single-corpus builds (``--corpus <slug>``) can
 omit unrelated flags.
@@ -98,7 +104,14 @@ _SOURCE_ROOT_TO_FLAG = {
     "aztec-packages-docs": "--aztec-pkg-docs",
     "noir": "--noir",
     "awesome-aztec": "--awesome-aztec",
+    "curated": "--curated",
 }
+
+# The ``curated`` source root is hand-authored Markdown checked into THIS repo,
+# not an upstream checkout — so it has a stable default location and needs no
+# CLI flag in the normal case. ``scripts/ingest/build.py`` → repo is two parents
+# up from this file; the curated trees live under ``scripts/ingest/curated/``.
+_DEFAULT_CURATED_ROOT = Path(__file__).resolve().parent / "curated"
 
 
 def _skip_for_missing_root(
@@ -469,6 +482,14 @@ def main(argv: Optional[List[str]] = None) -> int:
              "blob on main.",
     )
     parser.add_argument(
+        "--curated",
+        required=False,
+        help="Path to the in-repo curated-docs root (hand-authored operator "
+             "troubleshooting Markdown). Defaults to scripts/ingest/curated/ "
+             "next to this file, so it normally needs no flag; pass it only to "
+             "build curated content from a different checkout.",
+    )
+    parser.add_argument(
         "--out",
         required=True,
         help="Output directory; zips land in <out>/zips/, manifests in "
@@ -507,6 +528,14 @@ def main(argv: Optional[List[str]] = None) -> int:
         roots["noir"] = Path(args.noir).resolve()
     if args.awesome_aztec:
         roots["awesome-aztec"] = Path(args.awesome_aztec).resolve()
+    # Curated content is in-repo: default the root so a standard build picks it
+    # up without a flag. An explicit --curated overrides; otherwise use the
+    # in-repo dir if it exists (a missing dir leaves the root unset, so a build
+    # that selects the curated corpus fails loud in _resolve_source_dir).
+    if args.curated:
+        roots["curated"] = Path(args.curated).resolve()
+    elif _DEFAULT_CURATED_ROOT.is_dir():
+        roots["curated"] = _DEFAULT_CURATED_ROOT
 
     if args.corpus and args.version:
         raise SystemExit("--corpus and --version are mutually exclusive")

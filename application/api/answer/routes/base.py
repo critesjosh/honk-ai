@@ -266,6 +266,16 @@ def _aztec_source_url(source_path: str, active_version: str = _DEFAULT_DOC_VERSI
         rest = source_path[len("awesome-aztec/"):]
         return f"{_AWESOME_AZTEC_GITHUB_BASE}/{rest}".rstrip("/")
 
+    # Curated, in-repo operator-troubleshooting entries (``curated-troubleshooting/``
+    # prefix; built from scripts/ingest/curated/). This content is hand-authored
+    # and has no upstream repo blob or rendered docs page, so we cite the
+    # version-aware operator-FAQ page — the canonical operator-trouble landing
+    # page — rather than leave a dead raw-path href. The diagnosis text lives in
+    # the retrieved chunk; the link is a relevant "learn more" destination.
+    if source_path.startswith("curated-troubleshooting/"):
+        _, _, operate_base = _docs_site_bases(active_version)
+        return f"{operate_base}/operators/operator-faq"
+
     # Noir language docs are rendered at noir-lang.org/docs. Strip the
     # markdown extension and any `/index` suffix to match the
     # Docusaurus URL scheme (same convention as docs.aztec.network).
