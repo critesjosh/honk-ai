@@ -875,9 +875,19 @@ class AztecNetworkTool(Tool):
             {
                 "name": "aztec_network_get_rpc_nodes",
                 "description": (
-                    "List Aztec L2 RPC nodes with their last-seen "
-                    "timestamp and version. Use to answer 'are RPC "
-                    "nodes healthy?' questions. Defaults to mainnet."
+                    "List the Aztec L2 RPC nodes that have self-reported "
+                    "to the explorer's telemetry registry, each with its "
+                    "`version` and `last_seen` timestamp. This is a "
+                    "registry of nodes that have registered themselves — "
+                    "NOT a "
+                    "curated or health-checked list of currently-live or "
+                    "recommended public endpoints, and a node's `name` may "
+                    "be a bare label or raw IP rather than a dialable URL. "
+                    "Judge whether a node is currently up ONLY from its "
+                    "`last_seen` timestamp (a node not seen for days or "
+                    "longer is stale, not 'responding') and report when it "
+                    "was last seen; never present these as endpoints to "
+                    "connect to. Defaults to mainnet."
                 ),
                 "parameters": params(),
             },
