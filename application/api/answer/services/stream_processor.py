@@ -17,6 +17,7 @@ from application.core.model_utils import (
     validate_model_id,
 )
 from application.core.settings import settings
+from application.pseudonyms import resolve_requester_pseudonym
 from sqlalchemy import text as sql_text
 
 from application.services.source_visibility import SourceVisibilityService
@@ -126,6 +127,19 @@ class StreamProcessor:
         self.initial_user_id = (
             self.decoded_token.get("sub") if self.decoded_token is not None else None
         )
+        # Right-to-erasure attribution. The bots send a raw provider identity
+        # (``requester_provider`` + ``requester_provider_id``) so the turn can be
+        # tagged with the SAME canonical pseudonym ``/forget-me`` computes, while
+        # the conversation owner stays the shared ``'local'`` agent. Computed
+        # HERE (before ``_configure_agent`` overwrites the identity) and the raw
+        # fields are popped so they can never leak into a wholesale request log.
+        # Best-effort + non-fatal: a bad/absent identity just yields None. See
+        # application/pseudonyms.py::resolve_requester_pseudonym and migration 0011.
+        self.requester_user_id = resolve_requester_pseudonym(
+            self.data.pop("requester_provider", None),
+            self.data.pop("requester_provider_id", None),
+            pepper=settings.USER_ID_PEPPER,
+        )
         self.conversation_id = self.data.get("conversation_id")
         self.source = {}
         self.all_sources = []
@@ -228,6 +242,16 @@ class StreamProcessor:
             conversation = self._get_conversation_once()
             if not conversation:
                 raise ValueError("Conversation not found or unauthorized")
+
+            # Drop tombstoned (erased-by-/forget-me) turns so the model never
+            # sees redacted content. Filtered here, NOT in the low-level message
+            # reader, so positional APIs keep array-index == DB-position. (In
+            # practice only bot conversations are ever tombstoned and those load
+            # history inline, so this is defensive for the DB-backed path.)
+            if conversation.get("queries"):
+                conversation["queries"] = [
+                    q for q in conversation["queries"] if not q.get("erased_at")
+                ]
 
             # Check if compression is enabled and needed
             if settings.ENABLE_CONVERSATION_COMPRESSION:

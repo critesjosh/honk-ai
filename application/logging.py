@@ -15,12 +15,15 @@ logging.basicConfig(
 
 
 class LogContext:
-    def __init__(self, endpoint, activity_id, user, api_key, query):
+    def __init__(self, endpoint, activity_id, user, api_key, query, requester_user_id=None):
         self.endpoint = endpoint
         self.activity_id = activity_id
         self.user = user
         self.api_key = api_key
         self.query = query
+        # Canonical requester pseudonym (bot chat) so /forget-me can erase the
+        # stack_logs row that stores the prompt in ``query``. None for anonymous.
+        self.requester_user_id = requester_user_id
         self.stacks = []
 
 
@@ -78,8 +81,11 @@ def log_activity() -> Callable:
             user = data.get("user", "local")
             api_key = data.get("user_api_key", "")
             query = kwargs.get("query", getattr(args[0], "query", ""))
+            requester_user_id = data.get("requester_user_id")
 
-            context = LogContext(endpoint, activity_id, user, api_key, query)
+            context = LogContext(
+                endpoint, activity_id, user, api_key, query, requester_user_id
+            )
             kwargs["log_context"] = context
 
             logging.info(
@@ -109,6 +115,7 @@ def _consume_and_log(generator: Generator, context: "LogContext"):
             query=context.query,
             stacks=context.stacks,
             level="error",
+            requester_user_id=context.requester_user_id,
         )
         raise
     finally:
@@ -120,6 +127,7 @@ def _consume_and_log(generator: Generator, context: "LogContext"):
             query=context.query,
             stacks=context.stacks,
             level="info",
+            requester_user_id=context.requester_user_id,
         )
 
 
@@ -131,6 +139,7 @@ def _log_activity_to_db(
     query: str,
     stacks: List[Dict],
     level: str,
+    requester_user_id: str = None,
 ) -> None:
     """Append a per-request activity log row to Postgres (``stack_logs``)."""
     try:
@@ -151,6 +160,7 @@ def _log_activity_to_db(
                 query=_truncate(query),
                 stacks=stacks,
                 timestamp=datetime.datetime.now(datetime.timezone.utc),
+                requester_user_id=requester_user_id,
             )
         logging.debug(f"Logged activity to Postgres: {activity_id}")
     except Exception as e:

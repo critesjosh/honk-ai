@@ -347,14 +347,26 @@ def forget_discord_user():
       ``(mcp_provider, mcp_provider_user_id)`` pair).
     - Every conversation / operational row owned by the user's
       pseudonymous ``user_id`` and its messages (cascade).
+    - The user's own **bot chat turns**, even though those are stored
+      under the shared chat agent's owner ``user_id='local'``. They are
+      tagged per-message with the requester's pseudonym
+      (``requester_user_id``, migration 0011), so this endpoint REDACTS
+      them in place (NULLs prompt/response/sources/etc., sets
+      ``erased_at``) — preserving message ``position`` so the bots'
+      feedback/position contract holds — and scrubs every off-message
+      copy: the conversation title + compression metadata, synthetic
+      compression-summary messages, paused-stream state for affected
+      conversations, and the ``user_logs``/``stack_logs`` rows that copy
+      the prompt/response (deleted by ``requester_user_id``).
 
-    Scope note: bot *chat* turns are written under the shared chat
-    agent's owner (``user_id='local'``), NOT the per-user pseudonym (see
-    ``stream_processor`` identity handling), so they are not per-user
-    erasable here. This matches the existing Discord behaviour — what
-    this endpoint removes is the user's MCP key plus any MCP-originated
-    data keyed to their pseudonym, plus the bot's local cache (dropped
-    bot-side by the slash-command handler).
+    Scope notes:
+    - Only turns tagged at write time (post-cutover) are per-user
+      erasable; older un-tagged turns carry ``requester_user_id IS NULL``
+      and age out via the retention purge.
+    - A stream in-flight when this returns can re-create tagged rows
+      after the deletes ran; re-running ``/forget-me`` catches them.
+    - The bot's local in-memory cache is dropped bot-side by the
+      slash-command handler.
     """
     provisioning_key = request.headers.get("X-Provisioning-Key")
     if (
@@ -423,6 +435,107 @@ def forget_discord_user():
                     params,
                 )
                 deleted[table] = result.rowcount or 0
+
+            # --- Bot chat erasure (redact-in-place) -----------------------
+            # Bot chat turns are stored under the shared chat agent's owner
+            # ``user_id='local'``, NOT the user's pseudonym, so the specs above
+            # never reach them. They are tagged PER-MESSAGE with
+            # ``requester_user_id`` at write time (migration 0011). Here we
+            # REDACT them in place — NULL the content, set ``erased_at`` — rather
+            # than DELETE, so message ``position`` is preserved and the bots'
+            # in-memory ``answer_count``/feedback-position contract is not
+            # corrupted (a deleted tail would let ``MAX(position)+1`` reuse a
+            # position the bot still believes is taken). We also scrub every
+            # off-message copy of the same content. Concurrency: a stream
+            # in-flight at erase time can re-create rows after this commits;
+            # re-running /forget-me catches those (documented).
+            uid = pseudo_canonical_user_id
+
+            # Lock affected conversations (serialize against append_message's
+            # own FOR UPDATE) and capture their ids.
+            affected = [
+                str(row[0])
+                for row in conn.execute(
+                    text(
+                        "SELECT id FROM conversations WHERE id IN ("
+                        "  SELECT DISTINCT conversation_id FROM conversation_messages"
+                        "  WHERE requester_user_id = :uid"
+                        ") FOR UPDATE"
+                    ),
+                    {"uid": uid},
+                ).fetchall()
+            ]
+
+            redacted = conn.execute(
+                text(
+                    "UPDATE conversation_messages SET "
+                    "prompt = NULL, response = NULL, thought = NULL, "
+                    "sources = '[]'::jsonb, tool_calls = '[]'::jsonb, "
+                    "attachments = '{}', message_metadata = '{}'::jsonb, "
+                    "feedback = NULL, requester_user_id = NULL, erased_at = now() "
+                    "WHERE requester_user_id = :uid"
+                ),
+                {"uid": uid},
+            ).rowcount
+            deleted["conversation_messages"] = redacted or 0
+
+            if affected:
+                # Title + compression blob can paraphrase the erased question.
+                # Clear them for ALL affected conversations (a shared-thread
+                # title can leak the erased creator's prompt).
+                conn.execute(
+                    text(
+                        "UPDATE conversations SET name = NULL, "
+                        "compression_metadata = NULL WHERE id = ANY(:ids)"
+                    ),
+                    {"ids": affected},
+                )
+                # Synthetic compression-summary messages span the thread (not
+                # requester-owned), so find them by marker and tombstone.
+                conn.execute(
+                    text(
+                        "UPDATE conversation_messages SET "
+                        "prompt = NULL, response = NULL, "
+                        "message_metadata = '{}'::jsonb, erased_at = now() "
+                        "WHERE conversation_id = ANY(:ids) "
+                        "AND message_metadata->>'type' = 'compression_summary' "
+                        "AND erased_at IS NULL"
+                    ),
+                    {"ids": affected},
+                )
+            # Paused-stream state no longer cascades (we tombstone, not delete,
+            # the parent conversation). Delete by requester_user_id — precise
+            # (only this user's own paused state, even in a shared thread, and
+            # even if they have no persisted tagged message yet). Classic prod
+            # agents never pause, so this is usually a no-op.
+            deleted["pending_tool_state"] = (
+                conn.execute(
+                    text(
+                        "DELETE FROM pending_tool_state "
+                        "WHERE requester_user_id = :uid"
+                    ),
+                    {"uid": uid},
+                ).rowcount
+                or 0
+            )
+
+            # Off-message content copies in the operational logs (no position
+            # contract → delete). Sum with the user_id-keyed deletes above
+            # (disjoint in practice: bot log rows are under 'local').
+            deleted["user_logs"] = (deleted.get("user_logs", 0)) + (
+                conn.execute(
+                    text("DELETE FROM user_logs WHERE requester_user_id = :uid"),
+                    {"uid": uid},
+                ).rowcount
+                or 0
+            )
+            deleted["stack_logs"] = (deleted.get("stack_logs", 0)) + (
+                conn.execute(
+                    text("DELETE FROM stack_logs WHERE requester_user_id = :uid"),
+                    {"uid": uid},
+                ).rowcount
+                or 0
+            )
     except Exception:
         logger.exception("Failed to forget Discord user")
         return jsonify({"error": "Internal server error"}), 500

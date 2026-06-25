@@ -88,6 +88,18 @@ Auth: `/api/feedback` accepts anonymous because `AUTH_TYPE` is unset → `user_i
 
 **Known limitation:** when `ENABLE_CONVERSATION_COMPRESSION=true` (default in `application/core/settings.py`), compression appends an extra `conversation_messages` row and silently no-ops post-compression feedback. Mitigation: set `ENABLE_CONVERSATION_COMPRESSION=false` in prod `.env`. Real fix (TODO): bot reads backend-assigned position via `position` SSE event.
 
+## Right-to-erasure (`/forget-me`)
+
+`/forget-me` revokes the user's MCP key, deletes pseudonym-keyed MCP data, drops the bot's in-memory per-user cache, **and erases the user's own chat Q&A turns**.
+
+Chat turns are stored under the shared chat agent's owner (`user_id='local'`), so to make them per-user erasable the bot sends the raw Discord user id (`requester_provider`/`requester_provider_id`, built identically to what `/forget-me` sends) on every `/stream` call. The backend stamps each turn with the requester's HMAC pseudonym (`conversation_messages.requester_user_id`, migration 0011). On forget the backend **redacts those turns in place** — NULLs prompt/response/sources/etc., sets `erased_at`, but **keeps the row and its `position`** so the `MAX(position)+1` ↔ local `answer_count`/feedback contract (above) is NOT corrupted (a physical delete would let a position be reused). It also scrubs every off-message copy of the content: the conversation title + `compression_metadata`, synthetic compression-summary messages, `pending_tool_state`, and the `user_logs`/`stack_logs` rows that copy the prompt/response.
+
+In a **shared thread** (multiple users mention the bot → one `conversation_id`), only the requesting user's own turns are scrubbed; co-participants' turns remain.
+
+Caveats (stated in the command's reply): only turns sent **after this shipped** carry the tag and are erasable — older turns age out via the retention purge; and a turn in-flight at erase time can re-create rows, so a re-run catches it.
+
+**Privacy:** the thread-context feature (above) forwards other users' message bodies + display names to the LLM provider. And note the trade-off this erasure makes: each stored turn now carries a one-way HMAC pseudonym of the requester (previously bot chat was fully anonymous). The pseudonym is not reversible without `USER_ID_PEPPER`, and the raw id is never stored or logged in plaintext.
+
 ## Env vars summary
 
 See `.env-template` for full descriptions. Bot-only knobs:

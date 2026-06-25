@@ -59,6 +59,7 @@ class ContinuationService:
         tool_schemas: List[Dict],
         agent_config: Dict,
         client_tools: Optional[List[Dict]] = None,
+        requester_user_id: Optional[str] = None,
     ) -> str:
         """Save execution state for later continuation.
 
@@ -104,6 +105,7 @@ class ContinuationService:
                 tool_schemas=_make_serializable(tool_schemas),
                 agent_config=_make_serializable(agent_config),
                 client_tools=_make_serializable(client_tools) if client_tools else None,
+                requester_user_id=requester_user_id,
             )
 
         logger.info(

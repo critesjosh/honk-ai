@@ -33,15 +33,17 @@ class StackLogsRepository:
         query: Optional[str] = None,
         stacks: Optional[list] = None,
         timestamp: Optional[datetime] = None,
+        requester_user_id: Optional[str] = None,
     ) -> None:
         self._conn.execute(
             text(
                 """
-                INSERT INTO stack_logs (activity_id, endpoint, level, user_id, api_key, query, stacks, timestamp)
+                INSERT INTO stack_logs (activity_id, endpoint, level, user_id, api_key, query, stacks, timestamp, requester_user_id)
                 VALUES (
                     :activity_id, :endpoint, :level, :user_id, :api_key, :query,
                     CAST(:stacks AS jsonb),
-                    COALESCE(:timestamp, now())
+                    COALESCE(:timestamp, now()),
+                    :requester_user_id
                 )
                 """
             ),
@@ -54,5 +56,6 @@ class StackLogsRepository:
                 "query": query,
                 "stacks": json.dumps(stacks or []),
                 "timestamp": timestamp,
+                "requester_user_id": requester_user_id,
             },
         )

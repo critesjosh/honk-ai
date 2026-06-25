@@ -548,6 +548,9 @@ class ConversationsRepository:
             "model_id": message.get("model_id"),
             "message_metadata": message.get("metadata") or {},
         }
+        # Per-message requester attribution for right-to-erasure (nullable).
+        if message.get("requester_user_id") is not None:
+            values["requester_user_id"] = message["requester_user_id"]
         if message.get("timestamp") is not None:
             values["timestamp"] = message["timestamp"]
 
@@ -592,6 +595,10 @@ class ConversationsRepository:
             # carry feedback would silently lose it. Mirrors
             # ``set_feedback`` — column is JSONB.
             "feedback", "feedback_timestamp",
+            # Without this, the regenerate/edit path (update_message_at)
+            # would drop the requester attribution and make the turn
+            # un-erasable. Plain text column.
+            "requester_user_id",
         }
         filtered = {k: v for k, v in fields.items() if k in allowed}
         if not filtered:

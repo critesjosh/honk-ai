@@ -1030,6 +1030,7 @@ class BaseAnswerResource:
         shared_token: Optional[str] = None,
         model_id: Optional[str] = None,
         active_version: str = _DEFAULT_DOC_VERSION,
+        requester_user_id: Optional[str] = None,
         _continuation: Optional[Dict] = None,
     ) -> Generator[str, None, None]:
         """
@@ -1056,6 +1057,12 @@ class BaseAnswerResource:
             Server-sent event strings
         """
         request_started_at = datetime.datetime.now(datetime.timezone.utc)
+        # Stamp the requester pseudonym on the agent so the @log_activity
+        # decorator (build_stack_data lifts agent attributes) writes it to
+        # stack_logs.requester_user_id, making the prompt copy there erasable
+        # by /forget-me. None for anonymous/widget. See migration 0011.
+        if agent is not None and requester_user_id is not None:
+            agent.requester_user_id = requester_user_id
         user_id_for_log = decoded_token.get("sub") if decoded_token else None
         # Hash the question prompt so we can correlate start/end log lines
         # for one request without writing the end-user's text to INFO logs.
@@ -1441,6 +1448,7 @@ class BaseAnswerResource:
                                     datetime.timezone.utc
                                 ),
                             },
+                            requester_user_id=requester_user_id,
                         )
                 except Exception as log_err:
                     logger.error(
@@ -1595,6 +1603,7 @@ class BaseAnswerResource:
                                     agent_id=agent_id,
                                     is_shared_usage=is_shared_usage,
                                     shared_token=shared_token,
+                                    requester_user_id=requester_user_id,
                                 )
                             )
                         except Exception as e:
@@ -1627,6 +1636,7 @@ class BaseAnswerResource:
                                 client_tools=getattr(
                                     agent.tool_executor, "client_tools", None
                                 ),
+                                requester_user_id=requester_user_id,
                             )
                         except Exception as e:
                             logger.error(
@@ -1683,6 +1693,7 @@ class BaseAnswerResource:
                     shared_token=shared_token,
                     attachment_ids=attachment_ids,
                     metadata=query_metadata if query_metadata else None,
+                    requester_user_id=requester_user_id,
                 )
                 # Persist compression metadata/summary if it exists and wasn't saved mid-execution
                 compression_meta = getattr(agent, "compression_metadata", None)
@@ -1746,6 +1757,7 @@ class BaseAnswerResource:
                         user_id=log_data.get("user"),
                         endpoint="stream_answer",
                         data=log_data,
+                        requester_user_id=requester_user_id,
                     )
             except Exception as log_err:
                 logger.error(
@@ -1866,6 +1878,7 @@ class BaseAnswerResource:
                         shared_token=shared_token,
                         attachment_ids=attachment_ids,
                         metadata=query_metadata if query_metadata else None,
+                        requester_user_id=requester_user_id,
                     )
                     compression_meta = getattr(agent, "compression_metadata", None)
                     compression_saved = getattr(agent, "compression_saved", False)
@@ -1934,6 +1947,7 @@ class BaseAnswerResource:
                                 datetime.timezone.utc
                             ),
                         },
+                        requester_user_id=requester_user_id,
                     )
             except Exception as log_err:
                 logger.error(

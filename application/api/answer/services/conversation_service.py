@@ -65,11 +65,18 @@ class ConversationService:
         shared_token: Optional[str] = None,
         attachment_ids: Optional[List[str]] = None,
         metadata: Optional[Dict[str, Any]] = None,
+        requester_user_id: Optional[str] = None,
     ) -> str:
         """Save or update a conversation in Postgres.
 
         Returns the string conversation id (PG UUID as string, or the
         caller-provided id if it was already a UUID).
+
+        ``requester_user_id`` is the canonical pseudonym of the end-user who
+        triggered this turn (bot chat). It is stamped on the message row so
+        ``/forget-me`` can erase a bot user's own turns even though the
+        conversation ``user_id`` is the shared ``'local'`` owner. None for
+        anonymous/widget traffic. See migration 0011.
         """
         if decoded_token is None:
             raise ValueError("Invalid or missing authentication token")
@@ -93,6 +100,10 @@ class ConversationService:
             "model_id": model_id,
             "timestamp": current_time,
         }
+        # Only carry the attribution when present so the regenerate/edit path
+        # (update_message_at) never clobbers an existing tag with NULL.
+        if requester_user_id is not None:
+            message_payload["requester_user_id"] = requester_user_id
         if metadata:
             message_payload["metadata"] = metadata
 
@@ -246,6 +257,12 @@ class ConversationService:
                     "attachments": [],
                     "model_id": compression_metadata.get("model_used"),
                     "timestamp": timestamp,
+                    # Tag so /forget-me can find + redact synthetic summaries,
+                    # which may paraphrase an erased requester's content. The
+                    # summary is not owned by a single requester (it spans the
+                    # thread), so it carries no requester_user_id; the marker is
+                    # how forget locates it for affected conversations.
+                    "metadata": {"type": "compression_summary"},
                 })
             logger.info(
                 f"Appended compression summary to conversation {conversation_id}"

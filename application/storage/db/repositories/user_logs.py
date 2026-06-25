@@ -36,6 +36,7 @@ class UserLogsRepository:
         data: Optional[dict] = None,
         metadata: Optional[dict] = None,
         timestamp: Optional[datetime] = None,
+        requester_user_id: Optional[str] = None,
     ) -> None:
         """Append a row.
 
@@ -45,17 +46,23 @@ class UserLogsRepository:
         has SELECT on ``metadata`` but NOT on ``data``, so anything that
         should be visible to claudebox via the host MCP server must go
         in ``metadata``. See migration 0007 for the contract.
+
+        ``requester_user_id`` is the canonical pseudonym of the end-user who
+        triggered the request (bot chat). It lets ``/forget-me`` DELETE the
+        log rows that copy that user's question/response into ``data``. NULL
+        for anonymous/widget traffic. See migration 0011.
         """
         self._conn.execute(
             text(
                 """
-                INSERT INTO user_logs (user_id, endpoint, data, metadata, timestamp)
+                INSERT INTO user_logs (user_id, endpoint, data, metadata, timestamp, requester_user_id)
                 VALUES (
                     :user_id,
                     :endpoint,
                     CAST(:data AS jsonb),
                     CAST(:metadata AS jsonb),
-                    COALESCE(:timestamp, now())
+                    COALESCE(:timestamp, now()),
+                    :requester_user_id
                 )
                 """
             ),
@@ -67,6 +74,7 @@ class UserLogsRepository:
                     json.dumps(metadata, default=str) if metadata is not None else None
                 ),
                 "timestamp": timestamp,
+                "requester_user_id": requester_user_id,
             },
         )
 

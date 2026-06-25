@@ -63,7 +63,13 @@ Bot-side soft brake on OpenRouter spend, scoped per Slack **workspace** (`team_i
 
 ## `/forget-me` scope
 
-`/aztec-forget-me` revokes the user's MCP key and deletes MCP-originated data keyed to their pseudonym, and drops the bot's in-memory conversation cache for the **channel the command was invoked in** (typically the user's DM with the bot — both the DM key and any thread keys in that channel; other channels' state is left alone and ages out of the LRU). **It does not erase shared bot Q&A in channels** — those `/stream` turns are written under the shared chat agent's owner (`user_id='local'`), not the per-user pseudonym, so they aren't individually erasable. This is identical to the Discord bot's behaviour. The command message states this explicitly.
+`/aztec-forget-me` revokes the user's MCP key, deletes MCP-originated data keyed to their pseudonym, **and erases the user's own chat Q&A turns**, and drops the bot's in-memory conversation cache for the **channel the command was invoked in** (typically the user's DM with the bot — both the DM key and any thread keys in that channel; other channels' state is left alone and ages out of the LRU).
+
+Chat erasure works because every `/stream` call now carries the workspace-scoped raw identity (`requester_provider`/`requester_provider_id`, built by `slack_raw_identity` **identically to this command** — `enterprise_id` is threaded through `_answer_question` so Grid pseudonyms match). The backend stamps each turn with the requester pseudonym (`conversation_messages.requester_user_id`, migration 0011). On forget it **redacts those turns in place** (NULLs the content, sets `erased_at`, keeps `position` so the feedback/position contract holds) and scrubs every off-message copy: the conversation title + compression metadata, synthetic compression-summary messages, paused-stream state, and the `user_logs`/`stack_logs` rows that copied the prompt. In a **shared thread** only the requester's own turns are scrubbed; co-participants' turns remain.
+
+Caveats (the command message states them): only turns sent **after this shipped** are tagged and erasable — older turns carry `requester_user_id IS NULL` and age out via the retention purge; and a stream in-flight at erase time can re-create rows, so a re-run catches them. Bot chat is still *stored* under the shared chat agent's owner (`user_id='local'`); the pseudonym tag is a per-message deletion key, not an ownership change (it does not affect the anonymous feedback path).
+
+**Privacy trade-off:** enabling per-user erasure means each stored turn now carries a one-way HMAC pseudonym of the requester (previously bot chat was fully anonymous). The pseudonym is not reversible without `USER_ID_PEPPER`; the raw id is never stored or logged in plaintext.
 
 ## The Slack chat agent
 

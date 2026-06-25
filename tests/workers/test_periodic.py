@@ -4,8 +4,9 @@ Production-criticality:
 
 - ``cleanup_pending_tool_state`` replaces Mongo's TTL index for the
   ``pending_tool_state`` table. Missing schedule = unbounded growth.
-- ``purge_old_user_data`` enforces the Aztec Foundation 12-month
-  privacy retention. Missing schedule = compliance miss.
+- ``purge_old_user_data`` enforces the 30-day privacy retention
+  (within the Aztec Foundation 12-month maximum; matches the Discord
+  Message Content intent commitments). Missing schedule = compliance miss.
 
 The previous ``@celery.on_after_configure.connect`` decorator did NOT
 fire when this module was loaded via ``celeryconfig.py:imports`` —

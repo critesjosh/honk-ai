@@ -40,10 +40,16 @@ class PendingToolStateRepository:
         agent_config: dict,
         client_tools: list | None = None,
         ttl_seconds: int = PENDING_STATE_TTL_SECONDS,
+        requester_user_id: str | None = None,
     ) -> dict:
         """Upsert pending tool state.
 
         Mirrors Mongo's ``replace_one(..., upsert=True)``.
+
+        ``requester_user_id`` is the canonical pseudonym of the end-user who
+        triggered the paused turn, so ``/forget-me`` can erase the
+        content-bearing ``messages``/``pending_tool_calls`` it stores. NULL for
+        anonymous traffic. See migration 0011.
         """
         now = datetime.now(timezone.utc)
         expires = datetime.fromtimestamp(
@@ -56,13 +62,13 @@ class PendingToolStateRepository:
                 INSERT INTO pending_tool_state
                     (conversation_id, user_id, messages, pending_tool_calls,
                      tools_dict, tool_schemas, agent_config, client_tools,
-                     created_at, expires_at)
+                     created_at, expires_at, requester_user_id)
                 VALUES
                     (CAST(:conv_id AS uuid), :user_id,
                      CAST(:messages AS jsonb), CAST(:pending AS jsonb),
                      CAST(:tools_dict AS jsonb), CAST(:schemas AS jsonb),
                      CAST(:agent_config AS jsonb), CAST(:client_tools AS jsonb),
-                     :created_at, :expires_at)
+                     :created_at, :expires_at, :requester_user_id)
                 ON CONFLICT (conversation_id, user_id) DO UPDATE SET
                     messages = EXCLUDED.messages,
                     pending_tool_calls = EXCLUDED.pending_tool_calls,
@@ -71,7 +77,8 @@ class PendingToolStateRepository:
                     agent_config = EXCLUDED.agent_config,
                     client_tools = EXCLUDED.client_tools,
                     created_at = EXCLUDED.created_at,
-                    expires_at = EXCLUDED.expires_at
+                    expires_at = EXCLUDED.expires_at,
+                    requester_user_id = EXCLUDED.requester_user_id
                 RETURNING *
                 """
             ),
@@ -86,6 +93,7 @@ class PendingToolStateRepository:
                 "client_tools": json.dumps(client_tools) if client_tools is not None else None,
                 "created_at": now,
                 "expires_at": expires,
+                "requester_user_id": requester_user_id,
             },
         )
         return row_to_dict(result.fetchone())

@@ -105,6 +105,9 @@ user_logs_table = Table(
     # analytics surface; the ``docsgpt_mcp_ro`` role has SELECT here
     # but NOT on ``data``. See the migration for the secrets contract.
     Column("metadata", JSONB),
+    # Added by 0011. Canonical requester pseudonym so /forget-me can DELETE the
+    # log rows that copy the bot user's question/response into ``data``.
+    Column("requester_user_id", Text),
 )
 
 stack_logs_table = Table(
@@ -119,6 +122,9 @@ stack_logs_table = Table(
     Column("query", Text),
     Column("stacks", JSONB, nullable=False, server_default="[]"),
     Column("timestamp", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    # Added by 0011. Canonical requester pseudonym so /forget-me can DELETE the
+    # log rows that copy the bot user's prompt into ``query``.
+    Column("requester_user_id", Text),
 )
 
 # Singleton key/value table for instance-wide state (e.g. anonymous
@@ -334,6 +340,15 @@ conversation_messages_table = Table(
     # still see ``metadata``.
     Column("message_metadata", JSONB, nullable=False, server_default="{}"),
     Column("feedback", JSONB),
+    # Per-message attribution for right-to-erasure: the canonical pseudonym
+    # (discord_p_v1:/slack_p_v1:) of the end-user who triggered this turn, so
+    # /forget-me can redact a bot user's own chat turns even though user_id is
+    # the shared 'local' owner. Nullable, NO FK (denormalised deletion tag).
+    # ``erased_at`` marks a tombstone: forget NULLs the content and sets this
+    # rather than deleting the row, preserving position/feedback. See migration
+    # 0011_requester_attribution.
+    Column("requester_user_id", Text),
+    Column("erased_at", DateTime(timezone=True)),
     Column("timestamp", DateTime(timezone=True), nullable=False, server_default=func.now()),
     Column("updated_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
     UniqueConstraint("conversation_id", "position", name="conversation_messages_conv_pos_uidx"),
@@ -368,6 +383,10 @@ pending_tool_state_table = Table(
     Column("client_tools", JSONB),
     Column("created_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
     Column("expires_at", DateTime(timezone=True), nullable=False),
+    # Added by 0011. Canonical requester pseudonym so /forget-me can DELETE
+    # paused-state content (this no longer cascades from conversations because
+    # forget tombstones, not deletes, the parent conversation).
+    Column("requester_user_id", Text),
     UniqueConstraint("conversation_id", "user_id", name="pending_tool_state_conv_user_uidx"),
 )
 

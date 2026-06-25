@@ -634,7 +634,7 @@ class TestControlsMergedIntoAnswer:
         message — no separate "Was this helpful?" post, so no extra Slack
         notification whose preview text never renders in the thread."""
 
-        async def fake(question, messages, conversation_id):
+        async def fake(question, messages, conversation_id, requester_provider_id=None):
             return {
                 "answer": "short answer", "conversation_id": "conv-1",
                 "sources": [{"title": "wallets", "source": "https://docs.example/wallets"}],
@@ -681,7 +681,7 @@ class TestAnswerQuestionErrorPaths:
         backend wrote NO row, so advancing answer_count would desync
         every subsequent 👍/👎 in the conversation."""
 
-        async def fake(question, messages, conversation_id):
+        async def fake(question, messages, conversation_id, requester_provider_id=None):
             return {
                 "answer": "partial", "conversation_id": conversation_id,
                 "sources": [], "usage": None, "http_status": 200, "error": "boom",
@@ -703,7 +703,7 @@ class TestAnswerQuestionErrorPaths:
         it keeps the prior turn's), and ONLY the error-frame branch
         protects answer_count / feedback alignment."""
 
-        async def fake(question, messages, conversation_id):
+        async def fake(question, messages, conversation_id, requester_provider_id=None):
             assert conversation_id == "conv-REAL"
             return {
                 "answer": "partial", "conversation_id": conversation_id,
@@ -733,7 +733,7 @@ class TestAnswerQuestionErrorPaths:
         assert "answering" in client.updates[0]["text"]
 
     def test_unexpected_exception_rolls_back_phantom_prompt(self, bot_module, monkeypatch):
-        async def fake(question, messages, conversation_id):
+        async def fake(question, messages, conversation_id, requester_provider_id=None):
             raise RuntimeError("kaput")
 
         client, state = self._run(bot_module, monkeypatch, fake)
@@ -817,3 +817,33 @@ class TestSpawnDoneCallback:
         with caplog.at_level(logging.ERROR, logger=bot_module.logger.name):
             asyncio.run(go())
         assert any("background task failed" in r.message for r in caplog.records)
+
+
+class TestRequesterAttribution:
+    """The /stream call must tag the turn with the SAME workspace-scoped raw
+    identity that /aztec-forget-me sends, or erasure silently misses the turn.
+    """
+
+    def test_answer_question_sends_requester_identity_like_forget(self, bot_module, monkeypatch):
+        captured = {}
+
+        async def fake(question, messages, conversation_id, requester_provider_id=None):
+            captured["rpid"] = requester_provider_id
+            return {
+                "answer": "a", "conversation_id": "c1", "sources": [],
+                "usage": None, "http_status": 200, "error": None,
+            }
+
+        monkeypatch.setattr(bot_module, "generate_answer", fake)
+        client = _RecordingClient()
+        key = ("T_UNCAPPED", "D1")
+        bot_module.conversation_states.pop(key, None)
+        asyncio.run(bot_module._answer_question(
+            client, team_id="T_UNCAPPED", channel="D1", thread_ts=None,
+            trigger_ts="1.0", user="U1", question="q", is_dm=True,
+            enterprise_id="E1",
+        ))
+        bot_module.conversation_states.pop(key, None)
+        # Built via slack_raw_identity (Grid form), identical to the forget cmd.
+        assert captured["rpid"] == bot_module.slack_raw_identity("T_UNCAPPED", "U1", "E1")
+        assert captured["rpid"] == "E1:T_UNCAPPED:U1"

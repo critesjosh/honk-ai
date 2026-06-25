@@ -79,3 +79,32 @@ def canonical_user_id(provider: str, raw_id: str, *, pepper: str) -> str:
     if prefix is None:
         raise ValueError(f"unsupported provider: {provider!r}")
     return prefix + pseudonymize_provider_user_id(raw_id, pepper=pepper)
+
+
+def resolve_requester_pseudonym(
+    provider: object, raw_id: object, *, pepper: str
+) -> str | None:
+    """Lenient wrapper around :func:`canonical_user_id` for the request path.
+
+    Used to tag a stored chat turn with the canonical pseudonym of the
+    end-user who triggered it (so ``/forget-me`` can later erase it). Unlike
+    :func:`canonical_user_id`, this NEVER raises — a malformed/absent/unknown
+    identity must never break an in-flight answer; it just yields ``None`` (the
+    row stays anonymous and un-erasable, ages out via retention).
+
+    The raw id is the bot-supplied provider identity (Discord snowflake, or the
+    Slack workspace-scoped ``team_id:user_id`` compound). It is HMAC'd here and
+    never stored or logged in plaintext by callers.
+    """
+    if not pepper:
+        return None
+    if not isinstance(provider, str) or not isinstance(raw_id, str):
+        return None
+    provider = provider.strip()
+    raw_id = raw_id.strip()
+    if provider not in _PROVIDER_PREFIXES or not raw_id:
+        return None
+    try:
+        return canonical_user_id(provider, raw_id, pepper=pepper)
+    except ValueError:
+        return None

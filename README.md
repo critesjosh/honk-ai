@@ -40,8 +40,9 @@ architectural diff and
   and include a `-#` subtext "Sources" footer with up to 5 cited URLs.
   React with 👍 / 👎 on any of the bot's reply messages to record
   feedback — the bot forwards the reaction to the backend and stores
-  it on the conversation row. `/forget-me` deletes all data stored
-  under your Discord pseudonym.
+  it on the conversation row. `/forget-me` erases your data — your MCP
+  key, pseudonym-keyed data, and your own chat Q&A turns (see
+  "Right-to-erasure" in `extensions/discord/README.md`).
 - **MCP clients** (Claude Desktop, Claude Code, Codex) — paste the key from
   `/mcp-key` with `API_URL=https://aztec.adjacentpossible.dev`. The bot
   response includes ready-to-paste config snippets for each client and
@@ -61,9 +62,15 @@ architectural diff and
   `USER_ID_PEPPER` is **required at boot and unrotatable** — generate once
   via `openssl rand -hex 32` and treat as you would
   `ENCRYPTION_SECRET_KEY`. `/api/internal/forget_discord_user`
-  + the Discord `/forget-me` slash command satisfy GDPR right-to-erasure
-  by computing the same pseudonym and deleting all matching rows.
-  Post-deploy verification: `scripts/db/verify_pseudonymization.sql`.
+  + the Discord `/forget-me` / Slack `/aztec-forget-me` slash commands
+  satisfy GDPR right-to-erasure by computing the same pseudonym and
+  deleting all matching rows. Bot chat turns (stored under the shared
+  `user_id='local'` owner) are tagged per-message with the requester's
+  pseudonym (`conversation_messages.requester_user_id`, migration
+  `0011_requester_attribution`) and **redacted in place** on forget —
+  content NULLed but the row + `position` kept so the bots'
+  feedback/position contract holds. Post-deploy verification:
+  `scripts/db/verify_pseudonymization.sql`.
 - **`agents.surface` taxonomy** (migration `0009_agents_surface`) — explicit
   surface-attribution column, NOT NULL, CHECK-constrained to
   `('discord','widget','web_ask','mcp','eval')`. `agents.name` is a display

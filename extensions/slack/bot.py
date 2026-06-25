@@ -726,7 +726,7 @@ async def _resolve_user_names(client, msgs: list, bot_user_id: str) -> dict:
 
 # --- Backend calls ---------------------------------------------------------
 
-async def generate_answer(question: str, messages: list, conversation_id):
+async def generate_answer(question: str, messages: list, conversation_id, requester_provider_id=None):
     """Call the streaming backend. Returns answer / conversation_id /
     sources / usage / http_status / error. Ported verbatim from the
     Discord bot — the ``/stream`` contract is surface-agnostic,
@@ -746,6 +746,14 @@ async def generate_answer(question: str, messages: list, conversation_id):
         "history": json.dumps(messages),
         "conversation_id": conversation_id,
     }
+    # Right-to-erasure attribution: send the workspace-scoped raw identity
+    # (built by slack_raw_identity, IDENTICAL to what /aztec-forget-me sends) so
+    # the backend tags the stored turn with the same pseudonym it will later
+    # erase. The backend never stores/logs the raw id in plaintext. Best-effort:
+    # omitted if unknown. See extensions/slack/README.md + backend migration 0011.
+    if requester_provider_id:
+        payload["requester_provider"] = "slack"
+        payload["requester_provider_id"] = requester_provider_id
     headers = {"Content-Type": "application/json; charset=utf-8"}
     timeout = aiohttp.ClientTimeout(total=180)
     answer = ""
@@ -915,9 +923,16 @@ def _team_allowed(team_id: Optional[str]) -> bool:
     return team_id in SLACK_TEAM_IDS
 
 
-async def _answer_question(client, *, team_id, channel, thread_ts, trigger_ts, user, question, is_dm):
+async def _answer_question(client, *, team_id, channel, thread_ts, trigger_ts, user, question, is_dm, enterprise_id=None):
     """Shared answer path for both app_mention and DM. Runs as a background
-    task so the event handler can ack within Slack's 3s window."""
+    task so the event handler can ack within Slack's 3s window.
+
+    ``enterprise_id`` is threaded through so the right-to-erasure tag sent to
+    the backend is built with the SAME workspace-scoped compound identity
+    (``slack_raw_identity``) that ``/aztec-forget-me`` uses — otherwise the
+    pseudonyms would diverge on Enterprise Grid and erasure would miss the
+    turn.
+    """
     # Per-workspace spend reserve (pre-lock, mirrors Discord).
     reservation = await _reserve_team_spend(team_id)
     if reservation is None:
@@ -968,8 +983,19 @@ async def _answer_question(client, *, team_id, channel, thread_ts, trigger_ts, u
                     question_to_send = build_thread_context_block(recent, invoker, BOT_USER_ID, question, names)
 
             state["history"].append({"prompt": question})
+            # Workspace-scoped raw identity, built identically to the forget
+            # command so the backend pseudonyms match (parity is load-bearing
+            # for erasure). None when ``user`` is absent → turn stays anonymous.
+            requester_provider_id = (
+                slack_raw_identity(team_id, user, enterprise_id) if user else None
+            )
             try:
-                resp = await generate_answer(question_to_send, state["history"], state["conversation_id"])
+                resp = await generate_answer(
+                    question_to_send,
+                    state["history"],
+                    state["conversation_id"],
+                    requester_provider_id=requester_provider_id,
+                )
             except (asyncio.TimeoutError, aiohttp.ClientError) as exc:
                 logger.error("generate_answer failed: %s", exc)
                 state["history"].pop()
@@ -1151,6 +1177,7 @@ async def on_app_mention(event, body, client, logger):
     _spawn(_answer_question(
         client, team_id=team_id, channel=channel, thread_ts=thread_ts,
         trigger_ts=event["ts"], user=event.get("user"), question=question, is_dm=False,
+        enterprise_id=body.get("enterprise_id"),
     ))
 
 
@@ -1184,6 +1211,7 @@ async def on_message(event, body, client, logger):
     _spawn(_answer_question(
         client, team_id=team_id, channel=channel, thread_ts=None,
         trigger_ts=event["ts"], user=event.get("user"), question=question, is_dm=True,
+        enterprise_id=body.get("enterprise_id"),
     ))
 
 
@@ -1356,14 +1384,22 @@ async def cmd_forget_me(ack, body, client, respond):
         ]:
             conversation_states.pop(k, None)
     deleted = data.get("deleted", {})
+    # Chat turns are erased in place (content scrubbed); count them as messages.
+    messages_erased = deleted.get("conversation_messages", 0)
     lines = ["*Done.* Your Honk AI data has been erased:"]
     if deleted.get("agents"):
         lines.append(f"• MCP API key revoked ({deleted['agents']} agent record)")
     if deleted.get("conversations"):
         lines.append(f"• {deleted['conversations']} MCP conversation(s) deleted")
-    if not deleted.get("agents") and not deleted.get("conversations"):
-        lines.append("• No MCP data was found for your Slack account.")
-    lines.append("\nNote: shared bot Q&A in channels isn't tied to your account and isn't individually erasable.")
+    if messages_erased:
+        lines.append(f"• {messages_erased} chat message(s) erased")
+    if not deleted.get("agents") and not deleted.get("conversations") and not messages_erased:
+        lines.append("• No data was found for your Slack account.")
+    lines.append(
+        "\nNote: only messages you sent after data-erasure shipped are covered; "
+        "anything older ages out automatically. Run `/aztec-forget-me` again if "
+        "you were mid-conversation."
+    )
     lines.append("You can run `/aztec-mcp-key` again any time to provision a fresh key.")
     await respond("\n".join(lines))
 

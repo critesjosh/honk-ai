@@ -293,6 +293,14 @@ class TestForgetDiscordUser:
     EXPECTED_TABLES = {
         "agents",
         "conversations",
+        # Bot chat turns are REDACTED in place (not deleted) and counted
+        # under this key — see the redact-in-place block in routes.py +
+        # TestForgetErasesChatTurns. user_id stays 'local', so the
+        # plaintext-completeness check below trivially passes for it.
+        "conversation_messages",
+        # Paused tool-continuation state, deleted by requester_user_id (no
+        # longer cascades since we tombstone the parent conversation).
+        "pending_tool_state",
         "attachments",
         "memories",
         "todos",
@@ -1019,3 +1027,207 @@ class TestSlackProvider:
             ).scalar()
             == 1
         )
+
+
+class TestForgetErasesChatTurns:
+    """/forget-me must erase a bot user's own chat turns even though they are
+    stored under the shared ``user_id='local'`` owner — via redact-in-place
+    (keep row + position, NULL the content) plus scrubbing every off-message
+    copy. See migration 0011 + the redact block in routes.py.
+    """
+
+    _PROV_KEY = "test-prov-key"
+    _AUTH = {"X-Provisioning-Key": _PROV_KEY}
+    _RAW = "discord-chatter-1"
+    # conftest sets USER_ID_PEPPER to this for the test process.
+    _PEPPER = "0" * 64
+
+    def _pseudo(self, provider="discord", raw=None):
+        from application.pseudonyms import canonical_user_id
+
+        return canonical_user_id(provider, raw or self._RAW, pepper=self._PEPPER)
+
+    def _forget(self, pg_conn, raw=None):
+        app = _make_app()
+        with patch(
+            "application.api.internal.routes.settings.MCP_PROVISIONING_KEY",
+            self._PROV_KEY,
+        ), _patch_db(pg_conn):
+            with app.test_client() as c:
+                return c.post(
+                    "/api/internal/forget_discord_user",
+                    headers=self._AUTH,
+                    json={"discord_user_id": raw or self._RAW},
+                )
+
+    def test_redacts_requester_turns_keeps_coparticipant_and_position(self, pg_conn):
+        from sqlalchemy import text as sql_text
+
+        pseudo = self._pseudo()
+        # SHARED conversation owned by 'local' with a content-derived title.
+        # pos 0 = the requester's turn; pos 1 = a co-participant (NULL tag).
+        conv_id = pg_conn.execute(
+            sql_text(
+                "INSERT INTO conversations (user_id, name) "
+                "VALUES ('local', 'secret title') RETURNING id"
+            )
+        ).scalar()
+        pg_conn.execute(
+            sql_text(
+                "INSERT INTO conversation_messages "
+                "(conversation_id, user_id, position, prompt, response, requester_user_id) "
+                "VALUES (:cid, 'local', 0, 'my question', 'my answer', :p)"
+            ),
+            {"cid": conv_id, "p": pseudo},
+        )
+        pg_conn.execute(
+            sql_text(
+                "INSERT INTO conversation_messages "
+                "(conversation_id, user_id, position, prompt, response) "
+                "VALUES (:cid, 'local', 1, 'other question', 'other answer')"
+            ),
+            {"cid": conv_id},
+        )
+        # Off-message copies, tagged with the requester pseudonym.
+        pg_conn.execute(
+            sql_text(
+                "INSERT INTO user_logs (user_id, endpoint, data, requester_user_id) "
+                "VALUES ('local', 'stream_answer', '{\"question\": \"my question\"}'::jsonb, :p)"
+            ),
+            {"p": pseudo},
+        )
+        pg_conn.execute(
+            sql_text(
+                "INSERT INTO stack_logs (activity_id, endpoint, user_id, query, requester_user_id) "
+                "VALUES ('act-1', 'stream', 'local', 'my question', :p)"
+            ),
+            {"p": pseudo},
+        )
+
+        r = self._forget(pg_conn)
+        assert r.status_code == 200, r.json
+        deleted = r.json["deleted"]
+        assert deleted["conversation_messages"] == 1
+
+        # Requester's turn: redacted in place (row + position kept, content gone).
+        row = pg_conn.execute(
+            sql_text(
+                "SELECT prompt, response, requester_user_id, erased_at, position "
+                "FROM conversation_messages WHERE conversation_id = :cid AND position = 0"
+            ),
+            {"cid": conv_id},
+        ).fetchone()
+        assert row is not None, "requester turn must NOT be deleted (position contract)"
+        assert row.prompt is None and row.response is None
+        assert row.requester_user_id is None
+        assert row.erased_at is not None
+        assert row.position == 0
+
+        # Co-participant's turn: untouched.
+        other = pg_conn.execute(
+            sql_text(
+                "SELECT prompt, erased_at FROM conversation_messages "
+                "WHERE conversation_id = :cid AND position = 1"
+            ),
+            {"cid": conv_id},
+        ).fetchone()
+        assert other.prompt == "other question"
+        assert other.erased_at is None
+
+        # Conversation survives but its content-derived title is cleared.
+        conv = pg_conn.execute(
+            sql_text("SELECT name FROM conversations WHERE id = :cid"),
+            {"cid": conv_id},
+        ).fetchone()
+        assert conv is not None and conv.name is None
+
+        # Off-message log copies are deleted.
+        assert (
+            pg_conn.execute(
+                sql_text("SELECT count(*) FROM user_logs WHERE requester_user_id = :p"),
+                {"p": pseudo},
+            ).scalar()
+            == 0
+        )
+        assert (
+            pg_conn.execute(
+                sql_text("SELECT count(*) FROM stack_logs WHERE requester_user_id = :p"),
+                {"p": pseudo},
+            ).scalar()
+            == 0
+        )
+        assert deleted["user_logs"] >= 1
+        assert deleted["stack_logs"] >= 1
+
+    def test_compression_summary_is_tombstoned(self, pg_conn):
+        from sqlalchemy import text as sql_text
+
+        pseudo = self._pseudo()
+        conv_id = pg_conn.execute(
+            sql_text(
+                "INSERT INTO conversations (user_id, name, compression_metadata) "
+                "VALUES ('local', 't', '{\"compressed_summary\": \"x\"}'::jsonb) RETURNING id"
+            )
+        ).scalar()
+        pg_conn.execute(
+            sql_text(
+                "INSERT INTO conversation_messages "
+                "(conversation_id, user_id, position, prompt, response, requester_user_id) "
+                "VALUES (:cid, 'local', 0, 'q', 'a', :p)"
+            ),
+            {"cid": conv_id, "p": pseudo},
+        )
+        # Synthetic compression-summary message (carries the marker, no tag).
+        pg_conn.execute(
+            sql_text(
+                "INSERT INTO conversation_messages "
+                "(conversation_id, user_id, position, prompt, response, message_metadata) "
+                "VALUES (:cid, 'local', 1, '[Context Compression Summary]', 'summary text', "
+                "'{\"type\": \"compression_summary\"}'::jsonb)"
+            ),
+            {"cid": conv_id},
+        )
+
+        r = self._forget(pg_conn)
+        assert r.status_code == 200, r.json
+
+        summary = pg_conn.execute(
+            sql_text(
+                "SELECT response, erased_at FROM conversation_messages "
+                "WHERE conversation_id = :cid AND position = 1"
+            ),
+            {"cid": conv_id},
+        ).fetchone()
+        assert summary.response is None
+        assert summary.erased_at is not None
+        meta = pg_conn.execute(
+            sql_text("SELECT compression_metadata FROM conversations WHERE id = :cid"),
+            {"cid": conv_id},
+        ).scalar()
+        assert meta is None
+
+    def test_write_path_pseudonym_matches_forget(self):
+        """Parity: the pseudonym the /stream write path stamps
+        (resolve_requester_pseudonym) is byte-identical to what /forget-me
+        computes (canonical_user_id) — otherwise erasure would miss."""
+        from application.pseudonyms import (
+            canonical_user_id,
+            resolve_requester_pseudonym,
+        )
+
+        for provider, raw in (("discord", "1234567890"), ("slack", "T0:U0")):
+            write_side = resolve_requester_pseudonym(provider, raw, pepper=self._PEPPER)
+            forget_side = canonical_user_id(provider, raw, pepper=self._PEPPER)
+            assert write_side == forget_side
+            assert write_side is not None and raw not in write_side
+
+    def test_resolve_requester_pseudonym_is_lenient(self):
+        from application.pseudonyms import resolve_requester_pseudonym
+
+        p = self._PEPPER
+        assert resolve_requester_pseudonym(None, "x", pepper=p) is None
+        assert resolve_requester_pseudonym("discord", None, pepper=p) is None
+        assert resolve_requester_pseudonym("discord", "", pepper=p) is None
+        assert resolve_requester_pseudonym("telegram", "x", pepper=p) is None
+        assert resolve_requester_pseudonym("discord", "x", pepper="") is None
+        assert resolve_requester_pseudonym(123, "x", pepper=p) is None

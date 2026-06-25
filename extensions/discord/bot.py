@@ -1614,14 +1614,23 @@ async def forget_me(interaction: discord.Interaction):
     conversation_histories.pop(interaction.user.id, None)
 
     deleted = data.get("deleted", {})
+    # Chat turns are erased in place (content scrubbed); count them as messages.
+    messages_erased = deleted.get("conversation_messages", 0)
     summary_lines = ["**Done.** Your Honk AI data has been erased:"]
     if deleted.get("agents"):
         summary_lines.append(f"• MCP API key revoked ({deleted['agents']} agent record)")
     if deleted.get("conversations"):
         summary_lines.append(f"• {deleted['conversations']} conversation(s) deleted")
-    if not deleted.get("agents") and not deleted.get("conversations"):
+    if messages_erased:
+        summary_lines.append(f"• {messages_erased} chat message(s) erased")
+    if not deleted.get("agents") and not deleted.get("conversations") and not messages_erased:
         summary_lines.append("• No data was found for your Discord ID.")
-    summary_lines.append("\nYou can run `/mcp-key` again any time to provision a fresh key.")
+    summary_lines.append(
+        "\nNote: only messages you sent after data-erasure shipped are covered; "
+        "anything older ages out automatically. Run `/forget-me` again if you "
+        "were mid-conversation."
+    )
+    summary_lines.append("You can run `/mcp-key` again any time to provision a fresh key.")
     await interaction.followup.send("\n".join(summary_lines), ephemeral=True)
 
 
@@ -1660,7 +1669,7 @@ def _format_sources_footer(sources):
     return "\n".join(lines)
 
 
-async def generate_answer(question, messages, conversation_id):
+async def generate_answer(question, messages, conversation_id, requester_provider_id=None):
     """Generates an answer using the streaming API endpoint.
 
     Returns a dict with ``answer``, ``conversation_id``, ``sources``
@@ -1686,6 +1695,14 @@ async def generate_answer(question, messages, conversation_id):
         "history": json.dumps(messages),
         "conversation_id": conversation_id,
     }
+    # Right-to-erasure attribution: send the raw Discord user id so the backend
+    # tags the stored turn with the SAME pseudonym /forget-me computes (it never
+    # stores/logs the raw id in plaintext). Built identically to the id sent by
+    # the /forget-me command so the pseudonyms match. Best-effort: omitted if
+    # unknown. See extensions/discord/README.md + backend migration 0011.
+    if requester_provider_id:
+        payload["requester_provider"] = "discord"
+        payload["requester_provider_id"] = str(requester_provider_id)
     headers = {"Content-Type": "application/json; charset=utf-8"}
     timeout = aiohttp.ClientTimeout(total=180)
     answer = ""
@@ -2106,6 +2123,7 @@ async def on_message(message):
                     question_to_send,
                     conversation["history"],
                     conversation["conversation_id"],
+                    requester_provider_id=str(message.author.id),
                 )
             except (asyncio.TimeoutError, aiohttp.ClientError) as e:
                 logger.error("Error generating answer: %s", e)

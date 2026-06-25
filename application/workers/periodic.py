@@ -5,11 +5,15 @@ Two beat schedules survive the upstream-admin-API removal:
 - ``cleanup_pending_tool_state`` — Postgres has no native row TTL, so we
   sweep ``pending_tool_state`` every 60 s. Replaces the Mongo
   ``expireAfterSeconds=0`` index that the upstream code relied on.
-- ``purge_old_user_data`` — daily retention sweep aligned with the Aztec
-  Foundation privacy policy (https://aztec.network/privacy-policy):
-  "Technical usage information: 12 months". Agents (including
-  MCP-provisioned Discord agents) are intentionally preserved so issued
-  API keys keep working; only conversational content ages out.
+- ``purge_old_user_data`` — daily retention sweep. User-generated
+  content (conversations + message content + operational logs) is kept
+  **30 days**, well within the Aztec Foundation privacy policy's
+  12-month maximum for technical usage information
+  (https://aztec.network/privacy-policy) and matching the data-handling
+  commitments made in the Discord bot's Message Content intent review.
+  Agents (including MCP-provisioned Discord agents) are intentionally
+  preserved so issued API keys keep working; only conversational
+  content ages out.
 
 This module replaces the trio of beat-schedule registrations that used
 to live in ``application/api/user/tasks.py`` (deleted alongside the
@@ -47,7 +51,7 @@ def setup_periodic_tasks(sender, **kwargs):
 
 
 @celery.task(bind=True)
-def purge_old_user_data(self, retention_days: int = 365):
+def purge_old_user_data(self, retention_days: int = 30):
     """Delete user-generated content older than ``retention_days``.
 
     Tables purged:

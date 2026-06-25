@@ -198,7 +198,7 @@ class TestOnMessageErrorFrame:
     def test_error_frame_rolls_back_like_non_200(self, bot_module, monkeypatch):
         _stub_gateway(bot_module, monkeypatch)
 
-        async def fake_generate(question, messages, conversation_id):
+        async def fake_generate(question, messages, conversation_id, requester_provider_id=None):
             return _stream_result(answer="partial", conversation_id=conversation_id, error="boom")
 
         monkeypatch.setattr(bot_module, "generate_answer", fake_generate)
@@ -226,7 +226,7 @@ class TestOnMessageErrorFrame:
         seeded["answer_count"] = 1
         seeded["history"].append({"prompt": "first q", "response": "first a"})
 
-        async def fake_generate(question, messages, conversation_id):
+        async def fake_generate(question, messages, conversation_id, requester_provider_id=None):
             assert conversation_id == "conv-REAL"
             return _stream_result(answer="partial", conversation_id=conversation_id, error="boom")
 
@@ -248,7 +248,7 @@ class TestOnMessageErrorFrame:
         success path's eager position bookkeeping."""
         _stub_gateway(bot_module, monkeypatch)
 
-        async def fake_generate(question, messages, conversation_id):
+        async def fake_generate(question, messages, conversation_id, requester_provider_id=None):
             return _stream_result()
 
         monkeypatch.setattr(bot_module, "generate_answer", fake_generate)
@@ -261,6 +261,22 @@ class TestOnMessageErrorFrame:
         assert state["history"][-1]["response"] == "the answer"
         assert bot_module.feedback_targets[42] == ("conv-1", 0)
 
+    def test_success_path_sends_requester_id(self, bot_module, monkeypatch):
+        """The /stream call must tag the turn with the Discord user id (the
+        same id /forget-me sends) so the turn is later erasable."""
+        _stub_gateway(bot_module, monkeypatch)
+        captured = {}
+
+        async def fake_generate(question, messages, conversation_id, requester_provider_id=None):
+            captured["rpid"] = requester_provider_id
+            return _stream_result()
+
+        monkeypatch.setattr(bot_module, "generate_answer", fake_generate)
+        channel = _make_channel()
+        msg = _make_message(channel)
+        asyncio.run(bot_module.on_message(msg))
+        assert captured["rpid"] == str(msg.author.id)
+
 
 class TestOnMessageCatchAll:
     def test_unexpected_exception_rolls_back_and_notifies(self, bot_module, monkeypatch):
@@ -269,7 +285,7 @@ class TestOnMessageCatchAll:
         prompt queued in history."""
         _stub_gateway(bot_module, monkeypatch)
 
-        async def fake_generate(question, messages, conversation_id):
+        async def fake_generate(question, messages, conversation_id, requester_provider_id=None):
             raise RuntimeError("kaput")
 
         monkeypatch.setattr(bot_module, "generate_answer", fake_generate)
@@ -286,7 +302,7 @@ class TestOnMessageCatchAll:
     def test_notice_send_failure_is_swallowed(self, bot_module, monkeypatch):
         _stub_gateway(bot_module, monkeypatch)
 
-        async def fake_generate(question, messages, conversation_id):
+        async def fake_generate(question, messages, conversation_id, requester_provider_id=None):
             raise RuntimeError("kaput")
 
         async def failing_send(*_a, **_kw):

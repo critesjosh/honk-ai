@@ -215,6 +215,7 @@ def _stream_response(
         model_id=processor.model_id,
         should_save_conversation=should_save_conversation,
         active_version=processor.active_version,
+        requester_user_id=processor.requester_user_id,
         _continuation=continuation,
     )
 
@@ -262,6 +263,7 @@ def _non_stream_response(
         model_id=processor.model_id,
         should_save_conversation=should_save_conversation,
         active_version=processor.active_version,
+        requester_user_id=processor.requester_user_id,
         _continuation=continuation,
     )
 
