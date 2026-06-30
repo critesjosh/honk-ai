@@ -57,6 +57,30 @@ Always prefix docker commands per the project's CLAUDE.md and `[[project_josh_bo
 export PATH=/usr/bin:$PATH; unset DOCKER_HOST
 ```
 
+**Content is encrypted at rest.** Since the content-encryption cutover, the
+chat columns (`conversation_messages.prompt/response/thought/tool_calls/
+message_metadata`, `conversations.name`, `stack_logs.query/stacks`,
+`user_logs.metadata->>'question'`) are stored as `honkenc:…` ciphertext. A plain
+`psql` SELECT returns ciphertext. For any query that reads content, run it
+through the decrypt helper instead of bare `psql` (it decrypts + can truncate the
+*decrypted* text). Run it via the **`mcp`** service: that container connects as
+the read-only `docsgpt_mcp_ro` role, so the query can't read credential columns
+(same least-privilege boundary as the `honk_sql` tool). `scripts/` is not baked
+into the image, so bind-mount it:
+
+```bash
+docker compose -f deployment/docker-compose-hub.yaml --env-file .env run --rm \
+  -e PYTHONPATH=/app -v $(pwd)/scripts:/app/scripts:ro mcp \
+  python scripts/db/decrypt_export.py --sql "<SELECT …>" [--truncate N] [--format json|table]
+```
+
+Run it from the prod repo root (`/mnt/user-data/josh/honk-deploy-main` or the
+deploy worktree that has `scripts/`). NEVER `LEFT(col, n)` an encrypted column in
+SQL — truncating the envelope makes it undecryptable; select the full column and
+pass `--truncate N`. Non-content columns (counts, timestamps, `surface`,
+`model_id`, `feedback`, `sources`) are NOT encrypted and a plain `psql` read of
+them is fine.
+
 `docker compose --since` does NOT accept `1d` / `7d` — use hours
 (`--since 168h`). This bites every time.
 
@@ -66,13 +90,17 @@ its data is noise for this report.
 
 ## Step 1 — Volume by surface
 
+These are count-only metrics (no content), so a plain `psql` read is fine.
+`AVG(LENGTH(cm.response))` is intentionally dropped — `cm.response` is now
+ciphertext, so its length is the envelope size, not the answer length. If you
+want avg answer length, compute it from the decrypted Step-2 sample instead.
+
 ```bash
 docker exec docsgpt-aztec-postgres-1 psql -U docsgpt -d docsgpt -c "
 SELECT a.surface,
        COUNT(DISTINCT c.id)                          AS conversations,
        COUNT(cm.id)                                  AS messages,
-       COUNT(DISTINCT c.user_id)                     AS distinct_users,
-       ROUND(AVG(LENGTH(cm.response))::numeric, 0)   AS avg_response_chars
+       COUNT(DISTINCT c.user_id)                     AS distinct_users
 FROM conversation_messages cm
 JOIN conversations c ON c.id = cm.conversation_id
 JOIN agents a        ON a.id = c.agent_id
@@ -90,13 +118,20 @@ enough for the LLM to cluster topics + spot-check accuracy without blowing the
 context window). Include `prompt`, `response`, `sources`, `model_id`,
 `message_metadata->'citation_filter'`, `feedback`:
 
+`prompt`/`response` are encrypted, so this goes through `decrypt_export.py`
+(JSON lines out; `--truncate 1200` bounds the *decrypted* response — do NOT
+`LEFT()` the ciphertext). `message_metadata->>'citation_filter'` stays plaintext
+(structural key) and `sources` is unencrypted, so both come through fine:
+
 ```bash
-docker exec docsgpt-aztec-postgres-1 psql -U docsgpt -d docsgpt -P pager=off -c "
+docker compose -f deployment/docker-compose-hub.yaml --env-file .env run --rm \
+  -e PYTHONPATH=/app -v $(pwd)/scripts:/app/scripts:ro mcp \
+  python scripts/db/decrypt_export.py --truncate 1200 --sql "
 SELECT a.surface,
        cm.timestamp,
        cm.model_id,
        cm.prompt,
-       LEFT(cm.response, 1200) AS response,
+       cm.response,
        cm.message_metadata->'citation_filter' AS citation_filter,
        cm.feedback,
        cm.sources
@@ -118,8 +153,10 @@ follow-ups (multi-turn conversations are where sentiment / dissatisfaction is
 most visible):
 
 ```bash
-docker exec docsgpt-aztec-postgres-1 psql -U docsgpt -d docsgpt -P pager=off -c "
-SELECT a.surface, cm.conversation_id, cm.position, cm.prompt, LEFT(cm.response, 600) AS resp
+docker compose -f deployment/docker-compose-hub.yaml --env-file .env run --rm \
+  -e PYTHONPATH=/app -v $(pwd)/scripts:/app/scripts:ro mcp \
+  python scripts/db/decrypt_export.py --truncate 600 --sql "
+SELECT a.surface, cm.conversation_id, cm.position, cm.prompt, cm.response AS resp
 FROM conversation_messages cm
 JOIN conversations c ON c.id = cm.conversation_id
 JOIN agents a        ON a.id = c.agent_id
@@ -169,8 +206,10 @@ before reporting positive/negative counts. The bot writes via
 Pull all 👎 with their prompts — these are the highest-signal failures:
 
 ```bash
-docker exec docsgpt-aztec-postgres-1 psql -U docsgpt -d docsgpt -P pager=off -c "
-SELECT a.surface, cm.prompt, LEFT(cm.response, 800) AS response, cm.feedback
+docker compose -f deployment/docker-compose-hub.yaml --env-file .env run --rm \
+  -e PYTHONPATH=/app -v $(pwd)/scripts:/app/scripts:ro mcp \
+  python scripts/db/decrypt_export.py --truncate 800 --sql "
+SELECT a.surface, cm.prompt, cm.response, cm.feedback
 FROM conversation_messages cm
 JOIN conversations c ON c.id = cm.conversation_id
 JOIN agents a        ON a.id = c.agent_id
@@ -218,9 +257,18 @@ Interpretation:
   or (b) a *legitimate* address the allowlist missed (a real UX regression).
   Pull them and classify:
 
+`literal_identifier_guard` is a structural key (plaintext, SQL-queryable) so the
+aggregate above and the `WHERE`/`AS guard` below work on raw `message_metadata`.
+But `cm.prompt`/`cm.response` are encrypted, so the scrub sample runs through
+`decrypt_export.py`. (Coverage note: only rows written AFTER the content-
+encryption cutover keep `literal_identifier_guard` in plaintext — older rows have
+it inside the encrypted blob, so guard metrics cover the post-cutover window.)
+
 ```bash
-docker exec docsgpt-aztec-postgres-1 psql -U docsgpt -d docsgpt -P pager=off -c "
-SELECT a.surface, cm.timestamp, cm.prompt, LEFT(cm.response, 1000) AS response,
+docker compose -f deployment/docker-compose-hub.yaml --env-file .env run --rm \
+  -e PYTHONPATH=/app -v $(pwd)/scripts:/app/scripts:ro mcp \
+  python scripts/db/decrypt_export.py --truncate 1000 --sql "
+SELECT a.surface, cm.timestamp, cm.prompt, cm.response,
        cm.message_metadata->'literal_identifier_guard' AS guard, cm.sources
 FROM conversation_messages cm
 JOIN conversations c ON c.id = cm.conversation_id

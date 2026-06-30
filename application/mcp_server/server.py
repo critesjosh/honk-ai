@@ -161,6 +161,7 @@ def build_server(
         query: str,
         timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS,
         row_cap: int = DEFAULT_ROW_CAP,
+        decrypt: bool = True,
     ) -> dict[str, Any]:
         token = _current_token()
         # audit_call wraps the entire tool body so scope failures and
@@ -170,7 +171,7 @@ def build_server(
             db_url,
             token_id=token.token_id,
             tool="honk_sql.execute",
-            args={"timeout_seconds": timeout_seconds, "row_cap": row_cap},
+            args={"timeout_seconds": timeout_seconds, "row_cap": row_cap, "decrypt": decrypt},
         ) as record:
             require_scopes(token, [SCOPE_DB_READ])
             try:
@@ -179,6 +180,7 @@ def build_server(
                     query,
                     timeout_seconds=timeout_seconds,
                     row_cap=row_cap,
+                    decrypt=decrypt,
                 )
             except StatementRejected as exc:
                 # Convert to ValueError so FastMCP returns an

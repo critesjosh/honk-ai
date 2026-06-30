@@ -24,11 +24,18 @@ This server supports two operating modes, gated by `MCP_AUTH_REQUIRED`:
 
 ## Tool surface
 
-- `honk_sql.execute(query, timeout_seconds=30, row_cap=500)` — single
+- `honk_sql.execute(query, timeout_seconds=30, row_cap=500, decrypt=True)` — single
   SELECT/WITH statement against the docsgpt database. Multi-statement,
   DML, DDL, **and data-modifying CTEs** are rejected by an in-process
   guard; the `docsgpt_mcp_ro` Postgres role rejects writes server-side.
   Server clamps `row_cap ≤ 5000` and `timeout_seconds ≤ 120`.
+  **Content columns are encrypted at rest** (see `PLAN-content-encryption.md`);
+  this raw-SQL path bypasses the repository decrypt boundary, so by default the
+  server decrypts any `honkenc:` envelopes in the result
+  (`content_registry.decrypt_deep` — provenance-free, GCM-authenticated, no-op on
+  plaintext) so the operator sees content. Pass `decrypt=False` to inspect raw
+  ciphertext. The MCP container needs `ENCRYPTION_SECRET_KEY` for this; if it's
+  missing, values degrade to ciphertext rather than erroring.
 - `honk_sql.list_tables(schema="public")` — bounded
   `information_schema.tables` listing.
 - `honk_sql.describe(table, schema="public")` — column metadata.

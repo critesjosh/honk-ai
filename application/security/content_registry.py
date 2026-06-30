@@ -25,6 +25,7 @@ non-structural plaintext key.
 
 import hashlib
 import hmac as _hmac
+import json
 import logging
 
 from cryptography.hazmat.primitives.hashes import SHA256
@@ -68,11 +69,16 @@ def api_key_fingerprint(api_key) -> str | None:
 
 
 # Keys allowed to remain plaintext in conversation_messages.message_metadata.
-# ``type`` is read via SQL by the forget lookup (routes.py:501); the others are
-# read in-app and are structural, not user content. Everything ELSE in the dict
-# (e.g. ``search_query`` — a rephrased user query) is encrypted by the json_keep
-# mode below. The scan also asserts no un-encrypted non-allowlisted key remains.
-STRUCTURAL_METADATA_ALLOWLIST = {"type", "citation_filter", "is_clarification"}
+# These are STRUCTURAL (not user content) and several are read/aggregated via raw
+# SQL, so they must stay queryable: ``type`` (forget lookup, routes.py:501),
+# ``citation_filter`` + ``is_clarification`` (read in-app), and
+# ``literal_identifier_guard`` (``{mode,checked,corrected,scrubbed}`` counts —
+# no addresses/content — aggregated by the honk-report skill). Everything ELSE in
+# the dict (e.g. a rephrased ``search_query``) is content and is encrypted by the
+# json_keep mode below. The scan asserts no un-encrypted non-allowlisted key
+# remains. Adding a key here keeps it plaintext for NEW writes only — rows written
+# before the change keep it inside the encrypted sentinel.
+STRUCTURAL_METADATA_ALLOWLIST = {"type", "citation_filter", "is_clarification", "literal_identifier_guard"}
 
 # table -> column -> {"mode": ..., "leaf_paths"/"keep_keys": ...}
 CONTENT_FIELDS: dict[str, dict[str, dict]] = {
@@ -199,3 +205,103 @@ def columns_by_mode(mode: str):
         for column, spec in cols.items():
             if spec["mode"] == mode:
                 yield table, column, spec
+
+
+# --- Provenance-free decryption for authorized operator reads ------------------
+#
+# The normal read path decrypts at the repository ``_row_to_dict`` boundary,
+# where the ``(table, column)`` is known. But operator surfaces — the MCP
+# ``honk_sql`` tool and the honk-report export — read content via RAW SQL, so
+# they never learn which registered column a value came from (aliases, joins,
+# JSON sub-selects all erase it). These helpers decrypt WITHOUT that provenance
+# by brute-forcing the registered AADs; AES-GCM authentication makes the match
+# unambiguous. Use ONLY for already-authorized operator reads (the MCP role's
+# grants + the host MCP auth are the access-control boundary, not these).
+
+
+def _all_content_columns() -> list[tuple[str, str]]:
+    return [(table, column) for table, cols in CONTENT_FIELDS.items() for column in cols]
+
+
+# Content columns the ``docsgpt_mcp_ro`` role CANNOT read (migration 0006/0007
+# audit policy): ``user_logs.data`` may carry bearer api_keys / response bodies,
+# and ``pending_tool_state`` holds in-flight tool state. The operator decrypt
+# helpers exclude these so they never decrypt a column the MCP least-privilege
+# boundary deliberately withholds — keeping the decrypt surface in step with the
+# SQL grants. Mirror the grants if either changes.
+MCP_RO_DENIED_CONTENT: frozenset[tuple[str, str]] = frozenset(
+    {("user_logs", "data")} | {("pending_tool_state", column) for column in CONTENT_FIELDS["pending_tool_state"]}
+)
+
+
+def operator_decrypt_candidates() -> frozenset[tuple[str, str]]:
+    """The ``(table, column)`` AAD candidates an operator raw-SQL reader may
+    decrypt: every content column EXCEPT :data:`MCP_RO_DENIED_CONTENT`. Pass this
+    to :func:`decrypt_deep` from ``honk_sql`` / ``decrypt_export`` so they can't
+    turn a secret-bearing blob into plaintext even with a privileged DB role."""
+    return frozenset(c for c in _all_content_columns() if c not in MCP_RO_DENIED_CONTENT)
+
+
+def decrypt_envelope_any_column(envelope, *, candidates=None) -> str | None:
+    """Decrypt one ``honkenc:`` envelope without knowing its source column.
+
+    Tries each candidate column's AAD (``table:column:kid:version``); a wrong AAD
+    fails GCM integrity, so at most one authenticates and the match is
+    unambiguous. ``candidates`` is an iterable of ``(table, column)`` — defaults
+    to every registered content column; operator callers pass
+    :func:`operator_decrypt_candidates` to exclude columns they aren't allowed to
+    read. Returns the plaintext, or ``None`` when nothing authenticates (not our
+    ciphertext, an excluded column, an unknown ``kid``, or the keyring is
+    unavailable) so callers fall back to the original value and never crash."""
+    if not isinstance(envelope, str) or not envelope.startswith(ce._PREFIX):
+        return None
+    cols = candidates if candidates is not None else _all_content_columns()
+    for table, column in cols:
+        try:
+            return ce._decrypt_envelope(envelope, table, column)
+        except Exception:  # noqa: BLE001 - wrong AAD / bad key / corrupt → try next column
+            continue
+    return None
+
+
+def decrypt_deep(value, *, candidates=None):
+    """Recursively decrypt every ``honkenc:`` envelope in a raw-SQL value.
+
+    For AUTHORIZED operator reads only (MCP ``honk_sql`` / honk-report). Handles
+    all registered storage shapes generically, mirroring the per-mode decoders:
+
+    * bare envelope string (``text``) → plaintext;
+    * whole-blob sentinel ``{"__enc__": <env>}`` (``json_blob``) → the parsed
+      inner JSON (object/list);
+    * ``json_keep`` dict (structural keys + sentinel) → structural keys merged
+      with the decrypted content keys;
+    * envelopes at nested leaves (``json_leaf``) → decrypted in place.
+
+    ``candidates`` restricts which columns' AADs are tried (see
+    :func:`decrypt_envelope_any_column`). Non-envelope values pass through
+    unchanged (read-both); a value that only *looks* encrypted, or whose column
+    is excluded, is left as-is."""
+    if isinstance(value, str):
+        if value.startswith(ce._PREFIX):
+            plaintext = decrypt_envelope_any_column(value, candidates=candidates)
+            return plaintext if plaintext is not None else value
+        return value
+    if isinstance(value, list):
+        return [decrypt_deep(v, candidates=candidates) for v in value]
+    if isinstance(value, dict):
+        sentinel = value.get(ce._JSON_SENTINEL)
+        if isinstance(sentinel, str) and sentinel.startswith(ce._PREFIX):
+            plaintext = decrypt_envelope_any_column(sentinel, candidates=candidates)
+            if plaintext is not None:
+                try:
+                    inner = json.loads(plaintext)
+                except (ValueError, TypeError):
+                    inner = plaintext
+                others = {k: decrypt_deep(v, candidates=candidates) for k, v in value.items() if k != ce._JSON_SENTINEL}
+                if isinstance(inner, dict):
+                    return {**others, **inner}
+                if others:  # structural keys beside a non-dict blob (unusual) — keep both
+                    return {**others, ce._JSON_SENTINEL: inner}
+                return inner
+        return {k: decrypt_deep(v, candidates=candidates) for k, v in value.items()}
+    return value

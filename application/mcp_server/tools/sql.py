@@ -22,6 +22,7 @@ from typing import Any
 import psycopg
 
 from application.mcp_server.sql_guard import GuardResult, guard_select
+from application.security.content_registry import decrypt_deep, operator_decrypt_candidates
 
 
 logger = logging.getLogger(__name__)
@@ -88,6 +89,7 @@ class SQLExecutor:
         *,
         timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS,
         row_cap: int = DEFAULT_ROW_CAP,
+        decrypt: bool = True,
     ) -> dict[str, Any]:
         """Run a guarded SELECT/WITH and return a JSON-shaped result.
 
@@ -97,6 +99,14 @@ class SQLExecutor:
         :class:`psycopg.Error`. The caller (the MCP tool wrapper) is
         responsible for translating those into MCP-shaped errors and
         for writing the audit row.
+
+        When ``decrypt`` is true (default), any ``honkenc:`` content
+        envelopes in the result are decrypted in place
+        (:func:`application.security.content_registry.decrypt_deep`) so the
+        operator sees plaintext — content columns are encrypted at rest and
+        this raw-SQL path bypasses the repository decrypt boundary. It's a
+        no-op on plaintext/legacy rows and leaves any value that doesn't
+        authenticate untouched, so it never breaks a query.
         """
         guard = guard_select(query)
         if not guard.ok:
@@ -136,6 +146,9 @@ class SQLExecutor:
         if truncated:
             rows = rows[:row_cap]
         coerced_rows = [[_to_jsonable(v) for v in row] for row in rows]
+        if decrypt:
+            candidates = operator_decrypt_candidates()
+            coerced_rows = [[decrypt_deep(v, candidates=candidates) for v in row] for row in coerced_rows]
         return {
             "columns": columns,
             "rows": coerced_rows,
