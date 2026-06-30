@@ -176,3 +176,110 @@ class TestRawGenStreamWiring:
              patch.object(open_router.settings, "REASONING_MAX_TOKENS", 16000):
             list(llm._raw_gen_stream(llm, DISABLED_MODEL, [], True, TOOLS))
         assert captured["extra_body"]["reasoning"] == {"max_tokens": 16000}
+
+
+
+def _sampling(
+    model,
+    *,
+    enabled=True,
+    prefixes="qwen/qwen3.6-flash",
+    presence_penalty=0.3,
+    temperature=None,
+    top_p=None,
+    kwargs=None,
+):
+    """Run the sampling policy with patched settings; return mutated kwargs."""
+    kwargs = {} if kwargs is None else dict(kwargs)
+    with patch.object(open_router.settings, "SAMPLING_POLICY_ENABLED", enabled), \
+         patch.object(open_router.settings, "SAMPLING_POLICY_MODEL_PREFIXES", prefixes), \
+         patch.object(open_router.settings, "SAMPLING_PRESENCE_PENALTY", presence_penalty), \
+         patch.object(open_router.settings, "SAMPLING_TEMPERATURE", temperature), \
+         patch.object(open_router.settings, "SAMPLING_TOP_P", top_p):
+        open_router._apply_sampling_policy(model, kwargs)
+    return kwargs
+
+
+class TestApplySamplingPolicy:
+    def test_scoped_model_gets_presence_penalty(self):
+        kwargs = _sampling(DISABLED_MODEL)
+        assert kwargs["presence_penalty"] == 0.3
+
+    def test_does_not_send_unsupported_penalties(self):
+        # frequency_penalty / repetition_penalty are NOT in qwen3.6-flash's
+        # OpenRouter supported_parameters — the policy must not send them.
+        kwargs = _sampling(DISABLED_MODEL)
+        assert "frequency_penalty" not in kwargs
+        assert "extra_body" not in kwargs  # repetition_penalty would have ridden here
+
+    def test_temperature_top_p_unset_by_default(self):
+        # Left to provider default unless explicitly configured (a low temp can
+        # worsen greedy loops).
+        kwargs = _sampling(DISABLED_MODEL)
+        assert "temperature" not in kwargs
+        assert "top_p" not in kwargs
+
+    def test_temperature_top_p_applied_when_configured(self):
+        kwargs = _sampling(DISABLED_MODEL, temperature=0.4, top_p=0.9)
+        assert kwargs["temperature"] == 0.4
+        assert kwargs["top_p"] == 0.9
+
+    def test_unscoped_model_is_noop(self):
+        assert _sampling(OTHER_MODEL) == {}
+
+    def test_disabled_is_noop(self):
+        assert _sampling(DISABLED_MODEL, enabled=False) == {}
+
+    def test_empty_prefixes_is_noop(self):
+        assert _sampling(DISABLED_MODEL, prefixes="") == {}
+
+    def test_non_string_model_is_noop(self):
+        assert _sampling(None) == {}
+
+    def test_presence_penalty_configurable(self):
+        kwargs = _sampling(DISABLED_MODEL, presence_penalty=0.5)
+        assert kwargs["presence_penalty"] == 0.5
+
+    def test_explicit_caller_value_wins(self):
+        kwargs = _sampling(DISABLED_MODEL, kwargs={"presence_penalty": 0.0})
+        assert kwargs["presence_penalty"] == 0.0
+
+    def test_csv_prefixes_with_whitespace(self):
+        kwargs = _sampling("x-ai/grok-4.1-fast", prefixes="  qwen/qwen3.6-flash , x-ai/grok-4.1-fast ")
+        assert kwargs["presence_penalty"] == 0.3
+
+
+class TestReasoningAndSamplingComposeThroughTransport:
+    """Both policies fire on the qwen path and both reach super() without
+    clobbering each other (reasoning in extra_body, sampling at top level)."""
+
+    def _capture(self, model, tools=None):
+        from application.llm.openai import OpenAILLM
+
+        llm = open_router.OpenRouterLLM()
+        llm.agent_id = "some-discord-agent"
+        captured = {}
+
+        def fake_super(self_, baseself, model, messages, stream=True, tools=None, *a, **kw):
+            captured.update(kw)
+            return iter(())
+
+        with patch.object(OpenAILLM, "_raw_gen_stream", fake_super), \
+             patch.object(open_router.settings, "REASONING_ENABLED_AGENT_IDS", ""), \
+             patch.object(open_router.settings, "SAMPLING_POLICY_ENABLED", True), \
+             patch.object(open_router.settings, "SAMPLING_POLICY_MODEL_PREFIXES", "qwen/qwen3.6-flash"), \
+             patch.object(open_router.settings, "SAMPLING_PRESENCE_PENALTY", 0.3), \
+             patch.object(open_router.settings, "SAMPLING_TEMPERATURE", None), \
+             patch.object(open_router.settings, "SAMPLING_TOP_P", None):
+            list(llm._raw_gen_stream(llm, model, [], tools=tools))
+        return captured
+
+    def test_qwen_gets_reasoning_disabled_and_presence_penalty(self):
+        captured = self._capture(DISABLED_MODEL)
+        assert captured["extra_body"]["reasoning"] == {"enabled": False}
+        assert captured["presence_penalty"] == 0.3
+
+    def test_non_qwen_gets_neither(self):
+        captured = self._capture(OTHER_MODEL)
+        assert "extra_body" not in captured
+        assert "presence_penalty" not in captured

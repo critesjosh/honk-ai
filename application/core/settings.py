@@ -1,3 +1,4 @@
+import math
 import os
 from pathlib import Path
 from typing import Optional
@@ -12,6 +13,19 @@ from application.core.db_uri import (  # noqa: E402
     normalize_pgvector_connection_string,
     normalize_postgres_uri,
 )
+
+
+def _clamp_finite(name: str, v, lo: float, hi: float) -> float:
+    """Clamp ``v`` to ``[lo, hi]``, rejecting non-finite values loudly.
+
+    NaN/inf are never valid sampling params and would otherwise slip through
+    ``max(min(...))`` as an extreme (NaN clamps to ``hi``), silently hiding a
+    corrupt config. Raise instead so it surfaces at boot like the other guards.
+    """
+    v = float(v)
+    if not math.isfinite(v):
+        raise ValueError(f"{name} must be a finite number; got {v!r}")
+    return max(lo, min(hi, v))
 
 
 class Settings(BaseSettings):
@@ -72,6 +86,26 @@ class Settings(BaseSettings):
     # CSV of agent UUIDs; empty = no override (every agent keeps the default).
     REASONING_ENABLED_AGENT_IDS: Optional[str] = None
     REASONING_MAX_TOKENS: int = 16000  # reasoning-token budget when enabled
+
+    # Decoding policy for repetition-prone models (llm/open_router.py
+    # _apply_sampling_policy). qwen3.6-flash with no penalty degenerates into
+    # token-level repetition on long context (2026-06-29 report). The
+    # anti-repetition lever is ``presence_penalty`` — the ONLY repeat-penalty
+    # OpenRouter advertises for qwen3.6-flash (``frequency_penalty`` /
+    # ``repetition_penalty`` are NOT in its supported_parameters and are
+    # silently dropped; verified against GET /api/v1/models 2026-06-29).
+    # Applied only to SAMPLING_POLICY_MODEL_PREFIXES (CSV), gated by the
+    # master switch. Default OFF: this changes generation for ALL scoped
+    # traffic, so A/B it with scripts/eval/eval_retrieval.py --mode stream
+    # before enabling (the WS2 history trim is the primary repetition fix).
+    # temperature/top_p are left unset by default — an aggressively LOW
+    # temperature can WORSEN greedy repetition loops, so only override when a
+    # value is configured.
+    SAMPLING_POLICY_ENABLED: bool = False
+    SAMPLING_POLICY_MODEL_PREFIXES: str = "qwen/qwen3.6-flash"
+    SAMPLING_PRESENCE_PENALTY: float = 0.3
+    SAMPLING_TEMPERATURE: Optional[float] = None
+    SAMPLING_TOP_P: Optional[float] = None
 
     # OAuth redirect base for MCP server connections (mcp_tool.py).
     CONNECTOR_REDIRECT_BASE_URI: Optional[str] = (
@@ -166,6 +200,39 @@ class Settings(BaseSettings):
         # A 0 / negative budget would reach OpenRouter as an invalid
         # ``reasoning.max_tokens``; clamp to a safe floor of 1.
         return max(1, int(v))
+
+    @field_validator("SAMPLING_TEMPERATURE", "SAMPLING_TOP_P", mode="before")
+    @classmethod
+    def _blank_sampling_float_to_none(cls, v):
+        # The .env-template documents the unset form as a bare
+        # ``SAMPLING_TEMPERATURE=`` (blank). Pydantic rejects "" for
+        # Optional[float] and would crash boot, so normalize blank /
+        # whitespace / "none" to actual None (mirrors normalize_api_key for
+        # the string keys).
+        if isinstance(v, str) and v.strip().lower() in ("", "none"):
+            return None
+        return v
+
+    @field_validator("SAMPLING_PRESENCE_PENALTY", mode="after")
+    @classmethod
+    def _clamp_presence_penalty(cls, v: float) -> float:
+        # OpenRouter accepts presence_penalty only in [-2, 2]; a typo like 3
+        # would make every scoped call a provider-side error once enabled.
+        # Clamp (mirrors _reasoning_budget_floor) so a misconfig degrades
+        # gracefully instead of failing the request.
+        return _clamp_finite("SAMPLING_PRESENCE_PENALTY", v, -2.0, 2.0)
+
+    @field_validator("SAMPLING_TEMPERATURE", mode="after")
+    @classmethod
+    def _clamp_sampling_temperature(cls, v):
+        # temperature range is [0, 2]; clamp when configured, pass None through.
+        return None if v is None else _clamp_finite("SAMPLING_TEMPERATURE", v, 0.0, 2.0)
+
+    @field_validator("SAMPLING_TOP_P", mode="after")
+    @classmethod
+    def _clamp_sampling_top_p(cls, v):
+        # top_p range is [0, 1]; clamp when configured, pass None through.
+        return None if v is None else _clamp_finite("SAMPLING_TOP_P", v, 0.0, 1.0)
 
     @field_validator("POSTGRES_URI", mode="before")
     @classmethod
