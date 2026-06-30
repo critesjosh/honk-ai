@@ -523,5 +523,19 @@
     "banned_identifiers": [],
     "max_response_time_s": 20,
     "min_distinct_sources": 2
+  },
+  {
+    "tag": "genesis-mismatch-version-skew",
+    "bucket": "resource",
+    "query": "My Aztec node won't sync — the logs say \"Rollup at 0x... is incompatible: genesis archive root (expected 0x..., got 0x...). Entering standby mode.\" What's wrong and how do I fix it?",
+    "expected_source_prefixes": [
+      "curated-troubleshooting/"
+    ],
+    "expected_first_prefixes": [
+      "operators/operator-faq"
+    ],
+    "max_response_time_s": 30,
+    "min_distinct_sources": 1,
+    "notes": "genesis-archive-root-mismatch / standby-mode recall: the curated operator-troubleshooting doc must surface. Retriever mode asserts the raw `curated-troubleshooting/` prefix (the specific guard — only this corpus has that path); stream mode matches the rewritten operator-FAQ URL via expected_first_prefixes. The DESIRED behavior — lead with node-version-vs-network-version skew, NOT a network/RPC mixup, and defer version numbers to networks.md — is human-read (no banned phrasing, since the doc legitimately lists the network mixup as a less-common cause)."
   }
 ]
