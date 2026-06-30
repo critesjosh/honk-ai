@@ -284,6 +284,28 @@ class TestCuratedTroubleshooting:
         ) == "https://docs.aztec.network/operate/operators/operator-faq"
 
 
+class TestCuratedTokenFees:
+    """Files at `curated-token-fees/...` are the hand-authored token/fees
+    boundaries doc (no upstream blob). They route to the version-aware
+    foundational fees page."""
+
+    def test_routes_to_fees_default_version(self):
+        # Default active_version is v5.0.0-rc.1 (testnet) → /testnet infix.
+        assert _aztec_source_url(
+            "curated-token-fees/aztec-token-and-fees-boundaries.md"
+        ) == "https://docs.aztec.network/developers/testnet/docs/foundational-topics/fees"
+
+    def test_mainnet_active_version_drops_infix(self):
+        assert _aztec_source_url(
+            "curated-token-fees/aztec-token-and-fees-boundaries.md", "v4.3.1"
+        ) == "https://docs.aztec.network/developers/docs/foundational-topics/fees"
+
+    def test_unknown_version_falls_back_to_bare(self):
+        assert _aztec_source_url(
+            "curated-token-fees/aztec-token-and-fees-boundaries.md", "v9.9.9"
+        ) == "https://docs.aztec.network/developers/docs/foundational-topics/fees"
+
+
 class TestNoirRepoMappings:
     """noir-docs/ → rendered noir-lang.org/docs (NOT GitHub).
     noir-stdlib/ stays on GitHub since those are real `.nr` source files."""

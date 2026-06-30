@@ -82,6 +82,8 @@ _BASE_KIND_ORDER: tuple = (
     "aztec_l1_contracts",
     # Hand-authored operator-troubleshooting (shared/unversioned). Supplementary.
     "aztec_operator_troubleshooting",
+    # Hand-authored token/fees boundaries doc (shared/unversioned). Supplementary.
+    "aztec_token_and_fees_curated",
     # Community resource list (awesome-aztec README). Supplementary, ordered last.
     "awesome_aztec",
 )

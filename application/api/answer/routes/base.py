@@ -304,6 +304,13 @@ def _aztec_source_url(source_path: str, active_version: str = _DEFAULT_DOC_VERSI
         _, _, operate_base = _docs_site_bases(active_version)
         return f"{operate_base}/operators/operator-faq"
 
+    # Curated, in-repo token/fees boundaries doc (``curated-token-fees/``
+    # prefix). Like the troubleshooting corpus it has no upstream blob, so cite
+    # the version-aware foundational fees page as the "learn more" destination.
+    if source_path.startswith("curated-token-fees/"):
+        docs_base, _, _ = _docs_site_bases(active_version)
+        return f"{docs_base}/foundational-topics/fees"
+
     # Noir language docs are rendered at noir-lang.org/docs. Strip the
     # markdown extension and any `/index` suffix to match the
     # Docusaurus URL scheme (same convention as docs.aztec.network).

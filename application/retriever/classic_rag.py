@@ -100,7 +100,11 @@ class ClassicRAG(BaseRetriever):
             "Given the following conversation history:\n"
             f"{self.chat_history}\n\n"
             "Rephrase the following user question to be a standalone search query "
-            "that captures all relevant context from the conversation:\n"
+            "that captures all relevant context from the conversation. If the "
+            "question compares Aztec to another network or system (e.g. another "
+            "L2 such as Starknet or zkSync), focus the query on Aztec's relevant "
+            "properties: the knowledge base contains only Aztec documentation, so "
+            "a query centered on the other system retrieves nothing useful:\n"
         )
 
         messages = [

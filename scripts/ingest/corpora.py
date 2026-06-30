@@ -176,11 +176,11 @@ class Corpus:
 # ── Corpora ──────────────────────────────────────────────────────────────
 #
 # The KB serves TWO live networks at once: mainnet (v4.3.1) and testnet
-# (v5.0.0-rc.1). 12 of the 16 corpus *kinds* are version-specific (their content
+# (v5.0.0-rc.1). 12 of the 17 corpus *kinds* are version-specific (their content
 # differs per release) and are generated once per active version by
-# ``_versioned_corpora`` below; the other 4 are genuinely unversioned/shared
+# ``_versioned_corpora`` below; the other 5 are genuinely unversioned/shared
 # (networks page, participate docs, awesome-aztec, curated operator
-# troubleshooting) and ingested once.
+# troubleshooting, curated token/fees boundaries) and ingested once.
 #
 # Per-version corpora carry ``version`` + ``network``. These are NOT set by
 # ``/api/upload`` — ``swap_sources.py`` stamps them into ``sources.metadata``
@@ -472,6 +472,29 @@ _SHARED_CORPORA: Tuple[Corpus, ...] = (
         notes="in-repo hand-authored operator troubleshooting (e.g. the "
               "genesis-archive-root-mismatch / standby-mode error). Shared / "
               "version-agnostic; defers version numbers to networks.md.",
+    ),
+    Corpus(
+        # Hand-authored token/fees boundaries doc (WS4): states the CURRENT,
+        # documented Fee-Juice / AZTEC-token mechanics AND explicitly marks the
+        # speculative areas (future gas role, tradability, DEX venues) as
+        # undocumented, so the model stops fabricating them (2026-06-29 report:
+        # "ThorDex", "$AZTEC is the L2 gas token", "Fee Juice is tradable").
+        # Version-agnostic → ``shared``; defers live numbers (supply, address,
+        # version) to the canonical docs so it isn't a stale-data landmine.
+        # Source lives under ``scripts/ingest/curated/token-and-fees/``;
+        # ``_aztec_source_url`` routes the ``curated-token-fees/`` prefix to the
+        # foundational fees page.
+        name="Aztec Token & Fees Boundaries (curated)",
+        slug="aztec_token_and_fees_curated",
+        source_root="curated",
+        trees=(SourceTree("token-and-fees", "curated-token-fees"),),
+        include_extensions=(".md",),
+        transform="passthrough",
+        in_production_agent=True,
+        network="shared",
+        notes="in-repo hand-authored token/fees grounding + anti-speculation "
+              "boundaries. Shared / version-agnostic; defers numbers to the "
+              "canonical token/fees docs.",
     ),
 )
 

@@ -6,9 +6,10 @@ a new aztec-packages release is a small number of commands instead of a
 folkloric afternoon of `zip` calls and SQL guesses.
 
 **Two-version KB (in flight — see `PLAN-two-version-kb.md`).** `corpora.py`
-now emits **28 corpora**: 12 for **v4.3.1 (mainnet)** + 12 for **v5.0.0-rc.1
-(testnet)** + 4 version-agnostic shared corpora (`awesome_aztec`,
-`aztec_site_networks`, `aztec_participate_docs`, `aztec_operator_troubleshooting`).
+now emits **29 corpora**: 12 for **v4.3.1 (mainnet)** + 12 for **v5.0.0-rc.1
+(testnet)** + 5 version-agnostic shared corpora (`awesome_aztec`,
+`aztec_site_networks`, `aztec_participate_docs`, `aztec_operator_troubleshooting`,
+`aztec_token_and_fees_curated`).
 Per-version corpora carry
 `version`/`network` fields and a version-suffixed slug (e.g.
 `aztec_developer_docs_v5_0_0_rc_1`). Retrieval is scoped to ONE version per
@@ -27,7 +28,7 @@ corpus — this tooling builds the replacement.)
 | `upload.py` | CLI: POSTs the zips to `/api/upload`, polls the Celery task, captures the resulting `sources.id` UUIDs. |
 | `swap_sources.py` | Generates the SQL needed to point an agent at the new corpora, plus the `.env` `AZTEC_SOURCE_IDS` block. **Does not execute SQL** — you do that yourself with `psql`, after reviewing. |
 | `../db/attach_source_to_agents.py` | Appends ONE already-uploaded source to existing chat agents' `extra_source_ids` (idempotent, `--dry-run`). Use when a corpus lands after agents were provisioned — `swap_sources.py` rebuilds the whole list and is the wrong shape for this. Example: the Awesome Aztec corpus was initially attached only to the widget agent, which made the eval's `awesome-*` resource queries unpassable on the Discord/Slack agents. |
-| `curated/` | **In-repo** hand-authored Markdown (the `curated` source root) for content upstream docs don't cover. Today: `operator-troubleshooting/` (e.g. the genesis-archive-root-mismatch / standby-mode error). Built into the shared `aztec_operator_troubleshooting` corpus; `build.py` defaults the `curated` root to this dir, so no CLI flag is needed. |
+| `curated/` | **In-repo** hand-authored Markdown (the `curated` source root) for content upstream docs don't cover. Two subdirs today: `operator-troubleshooting/` (e.g. the genesis-archive-root-mismatch / standby-mode error → `aztec_operator_troubleshooting`) and `token-and-fees/` (token/fee mechanics + anti-speculation boundaries → `aztec_token_and_fees_curated`). Each subdir is its own shared corpus; `build.py` defaults the `curated` root to this dir, so no CLI flag is needed. |
 
 ## What the corpora are
 
@@ -47,14 +48,14 @@ from upstream git repos pinned at that release's revisions:
     submodule (`git -C aztec-packages submodule status noir/noir-repo`). v4.3.1
     & v4.3.0 share `1d9727a6…`; v5.0.0-rc.1 is `c57152f9…`.
 
-Plus **4 shared (version-agnostic) corpora** built once: `awesome_aztec`,
-`aztec_site_networks`, `aztec_participate_docs`, and
-`aztec_operator_troubleshooting` (hand-authored, from the in-repo `curated`
-root — see the `curated/` row above).
+Plus **5 shared (version-agnostic) corpora** built once: `awesome_aztec`,
+`aztec_site_networks`, `aztec_participate_docs`, and the two hand-authored
+in-repo `curated`-root corpora `aztec_operator_troubleshooting` and
+`aztec_token_and_fees_curated` (see the `curated/` row above).
 
 Selecting a bundle at build time: `--version v4.3.1` / `--version v5.0.0-rc.1`
-builds that version's 12 corpora; `--version shared` builds the 4 shared ones;
-no selector builds all 28. (`--corpus <slug>` still selects individual corpora
+builds that version's 12 corpora; `--version shared` builds the 5 shared ones;
+no selector builds all 29. (`--corpus <slug>` still selects individual corpora
 by their version-suffixed slug.)
   * `AztecProtocol/awesome-aztec` — the community resource list (`awesome_aztec`
     corpus, built via `--awesome-aztec <checkout>`). This is a **moving**
@@ -129,7 +130,7 @@ git -C /tmp/noir-$V checkout "$NOIR_PIN"
 git clone --depth 1 https://github.com/AztecProtocol/awesome-aztec /tmp/awesome-aztec
 
 # 2. Build this version's 12 zips (--version selects the bundle). Idempotent.
-#    Run once per version, then once with --version shared for the 4 shared
+#    Run once per version, then once with --version shared for the 5 shared
 #    corpora (--awesome-aztec required there — it's a production corpus; the
 #    curated operator-troubleshooting corpus uses the in-repo default root).
 python -m scripts.ingest.build \

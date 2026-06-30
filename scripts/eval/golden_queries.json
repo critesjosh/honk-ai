@@ -368,7 +368,9 @@
       "Aztec Productivity Token",
       "Aztec Validation Token",
       "ATP (Aztec Productivity",
-      "ATV (Aztec Validation"
+      "ATV (Aztec Validation",
+      "ThorDex",
+      "Thor on Aztec"
     ],
     "max_response_time_s": 30,
     "min_distinct_sources": 2
@@ -495,5 +497,31 @@
     "max_response_time_s": 15,
     "min_distinct_sources": 1,
     "notes": "awesome-aztec recall: community monitoring tooling beyond the operator docs' built-in Grafana setup."
+  },
+  {
+    "tag": "fee-juice-no-fabricated-dex",
+    "bucket": "concept",
+    "query": "How do I get Fee Juice on Aztec, and can I trade it on a DEX?",
+    "expected_source_prefixes": [
+      "version-v5.0.0-rc.1/",
+      "aztec-participate/"
+    ],
+    "banned_identifiers": [
+      "ThorDex",
+      "Thor on Aztec"
+    ],
+    "max_response_time_s": 30,
+    "min_distinct_sources": 2
+  },
+  {
+    "tag": "comparison-aztec-vs-starknet",
+    "bucket": "concept",
+    "query": "How is Aztec different from Starknet?",
+    "expected_source_prefixes": [
+      "version-v5.0.0-rc.1/"
+    ],
+    "banned_identifiers": [],
+    "max_response_time_s": 20,
+    "min_distinct_sources": 2
   }
 ]
