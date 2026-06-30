@@ -143,6 +143,13 @@ MAX_THREAD_CONTEXT_CHARS = _env_int("SLACK_THREAD_CONTEXT_MAX_CHARS", 12000, min
 MAX_THREAD_MSG_CHARS = 1500
 MAX_STARTER_CHARS = 4000
 MAX_SPEAKER_LABEL_CHARS = 64
+# Per-conversation history replayed to /stream — see the Discord bot for the
+# rationale (long threads feeding the model its own verbose answers drive the
+# qwen repetition/hallucination loop, 2026-06-29 report). Cap exchanges +
+# truncate each turn; the current question is sent untruncated separately.
+SLACK_HISTORY_MAX_EXCHANGES = _env_int("SLACK_HISTORY_MAX_EXCHANGES", 6, min_value=1)
+MAX_HISTORY_PROMPT_CHARS = _env_int("SLACK_HISTORY_PROMPT_MAX_CHARS", 1500, min_value=128)
+MAX_HISTORY_RESPONSE_CHARS = _env_int("SLACK_HISTORY_RESPONSE_MAX_CHARS", 1000, min_value=128)
 
 
 def slack_raw_identity(team_id: Optional[str], user_id: str, enterprise_id: Optional[str] = None) -> str:
@@ -592,6 +599,24 @@ def _truncate_for_context(text: str, max_chars: int) -> str:
     return head + "\n[truncated]"
 
 
+def _history_for_backend(history: list) -> list:
+    """Trim the per-conversation history replayed to /stream: keep the last
+    ``SLACK_HISTORY_MAX_EXCHANGES`` *completed* exchanges plus the in-flight
+    current-prompt entry (``_answer_question`` appends ``{"prompt": ...}`` just
+    before this call — the ``+ 1`` in the slice keeps that trailing entry on
+    top of the N completed exchanges) and truncate each turn. Returns a new
+    list; the stored history is untouched. Mirrors the Discord bot."""
+    trimmed = []
+    for entry in history[-(SLACK_HISTORY_MAX_EXCHANGES + 1) :]:
+        new_entry = dict(entry)
+        if isinstance(new_entry.get("prompt"), str):
+            new_entry["prompt"] = _truncate_for_context(new_entry["prompt"], MAX_HISTORY_PROMPT_CHARS)
+        if isinstance(new_entry.get("response"), str):
+            new_entry["response"] = _truncate_for_context(new_entry["response"], MAX_HISTORY_RESPONSE_CHARS)
+        trimmed.append(new_entry)
+    return trimmed
+
+
 def _speaker_label(msg: dict, bot_user_id: str, user_names: dict) -> str:
     """Speaker prefix for a quoted message. Bot identity is keyed off the
     bot user id, never a display name, so a user can't impersonate Honk."""
@@ -992,7 +1017,7 @@ async def _answer_question(client, *, team_id, channel, thread_ts, trigger_ts, u
             try:
                 resp = await generate_answer(
                     question_to_send,
-                    state["history"],
+                    _history_for_backend(state["history"]),
                     state["conversation_id"],
                     requester_provider_id=requester_provider_id,
                 )
@@ -1034,7 +1059,9 @@ async def _answer_question(client, *, team_id, channel, thread_ts, trigger_ts, u
             state["answer_count"] += 1
             state["conversation_id"] = new_conversation_id
             state["history"][-1]["response"] = resp["answer"]
-            state["history"] = state["history"][-10:]
+            # Bound in-memory buffer to the replay window; _history_for_backend
+            # re-slices + truncates, so keeping more never reaches the model.
+            state["history"] = state["history"][-SLACK_HISTORY_MAX_EXCHANGES:]
 
             formatted = format_for_slack(resp["answer"])
             chunks = chunk_string(formatted)

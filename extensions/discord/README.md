@@ -110,6 +110,8 @@ See `.env-template` for full descriptions. Bot-only knobs:
 | `NOIR_GUILD_IDS` | — | CSV guild allowlist |
 | `DISCORD_THREAD_CONTEXT_LIMIT` | 30 | 0 disables thread context |
 | `DISCORD_THREAD_CONTEXT_MAX_CHARS` | 12000 | Cap on appended context block |
+| `DISCORD_HISTORY_MAX_EXCHANGES` | 6 | Replayed prior exchanges sent to `/stream` (`_history_for_backend`); curbs long-thread qwen degeneration |
+| `DISCORD_HISTORY_PROMPT_MAX_CHARS` / `DISCORD_HISTORY_RESPONSE_MAX_CHARS` | 1500 / 1000 | Per-turn truncation of replayed history; current question is sent separately + untruncated |
 | `DISCORD_GUILD_DAILY_USD_CAPS` | empty (uncapped) | `<gid>=<usd>` CSV; `=0` is kill-switch |
 | `DISCORD_PRE_CALL_RESERVE_USD` | 0.01 | Pre-call reserve before reconcile |
 | `DISCORD_SHARED_429_COOLDOWN_SECONDS` | 60 | Breaker cooldown |

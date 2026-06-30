@@ -78,6 +78,16 @@ MAX_THREAD_CONTEXT_CHARS = _env_int("DISCORD_THREAD_CONTEXT_MAX_CHARS", 12000, m
 MAX_THREAD_MSG_CHARS = 1500
 MAX_STARTER_CHARS = 4000
 MAX_SPEAKER_LABEL_CHARS = 64
+# Per-conversation history replayed to /stream. A long casual thread that
+# feeds the model many of its own verbose prior answers drives qwen into
+# repetition loops + speculative hallucination (2026-06-29 report: a 22-turn
+# bridging thread degenerated). Cap the number of exchanges replayed and
+# truncate each turn so the replayed context stays small and on-topic. The
+# CURRENT question is ALSO sent untruncated in the /stream ``question`` field,
+# so trimming its history copy never starves the model of the live ask.
+DISCORD_HISTORY_MAX_EXCHANGES = _env_int("DISCORD_HISTORY_MAX_EXCHANGES", 6, min_value=1)
+MAX_HISTORY_PROMPT_CHARS = _env_int("DISCORD_HISTORY_PROMPT_MAX_CHARS", 1500, min_value=128)
+MAX_HISTORY_RESPONSE_CHARS = _env_int("DISCORD_HISTORY_RESPONSE_MAX_CHARS", 1000, min_value=128)
 _THREAD_CACHE_MAX_ENTRIES = 500
 _USER_CACHE_MAX_ENTRIES = 500
 
@@ -973,6 +983,33 @@ def _truncate_for_context(text: str, max_chars: int) -> str:
     if head.count("```") % 2 == 1:
         head += "\n```"
     return head + "\n[truncated]"
+
+
+def _history_for_backend(history: list) -> list:
+    """Trim the per-conversation history replayed to /stream.
+
+    Keeps the last ``DISCORD_HISTORY_MAX_EXCHANGES`` *completed* exchanges
+    plus the in-flight current-prompt entry, and truncates each turn's
+    prompt/response so a long thread doesn't feed the model a huge,
+    self-repetitive context. ``on_message`` appends ``{"prompt": ...}`` just
+    before this call, so that prompt-only entry is the trailing element; the
+    ``+ 1`` in the slice keeps it on top of the N completed exchanges (without
+    it the window would carry only N-1 completed exchanges to the model).
+    Returns a NEW list (the stored ``conversation["history"]`` — load-bearing
+    for the bot's own append/pop/feedback bookkeeping — is left untouched).
+    The current question is also delivered separately and untruncated in the
+    ``question`` field, so the model never loses the live ask to truncation
+    here.
+    """
+    trimmed = []
+    for entry in history[-(DISCORD_HISTORY_MAX_EXCHANGES + 1) :]:
+        new_entry = dict(entry)
+        if isinstance(new_entry.get("prompt"), str):
+            new_entry["prompt"] = _truncate_for_context(new_entry["prompt"], MAX_HISTORY_PROMPT_CHARS)
+        if isinstance(new_entry.get("response"), str):
+            new_entry["response"] = _truncate_for_context(new_entry["response"], MAX_HISTORY_RESPONSE_CHARS)
+        trimmed.append(new_entry)
+    return trimmed
 
 
 def _format_attachment_placeholder(msg: discord.Message) -> Optional[str]:
@@ -2121,7 +2158,7 @@ async def on_message(message):
             try:
                 response_doc = await generate_answer(
                     question_to_send,
-                    conversation["history"],
+                    _history_for_backend(conversation["history"]),
                     conversation["conversation_id"],
                     requester_provider_id=str(message.author.id),
                 )
@@ -2290,8 +2327,10 @@ async def on_message(message):
                 logger.warning("Error-notice send failed (swallowed): %s", send_exc)
             return
 
-        # Keep conversation history to last 10 exchanges.
-        conversation["history"] = conversation["history"][-10:]
+        # Bound the in-memory history buffer to the replay window. Replay to
+        # /stream re-slices + truncates via _history_for_backend, so keeping
+        # more here would never reach the model — just cap at the window.
+        conversation["history"] = conversation["history"][-DISCORD_HISTORY_MAX_EXCHANGES:]
 
     try:
         if lock_cm is not None:

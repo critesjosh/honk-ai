@@ -87,6 +87,8 @@ See `.env-template` for full descriptions. Bot-only knobs:
 | `SLACK_TEAM_IDS` | empty (all) | CSV workspace allowlist |
 | `SLACK_THREAD_CONTEXT_LIMIT` | 30 | 0 disables thread context |
 | `SLACK_THREAD_CONTEXT_MAX_CHARS` | 12000 | Cap on appended context block |
+| `SLACK_HISTORY_MAX_EXCHANGES` | 6 | Replayed prior exchanges sent to `/stream` (`_history_for_backend`); mirrors the Discord bot |
+| `SLACK_HISTORY_PROMPT_MAX_CHARS` / `SLACK_HISTORY_RESPONSE_MAX_CHARS` | 1500 / 1000 | Per-turn truncation of replayed history |
 | `SLACK_TEAM_DAILY_USD_CAPS` | empty (uncapped) | `<team>=<usd>` CSV; `=0` is kill-switch |
 | `SLACK_PRE_CALL_RESERVE_USD` | 0.01 | Pre-call reserve before reconcile |
 | `SLACK_USD_PER_PROMPT_MTOK` / `SLACK_USD_PER_COMPLETION_MTOK` | 0.20 / 1.20 | OpenRouter $/Mtok for spend estimation |
