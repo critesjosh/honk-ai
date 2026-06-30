@@ -50,6 +50,34 @@ _MAX_SOURCES_EMITTED = 10
 # ``available_count``.
 _FAIL_OPEN_MAX_SOURCES = 3
 
+# ---- Literal-identifier guardrail (Aztec fork) --------------------------
+# A grounded answer must not invent or corrupt long hex identifiers
+# (addresses, tx/block hashes, public keys). 2026-06-29: a widget answer
+# corrupted the $AZTEC contract address by one nibble (``…245217Ff08…`` →
+# ``…245217Df08…``) though the retrieved chunk was correct — a funds-loss
+# risk. The guard checks every long hex literal against an allowlist of what
+# the model was given (retrieved docs, question, prior turns, tool results),
+# correcting single-nibble corruptions and scrubbing unverifiable ones.
+# Modes via ``settings.LITERAL_GUARD_MODE``: off (legacy) / audit (detect +
+# log only) / enforce (also hold back + correct/scrub mid-stream).
+#
+# Guard only literals >= 32 nibbles; shorter ``0x…`` runs (selectors,
+# ``0xdeadbeef`` prose) are left alone to avoid false positives.
+_GUARDED_HEX_MIN_NIBBLES = 32
+_GUARDED_HEX_RE = re.compile(r"0x[0-9a-fA-F]{%d,}" % _GUARDED_HEX_MIN_NIBBLES)
+# Allowlist harvests any ``0x`` run >= 8 nibbles (a superset of guarded ones).
+_ALLOWLIST_HEX_RE = re.compile(r"0x[0-9a-fA-F]{8,}")
+# Max Hamming distance to treat a literal as a corrupted copy and auto-correct
+# (1 = the observed single-nibble case; 2 absorbs a typo pair). Anything else
+# is scrubbed, not guessed.
+_LITERAL_NEARMISS_MAX_DISTANCE = 2
+# Cap the mid-stream hold-back for an in-flight literal. The longest real id is
+# a 0x uncompressed pubkey (132 chars); 160 covers it while stopping a stray
+# ``0x`` + hex blob from pinning the split forever. Longer runs aren't real ids
+# — the end-of-stream sweep still scrubs them in the persisted copy.
+_PARTIAL_HEX_HOLDBACK_LEN = 160
+_UNVERIFIED_LITERAL_PLACEHOLDER = "[unverified address removed]"
+
 # ---- Source URL mapping (Aztec fork) ------------------------------------
 # Corpus paths stored in `metadata.source` are relative to the ingest zip.
 # Map them to public URLs:
@@ -710,6 +738,147 @@ def _fail_open_sources(
     return kept, meta
 
 
+@dataclass
+class _LiteralAllowlist:
+    """Hex literals the model was legitimately given this turn.
+
+    ``literal_set`` is lowercased for O(1) exact (case-insensitive) lookup;
+    ``by_length`` keeps the original-cased literals bucketed by length for
+    near-miss correction (so a fix preserves EIP-55 checksum casing).
+    """
+
+    literal_set: set
+    by_length: Dict[int, List[str]]
+
+
+def _build_literal_allowlist(agent: Any, question: Optional[str]) -> _LiteralAllowlist:
+    """Harvest every ``0x…`` literal the model was given this turn — retrieved
+    chunks, the question, prior turns, and full tool results — so the guard can
+    tell a grounded identifier from an invented/corrupted one.
+
+    ``tool_calls[*]['result_full']`` is load-bearing: the ``aztec_network`` tool
+    returns RPC/contract addresses NOT in the corpus, so omitting them would
+    scrub live-data answers. ``str()`` is deliberate so addresses nested in doc
+    metadata / tool payloads are still seen.
+    """
+    parts: List[str] = []
+    if question:
+        parts.append(question)
+    for doc in getattr(agent, "retrieved_docs", None) or []:
+        parts.append(str(doc))
+    for turn in getattr(agent, "chat_history", None) or []:
+        parts.append(str(turn))
+    for call in getattr(agent, "tool_calls", None) or []:
+        if isinstance(call, dict):
+            parts.append(str(call.get("result_full", "")))
+            parts.append(str(call.get("result", "")))
+        else:
+            parts.append(str(call))
+    blob = "\n".join(parts)
+    literal_set: set = set()
+    by_length: Dict[int, List[str]] = {}
+    for match in _ALLOWLIST_HEX_RE.finditer(blob):
+        lit = match.group()
+        low = lit.lower()
+        if low not in literal_set:
+            literal_set.add(low)
+            by_length.setdefault(len(lit), []).append(lit)
+    return _LiteralAllowlist(literal_set=literal_set, by_length=by_length)
+
+
+def _hamming_within(a: str, b: str, max_distance: int) -> bool:
+    """True iff equal-length ``a``/``b`` differ (case-insensitively) in <=
+    ``max_distance`` positions. Length mismatch → False (an insertion/deletion
+    is unverifiable → scrubbed, not guessed)."""
+    if len(a) != len(b):
+        return False
+    dist = 0
+    for ca, cb in zip(a.lower(), b.lower()):
+        if ca != cb:
+            dist += 1
+            if dist > max_distance:
+                return False
+    return True
+
+
+def _resolve_literal(lit: str, allowlist: _LiteralAllowlist) -> Tuple[str, Optional[str]]:
+    """Classify one guarded hex literal against the allowlist.
+
+    Returns ``(verdict, replacement)``:
+      ``verified``   exact (case-insensitive) allowlist hit — keep as-is.
+      ``corrected``  unique same-length near-miss — ``replacement`` is the
+                     canonical source-cased literal.
+      ``unverified`` no exact hit and no *unique* near-miss — ``replacement``
+                     is the redaction placeholder (ambiguous near-misses are
+                     scrubbed, never guessed).
+    """
+    if lit.lower() in allowlist.literal_set:
+        return "verified", None
+    candidates = [
+        c for c in allowlist.by_length.get(len(lit), []) if _hamming_within(lit, c, _LITERAL_NEARMISS_MAX_DISTANCE)
+    ]
+    distinct = {c.lower(): c for c in candidates}
+    if len(distinct) == 1:
+        return "corrected", next(iter(distinct.values()))
+    return "unverified", _UNVERIFIED_LITERAL_PLACEHOLDER
+
+
+@dataclass
+class _LiteralGuardResult:
+    text: str
+    checked: int = 0
+    corrected: int = 0
+    scrubbed: int = 0
+
+
+def _guard_hex_literals(text: str, allowlist: _LiteralAllowlist, *, apply: bool) -> _LiteralGuardResult:
+    """Verify every guarded hex literal in ``text`` against ``allowlist``.
+
+    ``apply=True`` (enforce) returns rewritten text — corrupted literals
+    fixed, unverifiable literals replaced with the placeholder. ``apply=False``
+    (audit) returns ``text`` unchanged and only counts what *would* change.
+    """
+    result = _LiteralGuardResult(text=text)
+
+    def _repl(match: "re.Match") -> str:
+        lit = match.group()
+        result.checked += 1
+        verdict, replacement = _resolve_literal(lit, allowlist)
+        if verdict == "verified":
+            return lit
+        if verdict == "corrected":
+            result.corrected += 1
+            return replacement if apply else lit
+        result.scrubbed += 1
+        return replacement if apply else lit
+
+    new_text = _GUARDED_HEX_RE.sub(_repl, text)
+    if apply:
+        result.text = new_text
+    return result
+
+
+def _trailing_partial_hex_start(text: str) -> int:
+    """Index of an unterminated hex literal at the very end of ``text``, or -1
+    if the tail isn't mid-literal. Lets the enforce-mode streamer hold back a
+    literal that may still be arriving so the guard never sees half of one.
+
+    Catches both a ``0x`` followed by hex chars AND a bare trailing ``0`` — the
+    latter may be the ``0`` of a ``0x`` whose ``x`` hasn't streamed yet, so
+    holding it stops the split from ever landing between the ``0`` and ``x``
+    (which would leave the rest of the literal with no ``0x`` prefix to match).
+    """
+    i = len(text)
+    hexdigits = "0123456789abcdefABCDEF"
+    while i > 0 and text[i - 1] in hexdigits:
+        i -= 1
+    if i >= 2 and text[i - 2 : i] == "0x":
+        return i - 2
+    if text.endswith("0"):
+        return len(text) - 1
+    return -1
+
+
 def _build_source_frame(
     source_log_docs: List[Dict[str, Any]],
     active_version: str = _DEFAULT_DOC_VERSION,
@@ -1114,6 +1283,20 @@ class BaseAnswerResource:
         # observable signal exists for monitoring / honk-report.
         inline_markers_scrubbed: int = 0
 
+        # Literal-identifier guardrail mode + lazily-built allowlist. The
+        # allowlist is built once on first need (during answer streaming, so
+        # any tool results that ran first are included) and cached.
+        literal_guard_mode = (getattr(settings, "LITERAL_GUARD_MODE", "audit") or "audit").strip().lower()
+        if literal_guard_mode not in ("off", "audit", "enforce"):
+            literal_guard_mode = "audit"
+        literal_allowlist: Optional[_LiteralAllowlist] = None
+
+        def _get_literal_allowlist() -> _LiteralAllowlist:
+            nonlocal literal_allowlist
+            if literal_allowlist is None:
+                literal_allowlist = _build_literal_allowlist(agent, question)
+            return literal_allowlist
+
         def _try_parse_marker_from_tail(force: bool = False) -> None:
             """Look for the trailing citation marker in ``pending_tail``.
             On match: strip it from ``pending_tail`` and from
@@ -1272,10 +1455,30 @@ class BaseAnswerResource:
             ):
                 split_at = last_open
                 to_emit = pending_tail[:split_at]
+            # Enforce: never emit a half-streamed hex literal. If ``to_emit``
+            # ends mid-``0x…``, back the split up to the ``0x`` so the literal
+            # reassembles whole on a later delta (mirrors the ``[[`` hold-back).
+            # Bounded so a stray ``0x`` can't pin the split forever.
+            if literal_guard_mode == "enforce":
+                hex_start = _trailing_partial_hex_start(to_emit)
+                if (
+                    hex_start != -1
+                    and len(to_emit) - hex_start <= _PARTIAL_HEX_HOLDBACK_LEN
+                ):
+                    split_at = hex_start
+                    to_emit = pending_tail[:split_at]
             pending_tail = pending_tail[split_at:]
             if not to_emit:
                 return None
-            return _scrub_inline_citation_markers(to_emit)
+            emitted = _scrub_inline_citation_markers(to_emit)
+            if literal_guard_mode == "enforce" and emitted:
+                # Guard the LIVE bytes; ``response_full`` is re-guarded once at
+                # end-of-stream (same allowlist + deterministic transform) so the
+                # persisted copy stays byte-consistent with what the user saw.
+                emitted = _guard_hex_literals(
+                    emitted, _get_literal_allowlist(), apply=True
+                ).text
+            return emitted
 
         def _flush_pending_tail(force_parse: bool = False) -> Optional[str]:
             """Yield-side helper — try to parse-and-strip the citation
@@ -1302,6 +1505,12 @@ class BaseAnswerResource:
             pending_tail = ""
             if not scrubbed:
                 return None
+            if literal_guard_mode == "enforce":
+                # Short answers and the final tail flush here, not via
+                # ``_emit_answer_delta`` — guard them too so a corrupted literal
+                # in a short answer can't reach the client. ``response_full`` is
+                # re-guarded at end-of-stream to stay byte-consistent.
+                scrubbed = _guard_hex_literals(scrubbed, _get_literal_allowlist(), apply=True).text
             frame_data = json.dumps({"type": "answer", "answer": scrubbed})
             return f"data: {frame_data}\n\n"
 
@@ -1563,6 +1772,39 @@ class BaseAnswerResource:
                 # can't preempt the audit key. The marker-driven
                 # filter is authoritative for this row.
                 query_metadata["citation_filter"] = citation_filter_meta
+
+            # ---- Literal-identifier guardrail (end-of-stream sweep) -------
+            # Re-verify long hex literals in the accumulated ``response_full``.
+            # enforce: the live stream already corrected/scrubbed in-flight;
+            # re-running keeps the persisted + logged copy byte-consistent and
+            # produces the audit counts. audit: nothing altered — only measure
+            # would-be corrections/scrubs to size the false-positive rate.
+            # Structured answers are skipped. Runs before both save paths
+            # (paused + normal) and the user_logs row, which read these below.
+            if literal_guard_mode != "off" and not is_structured and response_full:
+                _lg = _guard_hex_literals(
+                    response_full,
+                    _get_literal_allowlist(),
+                    apply=(literal_guard_mode == "enforce"),
+                )
+                if literal_guard_mode == "enforce":
+                    response_full = _lg.text
+                if _lg.corrected or _lg.scrubbed:
+                    query_metadata["literal_identifier_guard"] = {
+                        "mode": literal_guard_mode,
+                        "checked": _lg.checked,
+                        "corrected": _lg.corrected,
+                        "scrubbed": _lg.scrubbed,
+                    }
+                    logger.warning(
+                        "llm.literal_guard agent_id=%s mode=%s checked=%d "
+                        "corrected=%d scrubbed=%d",
+                        agent_id,
+                        literal_guard_mode,
+                        _lg.checked,
+                        _lg.corrected,
+                        _lg.scrubbed,
+                    )
 
             # ---- Paused: save continuation state and end stream early ----
             if paused:
@@ -1834,6 +2076,17 @@ class BaseAnswerResource:
                     abort_inline_count,
                     len(response_full or ""),
                 )
+            # Abort path: enforce already corrected/scrubbed the streamed bytes,
+            # so re-guard the persisted partial too (else the saved row keeps a
+            # corrupted literal the user never saw).
+            if (
+                literal_guard_mode == "enforce"
+                and not is_structured
+                and response_full
+            ):
+                response_full = _guard_hex_literals(
+                    response_full, _get_literal_allowlist(), apply=True
+                ).text
             if should_save_conversation and response_full:
                 try:
                     if isNoneDoc:

@@ -72,6 +72,38 @@ Lands at `conversation_messages.message_metadata.citation_filter`:
   GROUP BY a.surface;
   ```
 
+## Literal-identifier guardrail
+
+A sibling answer-safety transform in the `routes/base.py` streaming path. A grounded answer must never invent or corrupt a long hex identifier (address, tx/block hash, public key). 2026-06-29: a widget answer corrupted the $AZTEC contract address by one nibble (`…245217Ff08…` → `…245217Df08…`) while the retrieved chunk was correct — a funds-loss risk.
+
+The guard checks every `0x[0-9a-fA-F]{32,}` literal (`_GUARDED_HEX_RE`; shorter `0x…` runs — selectors, `0xdeadbeef` prose — are left alone) against an **allowlist** of what the model was given this turn (`_build_literal_allowlist`):
+
+- `agent.retrieved_docs` — **NOT** `source_log_docs`, which is empty mid-stream (classic agents yield `sources` *after* the answer; `retrieved_docs` is populated at prefetch).
+- the user's `question`,
+- `agent.chat_history` (prior turns the bots feed back),
+- `agent.tool_calls[*].result_full` — **load-bearing**: the `aztec_network` tool returns RPC/contract addresses NOT in the corpus, so omitting it would scrub live-data answers.
+
+Per literal (`_resolve_literal`): exact (case-insensitive) allowlist hit → keep; unique same-length near-miss within `_LITERAL_NEARMISS_MAX_DISTANCE` (Hamming) → correct to the canonical source-cased literal; otherwise (no hit, or *ambiguous* near-miss) → replace with `[unverified address removed]` (never guessed).
+
+Modes — `settings.LITERAL_GUARD_MODE` (`.env`), default **`audit`**:
+
+| Mode | Streamed bytes | Persisted `response_full` | Metadata/log |
+|---|---|---|---|
+| `off` | unchanged | unchanged | none (byte-identical legacy) |
+| `audit` | unchanged | unchanged | records would-be counts |
+| `enforce` | partial `0x…` held back (`_trailing_partial_hex_start`, like the `[[` hold-back) then corrected/scrubbed in `_emit_answer_delta` **and** `_flush_pending_tail` (short answers / final tail) | re-guarded once at end-of-stream so the stored copy stays byte-consistent with what the user saw | records actual counts |
+
+Roll out **`audit` first** to size the false-positive rate, then flip to `enforce`. The audit row lands at `message_metadata.literal_identifier_guard` (`{mode, checked, corrected, scrubbed}`, only when `corrected`/`scrubbed` > 0) with a `llm.literal_guard` WARN log. Structured (JSON) agents are skipped; the abort/`GeneratorExit` path re-guards the persisted partial too.
+
+**`audit`/`off` are byte-identical to legacy** (no streamed/persisted change; audit only adds metadata when counts > 0) — safe to ship by default.
+
+**Known `enforce`-mode scope limits** (all-classic prod agents are fully covered; these only matter if `enforce` is enabled on agentic surfaces):
+- The allowlist is lazily captured on the first guarded literal during streaming, so a tool whose `result_full` lands *after* some answer text already streamed (multi-round agentic) isn't in the allowlist — later text grounded on it could be over-scrubbed.
+- The tool-continuation resume path (`_continuation`) builds the allowlist from `agent.retrieved_docs`/`chat_history`/`tool_calls` only; client-supplied tool `result` actions threaded into the LLM messages aren't harvested, so addresses the resumed model was given could be over-scrubbed.
+- Stream vs persisted copies can diverge only on pathological `0x` runs longer than `_PARTIAL_HEX_HOLDBACK_LEN` (160 chars) — longer than any real address/hash/pubkey.
+
 ## Tests
 
 `tests/api/answer/test_citation_marker.py` — 82 cases covering the parser, the inline scrubber, all four end-of-stream strategies, the `fail_open` top-`_FAIL_OPEN_MAX_SOURCES` cap (`_fail_open_sources`, both branches) + `available_count` audit, audit-metadata shape, delta-boundary straddle, unmatched-`[[` no-stall, and the GeneratorExit observability.
+
+`tests/api/answer/test_literal_guard.py` — 35 cases covering `_hamming_within`, `_trailing_partial_hex_start`, allowlist harvesting (docs/question/history/tool-results), `_resolve_literal` (verified / corrected / ambiguous-scrub / hallucinated), `_guard_hex_literals` (audit vs enforce, short-hex-ignored, case-insensitive), and `complete_stream` integration (enforce corrects in-stream, scrubs hallucinated, audit leaves bytes, partial-address split across deltas, tool-returned address preserved, `off` byte-identical).

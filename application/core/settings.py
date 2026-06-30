@@ -102,6 +102,16 @@ class Settings(BaseSettings):
     # debug only) so callers don't get permanently locked out before
     # the operator sets this.
     AZTEC_CORPUS_VERSION: Optional[str] = None
+    # Literal-identifier guardrail (application/api/answer/routes/base.py):
+    # verify long 0x hex literals (contract addresses, tx/block hashes, public
+    # keys) in grounded answers against what the model was given.
+    #   off     — disabled (legacy, byte-identical behaviour)
+    #   audit   — detect + log/record metadata only; never alters bytes (default)
+    #   enforce — also hold back partial literals mid-stream and correct
+    #             single-nibble corruptions / scrub unverifiable literals
+    # Default ``audit`` so the false-positive rate can be sized in prod before
+    # flipping to ``enforce``. Unknown values fall back to ``audit``.
+    LITERAL_GUARD_MODE: str = "audit"
     CORS_ALLOWED_ORIGINS: Optional[str] = None  # comma-separated origin URLs; empty = same-origin only; "*" = any (insecure)
 
     # Cap on tokens of retrieved documents injected into the LLM prompt.
