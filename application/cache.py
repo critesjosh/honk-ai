@@ -45,9 +45,14 @@ def gen_cache_key(messages, model="docgpt", tools=None):
 
 def gen_cache(func):
     def wrapper(self, model, messages, stream, tools=None, *args, **kwargs):
+        # Disabled by default (LLM_CACHE_ENABLED=false): the cache persists
+        # answer content at rest in Redis, which conflicts with the
+        # content-encryption-at-rest posture. See PLAN-content-encryption.md §3B.
+        if not settings.LLM_CACHE_ENABLED:
+            return func(self, model, messages, stream, tools, *args, **kwargs)
         if tools is not None:
             return func(self, model, messages, stream, tools, *args, **kwargs)
-        
+
         try:
             cache_key = gen_cache_key(messages, model, tools)
         except ValueError as e:
@@ -77,10 +82,15 @@ def gen_cache(func):
 
 def stream_cache(func):
     def wrapper(self, model, messages, stream, tools=None, *args, **kwargs):
+        # Disabled by default (LLM_CACHE_ENABLED=false) — see gen_cache above
+        # and PLAN-content-encryption.md §3B.
+        if not settings.LLM_CACHE_ENABLED:
+            yield from func(self, model, messages, stream, tools, *args, **kwargs)
+            return
         if tools is not None:
             yield from func(self, model, messages, stream, tools, *args, **kwargs)
             return
-        
+
         try:
             cache_key = gen_cache_key(messages, model, tools)
         except ValueError as e:

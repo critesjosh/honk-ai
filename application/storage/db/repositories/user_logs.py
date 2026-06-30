@@ -19,7 +19,19 @@ from typing import Optional
 
 from sqlalchemy import Connection, text
 
+from application.security.content_registry import api_key_fingerprint, decrypt_value, encrypt_value
 from application.storage.db.base_repository import row_to_dict
+
+
+def _row_to_dict(row) -> dict:
+    """Decrypt choke point for user_logs reads (``data`` blob + ``metadata``
+    question leaf). Read-both: a no-op on legacy plaintext."""
+    out = row_to_dict(row)
+    if "data" in out:
+        out["data"] = decrypt_value("user_logs", "data", out["data"])
+    if out.get("metadata") is not None:
+        out["metadata"] = decrypt_value("user_logs", "metadata", out["metadata"])
+    return out
 
 
 class UserLogsRepository:
@@ -52,29 +64,35 @@ class UserLogsRepository:
         log rows that copy that user's question/response into ``data``. NULL
         for anonymous/widget traffic. See migration 0011.
         """
+        # Blind-index the bearer key BEFORE encrypting ``data`` (the encrypted
+        # blob hides ``data->>'api_key'`` from the lookup). Dual-written in all
+        # states so reads can match on it. See PLAN §8.
+        api_key_fp = api_key_fingerprint(data.get("api_key")) if data else None
+        enc_data = encrypt_value("user_logs", "data", data)
+        enc_metadata = encrypt_value("user_logs", "metadata", metadata)
         self._conn.execute(
             text(
                 """
-                INSERT INTO user_logs (user_id, endpoint, data, metadata, timestamp, requester_user_id)
+                INSERT INTO user_logs (user_id, endpoint, data, metadata, timestamp, requester_user_id, api_key_fp)
                 VALUES (
                     :user_id,
                     :endpoint,
                     CAST(:data AS jsonb),
                     CAST(:metadata AS jsonb),
                     COALESCE(:timestamp, now()),
-                    :requester_user_id
+                    :requester_user_id,
+                    :api_key_fp
                 )
                 """
             ),
             {
                 "user_id": user_id,
                 "endpoint": endpoint,
-                "data": json.dumps(data, default=str) if data is not None else None,
-                "metadata": (
-                    json.dumps(metadata, default=str) if metadata is not None else None
-                ),
+                "data": json.dumps(enc_data, default=str) if enc_data is not None else None,
+                "metadata": (json.dumps(enc_metadata, default=str) if enc_metadata is not None else None),
                 "timestamp": timestamp,
                 "requester_user_id": requester_user_id,
+                "api_key_fp": api_key_fp,
             },
         )
 
@@ -97,16 +115,17 @@ class UserLogsRepository:
             clauses.append("user_id = :user_id")
             params["user_id"] = user_id
         if api_key is not None:
-            clauses.append("data->>'api_key' = :api_key")
+            # Dual-read: blind-index for encrypted rows, legacy data->>'api_key'
+            # for pre-backfill plaintext rows. See PLAN §8/§13.
+            clauses.append("(api_key_fp = :api_key_fp OR data->>'api_key' = :api_key)")
             params["api_key"] = api_key
+            params["api_key_fp"] = api_key_fingerprint(api_key)
         where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
         result = self._conn.execute(
-            text(
-                f"SELECT * FROM user_logs {where} ORDER BY timestamp DESC LIMIT :limit OFFSET :offset"
-            ),
+            text(f"SELECT * FROM user_logs {where} ORDER BY timestamp DESC LIMIT :limit OFFSET :offset"),
             params,
         )
-        rows = [row_to_dict(r) for r in result.fetchall()]
+        rows = [_row_to_dict(r) for r in result.fetchall()]
         has_more = len(rows) > page_size
         return rows[:page_size], has_more
 
@@ -125,8 +144,8 @@ class UserLogsRepository:
         so the filter reaches in via ``data->>'api_key'``. Rows are
         ordered by ``timestamp DESC`` to match the Mongo sort.
         """
-        clauses = ["data->>'api_key' = :api_key"]
-        params: dict = {"api_key": api_key}
+        clauses = ["(api_key_fp = :api_key_fp OR data->>'api_key' = :api_key)"]
+        params: dict = {"api_key": api_key, "api_key_fp": api_key_fingerprint(api_key)}
         if timestamp_gte is not None:
             clauses.append("timestamp >= :timestamp_gte")
             params["timestamp_gte"] = timestamp_gte
@@ -139,4 +158,4 @@ class UserLogsRepository:
             sql += " LIMIT :limit"
             params["limit"] = limit
         result = self._conn.execute(text(sql), params)
-        return [row_to_dict(r) for r in result.fetchall()]
+        return [_row_to_dict(r) for r in result.fetchall()]

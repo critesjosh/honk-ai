@@ -165,6 +165,31 @@ class TestBuildFromCompressedContext:
         # system + 1 valid query (user + assistant) = 3
         assert len(messages) == 3
 
+    def test_none_content_query_dropped_including_tool_calls(self):
+        # A turn whose prompt/response decrypted to None (or was erased) must be
+        # dropped entirely — no {"content": None} and no orphaned tool messages
+        # (PLAN §6).
+        queries = [
+            {"prompt": "real", "response": "answer"},
+            {
+                "prompt": None,
+                "response": None,
+                "tool_calls": [{"call_id": "c", "action_name": "leak", "arguments": {}, "result": "nope"}],
+            },
+        ]
+        messages = MessageBuilder.build_from_compressed_context(
+            system_prompt="S",
+            compressed_summary=None,
+            recent_queries=queries,
+            include_tool_calls=True,
+        )
+        # system + 1 readable query (user + assistant) = 3; the None turn + its
+        # tool_calls are gone.
+        assert len(messages) == 3
+        assert all(m.get("content") is not None for m in messages)
+        assert not any(m.get("role") == "tool" for m in messages)
+        assert "nope" not in str(messages)
+
 
 @pytest.mark.unit
 class TestAppendCompressionContext:
@@ -271,6 +296,24 @@ class TestRebuildMessagesAfterCompression:
         )
         # system + user + assistant + tool_call + tool_response = 5
         assert len(result) == 5
+
+    def test_rebuild_drops_none_content_turn(self):
+        # The mid-execution rebuild must also drop unreadable/erased turns so the
+        # continuation doesn't carry {"content": None} forward (PLAN §6).
+        messages = [{"role": "system", "content": "S"}]
+        recent = [
+            {"prompt": "q1", "response": "r1"},
+            {"prompt": None, "response": "orphan"},
+        ]
+        result = MessageBuilder.rebuild_messages_after_compression(
+            messages=messages,
+            compressed_summary="s",
+            recent_queries=recent,
+        )
+        # system + 1 readable turn (user + assistant) = 3
+        assert len(result) == 3
+        assert all(m.get("content") is not None for m in result)
+        assert "orphan" not in str(result)
 
     def test_continuation_added_when_no_recent_queries(self):
         messages = [{"role": "system", "content": "S"}]

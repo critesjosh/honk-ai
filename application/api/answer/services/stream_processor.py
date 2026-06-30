@@ -248,9 +248,16 @@ class StreamProcessor:
             # reader, so positional APIs keep array-index == DB-position. (In
             # practice only bot conversations are ever tombstoned and those load
             # history inline, so this is defensive for the DB-backed path.)
+            #
+            # Also drop turns whose ``prompt`` came back ``None`` — that means a
+            # content decrypt failed (corruption / partial rotation) and the repo
+            # read substituted a placeholder (content_registry.safe_decrypt_value).
+            # Per PLAN §6 an undecryptable turn is dropped like an erased one,
+            # rather than passed to the model as ``content: None`` (which some
+            # providers reject). A normal stored turn always has a prompt.
             if conversation.get("queries"):
                 conversation["queries"] = [
-                    q for q in conversation["queries"] if not q.get("erased_at")
+                    q for q in conversation["queries"] if not q.get("erased_at") and q.get("prompt") is not None
                 ]
 
             # Check if compression is enabled and needed

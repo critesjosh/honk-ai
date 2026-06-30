@@ -20,6 +20,11 @@ from typing import Optional
 from sqlalchemy import Connection, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
+from application.security.content_registry import (
+    encrypt_compression_point,
+    encrypt_value,
+    safe_decrypt_value,
+)
 from application.storage.db.base_repository import looks_like_uuid, row_to_dict
 from application.storage.db.models import conversations_table, conversation_messages_table
 
@@ -27,10 +32,36 @@ from application.storage.db.models import conversations_table, conversation_mess
 def _message_row_to_dict(row) -> dict:
     """Like ``row_to_dict`` but renames the DB column ``message_metadata``
     back to the public API key ``metadata`` so callers keep the Mongo-era
-    shape. See migration 0016 for the column rename rationale."""
+    shape. See migration 0016 for the column rename rationale.
+
+    Also the single decrypt choke point for message reads: content columns are
+    decrypted here (read-both — a no-op on legacy plaintext), so every message
+    read path returns plaintext. See PLAN-content-encryption.md §7.
+    """
     out = row_to_dict(row)
     if "message_metadata" in out:
-        out["metadata"] = out.pop("message_metadata")
+        out["metadata"] = safe_decrypt_value(
+            "conversation_messages", "message_metadata", out.pop("message_metadata"), default={}
+        )
+    # default mirrors each column's empty shape so a decrypt failure drops just
+    # this value (placeholder) rather than raising out of get_messages — see
+    # safe_decrypt_value / PLAN §6.
+    for col, default in (("prompt", None), ("response", None), ("thought", None), ("tool_calls", [])):
+        if col in out:
+            out[col] = safe_decrypt_value("conversation_messages", col, out[col], default=default)
+    return out
+
+
+def _conversation_row_to_dict(row) -> dict:
+    """Decrypt choke point for conversation reads (``name`` + compression
+    summary leaves). Read-both: a no-op on legacy plaintext."""
+    out = row_to_dict(row)
+    if "name" in out:
+        out["name"] = safe_decrypt_value("conversations", "name", out["name"], default=None)
+    if out.get("compression_metadata") is not None:
+        out["compression_metadata"] = safe_decrypt_value(
+            "conversations", "compression_metadata", out["compression_metadata"], default={}
+        )
     return out
 
 
@@ -73,7 +104,8 @@ class ConversationsRepository:
         return str(row[0]) if row is not None else None
 
     def _resolve_attachment_refs(
-        self, ids: list[str] | None,
+        self,
+        ids: list[str] | None,
     ) -> list[str]:
         """Translate a list of attachment ids to canonical PG
         ``attachments.id`` UUIDs.
@@ -143,7 +175,7 @@ class ConversationsRepository:
         """
         values: dict = {
             "user_id": user_id,
-            "name": name,
+            "name": encrypt_value("conversations", "name", name),
         }
         # ``agent_id`` may arrive as a Mongo ObjectId during the dual-write
         # window; resolve to a UUID (or drop silently if not yet backfilled).
@@ -161,10 +193,12 @@ class ConversationsRepository:
 
         stmt = pg_insert(conversations_table).values(**values).returning(conversations_table)
         result = self._conn.execute(stmt)
-        return row_to_dict(result.fetchone())
+        return _conversation_row_to_dict(result.fetchone())
 
     def get_by_legacy_id(
-        self, legacy_mongo_id: str, user_id: str | None = None,
+        self,
+        legacy_mongo_id: str,
+        user_id: str | None = None,
     ) -> Optional[dict]:
         """Look up a conversation by the original Mongo ObjectId string.
 
@@ -176,21 +210,16 @@ class ConversationsRepository:
         legacy_mongo_id = str(legacy_mongo_id) if legacy_mongo_id is not None else None
         if user_id is not None:
             result = self._conn.execute(
-                text(
-                    "SELECT * FROM conversations "
-                    "WHERE legacy_mongo_id = :legacy_id AND user_id = :user_id"
-                ),
+                text("SELECT * FROM conversations WHERE legacy_mongo_id = :legacy_id AND user_id = :user_id"),
                 {"legacy_id": legacy_mongo_id, "user_id": user_id},
             )
         else:
             result = self._conn.execute(
-                text(
-                    "SELECT * FROM conversations WHERE legacy_mongo_id = :legacy_id"
-                ),
+                text("SELECT * FROM conversations WHERE legacy_mongo_id = :legacy_id"),
                 {"legacy_id": legacy_mongo_id},
             )
         row = result.fetchone()
-        return row_to_dict(row) if row is not None else None
+        return _conversation_row_to_dict(row) if row is not None else None
 
     def get(self, conversation_id: str, user_id: str) -> Optional[dict]:
         """Fetch a conversation the user owns or has shared access to."""
@@ -203,7 +232,7 @@ class ConversationsRepository:
             {"id": conversation_id, "user_id": user_id},
         )
         row = result.fetchone()
-        return row_to_dict(row) if row is not None else None
+        return _conversation_row_to_dict(row) if row is not None else None
 
     def get_any(self, conversation_id: str, user_id: str) -> Optional[dict]:
         """Resolve a conversation by either PG UUID or legacy Mongo ObjectId string.
@@ -219,14 +248,11 @@ class ConversationsRepository:
     def get_owned(self, conversation_id: str, user_id: str) -> Optional[dict]:
         """Fetch a conversation owned by the user (no shared access)."""
         result = self._conn.execute(
-            text(
-                "SELECT * FROM conversations "
-                "WHERE id = CAST(:id AS uuid) AND user_id = :user_id"
-            ),
+            text("SELECT * FROM conversations WHERE id = CAST(:id AS uuid) AND user_id = :user_id"),
             {"id": conversation_id, "user_id": user_id},
         )
         row = result.fetchone()
-        return row_to_dict(row) if row is not None else None
+        return _conversation_row_to_dict(row) if row is not None else None
 
     def list_for_user(self, user_id: str, limit: int = 30) -> list[dict]:
         """List conversations for a user, most recent first.
@@ -242,7 +268,7 @@ class ConversationsRepository:
             ),
             {"user_id": user_id, "limit": limit},
         )
-        return [row_to_dict(r) for r in result.fetchall()]
+        return [_conversation_row_to_dict(r) for r in result.fetchall()]
 
     def rename(self, conversation_id: str, user_id: str, name: str) -> bool:
         # Shape-gate so a non-UUID id (legacy Mongo ObjectId still floating
@@ -257,7 +283,7 @@ class ConversationsRepository:
                 "UPDATE conversations SET name = :name, updated_at = now() "
                 "WHERE id = CAST(:id AS uuid) AND user_id = :user_id"
             ),
-            {"id": conversation_id, "user_id": user_id, "name": name},
+            {"id": conversation_id, "user_id": user_id, "name": encrypt_value("conversations", "name", name)},
         )
         return result.rowcount > 0
 
@@ -287,7 +313,8 @@ class ConversationsRepository:
                 "AND NOT (:user = ANY(shared_with))"
             )
         result = self._conn.execute(
-            text(sql), {"id": conversation_id, "user": user_to_add},
+            text(sql),
+            {"id": conversation_id, "user": user_to_add},
         )
         return result.rowcount > 0
 
@@ -312,7 +339,8 @@ class ConversationsRepository:
                 "AND :user = ANY(shared_with)"
             )
         result = self._conn.execute(
-            text(sql), {"id": conversation_id, "user": user_to_remove},
+            text(sql),
+            {"id": conversation_id, "user": user_to_remove},
         )
         return result.rowcount > 0
 
@@ -331,7 +359,10 @@ class ConversationsRepository:
         return result.rowcount > 0
 
     def update_compression_metadata(
-        self, conversation_id: str, user_id: str, metadata: dict,
+        self,
+        conversation_id: str,
+        user_id: str,
+        metadata: dict,
     ) -> bool:
         """Replace the entire ``compression_metadata`` JSONB blob.
 
@@ -350,7 +381,11 @@ class ConversationsRepository:
                 "SET compression_metadata = CAST(:meta AS jsonb), updated_at = now() "
                 "WHERE id = CAST(:id AS uuid) AND user_id = :user_id"
             ),
-            {"id": conversation_id, "user_id": user_id, "meta": json.dumps(metadata)},
+            {
+                "id": conversation_id,
+                "user_id": user_id,
+                "meta": json.dumps(encrypt_value("conversations", "compression_metadata", metadata)),
+            },
         )
         return result.rowcount > 0
 
@@ -395,9 +430,7 @@ class ConversationsRepository:
             {
                 "id": conversation_id,
                 "is_compressed": bool(is_compressed),
-                "last_compression_at": (
-                    str(last_compression_at) if last_compression_at is not None else None
-                ),
+                "last_compression_at": (str(last_compression_at) if last_compression_at is not None else None),
             },
         )
         return result.rowcount > 0
@@ -452,7 +485,7 @@ class ConversationsRepository:
             ),
             {
                 "id": conversation_id,
-                "point": json.dumps(point, default=str),
+                "point": json.dumps(encrypt_compression_point(point), default=str),
                 "max_points": int(max_points),
             },
         )
@@ -464,10 +497,7 @@ class ConversationsRepository:
         if not looks_like_uuid(conversation_id):
             return False
         result = self._conn.execute(
-            text(
-                "DELETE FROM conversations "
-                "WHERE id = CAST(:id AS uuid) AND user_id = :user_id"
-            ),
+            text("DELETE FROM conversations WHERE id = CAST(:id AS uuid) AND user_id = :user_id"),
             {"id": conversation_id, "user_id": user_id},
         )
         return result.rowcount > 0
@@ -502,9 +532,7 @@ class ConversationsRepository:
             return None
         result = self._conn.execute(
             text(
-                "SELECT * FROM conversation_messages "
-                "WHERE conversation_id = CAST(:conv_id AS uuid) "
-                "AND position = :pos"
+                "SELECT * FROM conversation_messages WHERE conversation_id = CAST(:conv_id AS uuid) AND position = :pos"
             ),
             {"conv_id": conversation_id, "pos": position},
         )
@@ -521,10 +549,7 @@ class ConversationsRepository:
         """
         # Lock the parent conversation row to serialize concurrent appends.
         self._conn.execute(
-            text(
-                "SELECT id FROM conversations "
-                "WHERE id = CAST(:conv_id AS uuid) FOR UPDATE"
-            ),
+            text("SELECT id FROM conversations WHERE id = CAST(:conv_id AS uuid) FOR UPDATE"),
             {"conv_id": conversation_id},
         )
         next_pos_result = self._conn.execute(
@@ -540,13 +565,19 @@ class ConversationsRepository:
         values = {
             "conversation_id": conversation_id,
             "position": next_pos,
-            "prompt": message.get("prompt"),
-            "response": message.get("response"),
-            "thought": message.get("thought"),
+            # Content columns encrypted at rest (no-op when disabled). sources is
+            # public-doc chunks and stays plaintext; message_metadata keeps its
+            # structural keys plaintext and encrypts the rest (json_keep). See
+            # PLAN-content-encryption.md §2/§7.
+            "prompt": encrypt_value("conversation_messages", "prompt", message.get("prompt")),
+            "response": encrypt_value("conversation_messages", "response", message.get("response")),
+            "thought": encrypt_value("conversation_messages", "thought", message.get("thought")),
             "sources": message.get("sources") or [],
-            "tool_calls": message.get("tool_calls") or [],
+            "tool_calls": encrypt_value("conversation_messages", "tool_calls", message.get("tool_calls") or []),
             "model_id": message.get("model_id"),
-            "message_metadata": message.get("metadata") or {},
+            "message_metadata": encrypt_value(
+                "conversation_messages", "message_metadata", message.get("metadata") or {}
+            ),
         }
         # Per-message requester attribution for right-to-erasure (nullable).
         if message.get("requester_user_id") is not None:
@@ -564,37 +595,41 @@ class ConversationsRepository:
             if resolved:
                 values["attachments"] = resolved
 
-        stmt = (
-            pg_insert(conversation_messages_table)
-            .values(**values)
-            .returning(conversation_messages_table)
-        )
+        stmt = pg_insert(conversation_messages_table).values(**values).returning(conversation_messages_table)
         result = self._conn.execute(stmt)
         # Touch the parent conversation's updated_at.
         self._conn.execute(
-            text(
-                "UPDATE conversations SET updated_at = now() "
-                "WHERE id = CAST(:id AS uuid)"
-            ),
+            text("UPDATE conversations SET updated_at = now() WHERE id = CAST(:id AS uuid)"),
             {"id": conversation_id},
         )
         return _message_row_to_dict(result.fetchone())
 
     def update_message_at(
-        self, conversation_id: str, position: int, fields: dict,
+        self,
+        conversation_id: str,
+        position: int,
+        fields: dict,
     ) -> bool:
         """Update specific fields on a message at a given position.
 
         Mirrors Mongo's ``$set`` on ``queries.{index}.*``.
         """
         allowed = {
-            "prompt", "response", "thought", "sources", "tool_calls",
-            "attachments", "model_id", "metadata", "timestamp",
+            "prompt",
+            "response",
+            "thought",
+            "sources",
+            "tool_calls",
+            "attachments",
+            "model_id",
+            "metadata",
+            "timestamp",
             # Feedback can be re-set in rare continuation flows; without
             # it in the whitelist an upstream re-append that happens to
             # carry feedback would silently lose it. Mirrors
             # ``set_feedback`` — column is JSONB.
-            "feedback", "feedback_timestamp",
+            "feedback",
+            "feedback_timestamp",
             # Without this, the regenerate/edit path (update_message_at)
             # would drop the requester attribution and make the turn
             # un-erasable. Plain text column.
@@ -615,10 +650,14 @@ class ConversationsRepository:
                 set_parts.append(f"{col} = CAST(:{col} AS jsonb)")
                 if val is None:
                     params[col] = None
+                elif key in ("tool_calls", "metadata"):
+                    # Content: tool_calls is whole-blob; metadata keeps structural
+                    # keys + encrypts the rest (json_keep). No-op when disabled.
+                    field = "message_metadata" if key == "metadata" else "tool_calls"
+                    obj = json.loads(val) if isinstance(val, str) else val
+                    params[col] = json.dumps(encrypt_value("conversation_messages", field, obj), default=str)
                 else:
-                    params[col] = (
-                        json.dumps(val) if not isinstance(val, str) else val
-                    )
+                    params[col] = json.dumps(val) if not isinstance(val, str) else val
             elif key == "attachments":
                 # Attachment ids may be Mongo ObjectIds during the
                 # dual-write window; translate via attachments.legacy_mongo_id.
@@ -627,6 +666,9 @@ class ConversationsRepository:
                     [str(a) for a in val] if val else [],
                 )
             else:
+                # prompt/response/thought are content text columns (no-op when disabled).
+                if key in ("prompt", "response", "thought"):
+                    val = encrypt_value("conversation_messages", key, val)
                 set_parts.append(f"{col} = :{col}")
                 params[col] = val
 
@@ -651,16 +693,17 @@ class ConversationsRepository:
             return 0
         result = self._conn.execute(
             text(
-                "DELETE FROM conversation_messages "
-                "WHERE conversation_id = CAST(:conv_id AS uuid) "
-                "AND position > :pos"
+                "DELETE FROM conversation_messages WHERE conversation_id = CAST(:conv_id AS uuid) AND position > :pos"
             ),
             {"conv_id": conversation_id, "pos": keep_up_to},
         )
         return result.rowcount
 
     def set_feedback(
-        self, conversation_id: str, position: int, feedback: dict | None,
+        self,
+        conversation_id: str,
+        position: int,
+        feedback: dict | None,
     ) -> bool:
         """Set or unset feedback on a message.
 
@@ -684,10 +727,7 @@ class ConversationsRepository:
 
     def message_count(self, conversation_id: str) -> int:
         result = self._conn.execute(
-            text(
-                "SELECT COUNT(*) FROM conversation_messages "
-                "WHERE conversation_id = CAST(:conv_id AS uuid)"
-            ),
+            text("SELECT COUNT(*) FROM conversation_messages WHERE conversation_id = CAST(:conv_id AS uuid)"),
             {"conv_id": conversation_id},
         )
         return result.scalar() or 0

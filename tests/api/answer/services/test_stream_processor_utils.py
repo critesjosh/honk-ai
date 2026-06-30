@@ -184,6 +184,66 @@ class TestLoadConversationHistory:
             sp._load_conversation_history()
         assert len(sp.history) == 2
 
+    def test_decrypt_failed_turn_dropped_from_history(self, pg_conn, monkeypatch):
+        """A turn whose content can't be decrypted (corruption / partial
+        rotation) is dropped from history like an erased turn — never passed to
+        the model as ``content: None`` (PLAN §6). The rest of the conversation
+        still loads."""
+        from sqlalchemy import text
+
+        from application.api.answer.services.stream_processor import StreamProcessor
+        from application.core import settings as settings_mod
+        from application.security import content_encryption as ce
+        from application.security import content_registry as cr
+        from application.storage.db.repositories.conversations import (
+            ConversationsRepository,
+        )
+
+        monkeypatch.setattr(settings_mod.settings, "ENCRYPTION_SECRET_KEY", "x" * 40)
+        monkeypatch.setattr(settings_mod.settings, "CONTENT_ENCRYPTION_ENABLED", True)
+        monkeypatch.setattr(settings_mod.settings, "CONTENT_ENCRYPTION_ACTIVE_KID", "v1")
+        monkeypatch.setattr(settings_mod.settings, "CONTENT_ENCRYPTION_KEYS", "")
+        monkeypatch.setattr(settings_mod.settings, "CONTENT_ENCRYPTION_LEGACY_READ", False)
+        monkeypatch.setattr(settings_mod.settings, "ENABLE_CONVERSATION_COMPRESSION", False)
+        ce.reset_keyring_cache()
+        cr.reset_fingerprint_cache()
+
+        user = "u-decrypt-fail"
+        repo = ConversationsRepository(pg_conn)
+        conv = repo.create(user, name="c")
+        conv_id = str(conv["id"])
+        repo.append_message(conv_id, {"prompt": "keep me", "response": "r1"})
+        repo.append_message(conv_id, {"prompt": "corrupt me", "response": "r2"})
+        # Corrupt the latest turn's prompt at rest (a well-formed but
+        # undecryptable envelope) → safe_decrypt_value substitutes None.
+        pg_conn.execute(
+            text(
+                "UPDATE conversation_messages SET prompt = :bad "
+                "WHERE conversation_id = CAST(:c AS uuid) AND position = "
+                "(SELECT MAX(position) FROM conversation_messages WHERE conversation_id = CAST(:c AS uuid))"
+            ),
+            {"c": conv_id, "bad": "honkenc:1:v1:g256:QUFBQQ"},
+        )
+
+        sp = StreamProcessor({"question": "x", "conversation_id": conv_id}, {"sub": user})
+        try:
+            with _patch_db(pg_conn), patch(
+                "application.api.answer.services.conversation_service.db_readonly",
+            ) as mock_readonly:
+
+                @contextmanager
+                def _yield():
+                    yield pg_conn
+
+                mock_readonly.side_effect = _yield
+                sp._load_conversation_history()
+        finally:
+            ce.reset_keyring_cache()
+            cr.reset_fingerprint_cache()
+
+        assert len(sp.history) == 1  # corrupt turn dropped, no content:None leaks through
+        assert sp.history[0]["prompt"] == "keep me"
+
     def test_unauthorized_conversation_raises(self, pg_conn):
         from application.api.answer.services.stream_processor import (
             StreamProcessor,

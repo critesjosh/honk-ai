@@ -1,7 +1,6 @@
 """Unit tests for application/llm/openai.py — OpenAILLM.
 
 Extends coverage beyond test_openai_llm.py:
-  - _truncate_base64_for_logging helper
   - _normalize_reasoning_value edge cases
   - _extract_reasoning_text edge cases
   - _clean_messages_openai: file type, legacy format, unexpected content type
@@ -21,7 +20,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from application.llm.openai import OpenAILLM, _truncate_base64_for_logging
+from application.llm.openai import OpenAILLM
 
 
 # ---------------------------------------------------------------------------
@@ -115,60 +114,6 @@ def llm():
     )
     instance.client = FakeClient()
     return instance
-
-
-# ---------------------------------------------------------------------------
-# _truncate_base64_for_logging
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.unit
-class TestTruncateBase64ForLogging:
-
-    def test_truncates_data_url_in_content_string(self):
-        msgs = [{"role": "user", "content": "data:image/png;base64," + "A" * 200}]
-        result = _truncate_base64_for_logging(msgs)
-        assert "BASE64_DATA_TRUNCATED" in result[0]["content"]
-        assert "A" * 200 not in result[0]["content"]
-
-    def test_truncates_url_key_in_list_content(self):
-        msgs = [
-            {
-                "role": "user",
-                "content": [
-                    {"url": "data:image/png;base64," + "B" * 300},
-                ],
-            }
-        ]
-        result = _truncate_base64_for_logging(msgs)
-        item = result[0]["content"][0]
-        assert "BASE64_DATA_TRUNCATED" in item["url"]
-
-    def test_truncates_data_key_with_long_value(self):
-        msgs = [{"role": "user", "content": [{"data": "X" * 200}]}]
-        result = _truncate_base64_for_logging(msgs)
-        item = result[0]["content"][0]
-        assert "BASE64_DATA_TRUNCATED" in item["data"]
-
-    def test_preserves_non_base64_content(self):
-        msgs = [{"role": "user", "content": "normal text"}]
-        result = _truncate_base64_for_logging(msgs)
-        assert result[0]["content"] == "normal text"
-
-    def test_handles_message_without_content_key(self):
-        msgs = [{"role": "system"}]
-        result = _truncate_base64_for_logging(msgs)
-        assert "content" not in result[0]
-
-    def test_nested_dict_truncation(self):
-        msgs = [
-            {
-                "role": "user",
-                "content": {"nested": "data:image/jpeg;base64," + "C" * 100},
-            }
-        ]
-        result = _truncate_base64_for_logging(msgs)
-        assert "BASE64_DATA_TRUNCATED" in result[0]["content"]["nested"]
 
 
 # ---------------------------------------------------------------------------
@@ -720,32 +665,6 @@ class TestAzureOpenAILLM:
 
 
 # ---------------------------------------------------------------------------
-# _truncate_base64_for_logging — additional edges
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.unit
-class TestTruncateBase64ForLoggingAdditional:
-
-    def test_content_is_dict_with_base64(self):
-        """Cover line 36: content is a dict (not list, not str)."""
-        msgs = [
-            {
-                "role": "user",
-                "content": {"image": "data:image/png;base64," + "A" * 200},
-            }
-        ]
-        result = _truncate_base64_for_logging(msgs)
-        assert "BASE64_DATA_TRUNCATED" in result[0]["content"]["image"]
-
-    def test_non_base64_string_passthrough(self):
-        """Cover line 36: short string content."""
-        msgs = [{"role": "user", "content": "no base64 here"}]
-        result = _truncate_base64_for_logging(msgs)
-        assert result[0]["content"] == "no base64 here"
-
-
-# ---------------------------------------------------------------------------
 # _clean_messages_openai — additional edges
 # ---------------------------------------------------------------------------
 
@@ -1254,32 +1173,6 @@ class TestPrepareStructuredOutputAdditional2:
 
 
 @pytest.mark.unit
-class TestTruncateBase64ReturnContent:
-    """Cover line 36: truncate_content returns non-str/non-list/non-dict content as-is."""
-
-    def test_integer_content_returned_as_is(self):
-        msgs = [{"role": "user", "content": 42}]
-        result = _truncate_base64_for_logging(msgs)
-        assert result[0]["content"] == 42
-
-    def test_none_content_returned_as_is(self):
-        msgs = [{"role": "user", "content": None}]
-        result = _truncate_base64_for_logging(msgs)
-        assert result[0]["content"] is None
-
-
-@pytest.mark.unit
-class TestTruncateBase64MsgCopy:
-    """Cover line 54: message without content key."""
-
-    def test_message_copy_preserves_role(self):
-        msgs = [{"role": "system", "content": "hi"}, {"role": "user"}]
-        result = _truncate_base64_for_logging(msgs)
-        assert len(result) == 2
-        assert result[1]["role"] == "user"
-
-
-@pytest.mark.unit
 class TestCleanMessagesOpenaiLine137:
     """Cover line 137: function_response with result key."""
 
@@ -1532,31 +1425,6 @@ class TestUploadFileToOpenaiLines489To517:
 # 304 (_supports_structured_output), 395 (no user_message append),
 # 469 (_get_base64_image missing path), 489-517 (_upload_file_to_openai)
 # ---------------------------------------------------------------------------
-
-
-@pytest.mark.unit
-class TestTruncateBase64ItemPassthrough:
-    """Cover line 49: truncate_content called on non-special dict value."""
-
-    def test_truncate_item_non_base64_value(self):
-        messages = [
-            {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": "hello", "metadata": {"key": "val"}}
-                ],
-            }
-        ]
-        result = _truncate_base64_for_logging(messages)
-        assert result[0]["content"][0]["metadata"]["key"] == "val"
-
-    def test_truncate_item_data_field_short(self):
-        """Short data field should not be truncated."""
-        messages = [
-            {"role": "user", "content": [{"data": "short"}]}
-        ]
-        result = _truncate_base64_for_logging(messages)
-        assert result[0]["content"][0]["data"] == "short"
 
 
 @pytest.mark.unit

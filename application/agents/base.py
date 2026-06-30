@@ -410,6 +410,18 @@ class BaseAgent(ABC):
         messages = [{"role": "system", "content": system_prompt}]
 
         for i in working_history:
+            # Drop the ENTIRE turn (incl. its tool_calls) when it's an unreadable
+            # placeholder (content decrypt failed — see
+            # content_registry.safe_decrypt_value) or a redacted/erased turn: a
+            # real conversational turn carries prompt/response keys, and a None
+            # value there means the content is gone. Sending the provider
+            # {"content": None} (or orphaned tool-call messages for a dropped
+            # turn) is wrong, so skip it (PLAN §6). A tool-only history item has
+            # NO prompt/response keys and is still processed below. This is the
+            # universal backstop for every history path, including the
+            # compression re-fetch that bypasses the stream_processor filter.
+            if ("prompt" in i and i["prompt"] is None) or ("response" in i and i["response"] is None):
+                continue
             if "prompt" in i and "response" in i:
                 messages.append({"role": "user", "content": i["prompt"]})
                 messages.append({"role": "assistant", "content": i["response"]})

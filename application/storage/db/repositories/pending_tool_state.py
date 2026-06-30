@@ -19,9 +19,36 @@ from typing import Optional
 
 from sqlalchemy import Connection, text
 
+from application.security.content_registry import decrypt_value, encrypt_value
 from application.storage.db.base_repository import row_to_dict
 
 PENDING_STATE_TTL_SECONDS = 30 * 60  # 1800 seconds
+
+# All content-bearing JSONB columns (paused message history + tool defs/args).
+_ENCRYPTED_COLS = (
+    "messages",
+    "pending_tool_calls",
+    "tools_dict",
+    "tool_schemas",
+    "agent_config",
+    "client_tools",
+)
+
+
+def _row_to_dict(row) -> dict:
+    """Decrypt choke point for pending-state reads. Read-both: a no-op on
+    legacy plaintext."""
+    out = row_to_dict(row)
+    for col in _ENCRYPTED_COLS:
+        if out.get(col) is not None:
+            out[col] = decrypt_value("pending_tool_state", col, out[col])
+    return out
+
+
+def _enc_blob(column: str, value):
+    """Encrypt a JSONB content value and JSON-serialize for the CAST, or None."""
+    enc = encrypt_value("pending_tool_state", column, value)
+    return json.dumps(enc) if enc is not None else None
 
 
 class PendingToolStateRepository:
@@ -53,7 +80,8 @@ class PendingToolStateRepository:
         """
         now = datetime.now(timezone.utc)
         expires = datetime.fromtimestamp(
-            now.timestamp() + ttl_seconds, tz=timezone.utc,
+            now.timestamp() + ttl_seconds,
+            tz=timezone.utc,
         )
 
         result = self._conn.execute(
@@ -85,37 +113,34 @@ class PendingToolStateRepository:
             {
                 "conv_id": conversation_id,
                 "user_id": user_id,
-                "messages": json.dumps(messages),
-                "pending": json.dumps(pending_tool_calls),
-                "tools_dict": json.dumps(tools_dict),
-                "schemas": json.dumps(tool_schemas),
-                "agent_config": json.dumps(agent_config),
-                "client_tools": json.dumps(client_tools) if client_tools is not None else None,
+                # All content JSONB encrypted at rest (no-op when disabled).
+                "messages": _enc_blob("messages", messages),
+                "pending": _enc_blob("pending_tool_calls", pending_tool_calls),
+                "tools_dict": _enc_blob("tools_dict", tools_dict),
+                "schemas": _enc_blob("tool_schemas", tool_schemas),
+                "agent_config": _enc_blob("agent_config", agent_config),
+                "client_tools": _enc_blob("client_tools", client_tools),
                 "created_at": now,
                 "expires_at": expires,
                 "requester_user_id": requester_user_id,
             },
         )
-        return row_to_dict(result.fetchone())
+        return _row_to_dict(result.fetchone())
 
     def load_state(self, conversation_id: str, user_id: str) -> Optional[dict]:
         result = self._conn.execute(
             text(
-                "SELECT * FROM pending_tool_state "
-                "WHERE conversation_id = CAST(:conv_id AS uuid) "
-                "AND user_id = :user_id"
+                "SELECT * FROM pending_tool_state WHERE conversation_id = CAST(:conv_id AS uuid) AND user_id = :user_id"
             ),
             {"conv_id": conversation_id, "user_id": user_id},
         )
         row = result.fetchone()
-        return row_to_dict(row) if row is not None else None
+        return _row_to_dict(row) if row is not None else None
 
     def delete_state(self, conversation_id: str, user_id: str) -> bool:
         result = self._conn.execute(
             text(
-                "DELETE FROM pending_tool_state "
-                "WHERE conversation_id = CAST(:conv_id AS uuid) "
-                "AND user_id = :user_id"
+                "DELETE FROM pending_tool_state WHERE conversation_id = CAST(:conv_id AS uuid) AND user_id = :user_id"
             ),
             {"conv_id": conversation_id, "user_id": user_id},
         )
@@ -130,7 +155,5 @@ class PendingToolStateRepository:
         # clock_timestamp() — not now() — since the latter is frozen to the
         # start of the transaction, which would let state that has just
         # expired survive one more cleanup tick.
-        result = self._conn.execute(
-            text("DELETE FROM pending_tool_state WHERE expires_at < clock_timestamp()")
-        )
+        result = self._conn.execute(text("DELETE FROM pending_tool_state WHERE expires_at < clock_timestamp()"))
         return result.rowcount

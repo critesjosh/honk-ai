@@ -2573,6 +2573,19 @@ def main() -> int:
         logger.error("MONGO_URI is not set. Configure it in .env first.")
         return 1
 
+    # Fail closed: this legacy Mongo→PG import writes plaintext directly to the
+    # Class-A content tables and does not populate user_logs.api_key_fp. Running
+    # it after content encryption is enabled would silently reintroduce
+    # plaintext at rest. Make it codec-aware before lifting this guard. See
+    # PLAN-content-encryption.md §11.
+    if getattr(settings, "CONTENT_ENCRYPTION_ENABLED", False):
+        logger.error(
+            "Refusing to run: CONTENT_ENCRYPTION_ENABLED is set, but this import "
+            "writes plaintext to encrypted content tables. It is not codec-aware "
+            "(see PLAN-content-encryption.md §11)."
+        )
+        return 1
+
     requested = [t.strip() for t in args.tables.split(",") if t.strip()]
     if not requested:
         requested = list(BACKFILLERS)

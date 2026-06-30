@@ -3,7 +3,7 @@ import os
 from pathlib import Path
 from typing import Optional
 
-from pydantic import field_validator
+from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 current_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -108,9 +108,7 @@ class Settings(BaseSettings):
     SAMPLING_TOP_P: Optional[float] = None
 
     # OAuth redirect base for MCP server connections (mcp_tool.py).
-    CONNECTOR_REDIRECT_BASE_URI: Optional[str] = (
-        "http://127.0.0.1:7091/api/connectors/callback"
-    )
+    CONNECTOR_REDIRECT_BASE_URI: Optional[str] = "http://127.0.0.1:7091/api/connectors/callback"
 
     # LLM Cache
     CACHE_REDIS_URL: str = "redis://localhost:6379/2"
@@ -184,6 +182,22 @@ class Settings(BaseSettings):
     # Encryption settings
     ENCRYPTION_SECRET_KEY: str = "default-docsgpt-encryption-key"
 
+    # Content encryption at rest (see PLAN-content-encryption.md). When enabled,
+    # user-content columns are encrypted in the repository layer before write.
+    # The launch key is HKDF-derived from ENCRYPTION_SECRET_KEY (no new secret to
+    # provision); CONTENT_ENCRYPTION_KEYS may supply explicit/rotated keys as a
+    # csv of ``kid:<base64-32B>``. LEGACY_READ accepts pre-rollout plaintext on
+    # read; flip it off after backfill proves zero plaintext.
+    CONTENT_ENCRYPTION_ENABLED: bool = False
+    CONTENT_ENCRYPTION_ACTIVE_KID: str = "v1"
+    CONTENT_ENCRYPTION_KEYS: str = ""
+    CONTENT_ENCRYPTION_LEGACY_READ: bool = True
+
+    # LLM response cache (Redis). Default OFF: the cache persists answer content
+    # at rest (Redis db sits on the unencrypted volume) and the privacy posture
+    # prefers not to. See application/cache.py.
+    LLM_CACHE_ENABLED: bool = False
+
     # Tool pre-fetch settings
     ENABLE_TOOL_PREFETCH: bool = True
 
@@ -255,21 +269,89 @@ class Settings(BaseSettings):
         before the app starts serving traffic.
         """
         if not v:
-            raise ValueError(
-                "USER_ID_PEPPER must be set. Generate with `openssl rand -hex 32`."
-            )
+            raise ValueError("USER_ID_PEPPER must be set. Generate with `openssl rand -hex 32`.")
         try:
             decoded = bytes.fromhex(v)
         except ValueError as exc:
-            raise ValueError(
-                "USER_ID_PEPPER must be hex-encoded (run `openssl rand -hex 32`)."
-            ) from exc
+            raise ValueError("USER_ID_PEPPER must be hex-encoded (run `openssl rand -hex 32`).") from exc
         if len(decoded) < 16:
             raise ValueError(
                 f"USER_ID_PEPPER must decode to >=16 bytes; got {len(decoded)}. "
                 "Use `openssl rand -hex 32` for 32 bytes (recommended)."
             )
         return v
+
+    @model_validator(mode="after")
+    def _validate_content_encryption(self):
+        """Fail closed if content encryption is enabled but mis-keyed.
+
+        Every check below fails at *boot*, not on the first encrypt/decrypt (a
+        deferred failure would crash mid-stream). Mirrors the ``USER_ID_PEPPER``
+        guard: refuse to start rather than write weak/unkeyed ciphertext.
+
+        Checks:
+          * **A real ``ENCRYPTION_SECRET_KEY`` — required ALWAYS when enabled.**
+            It seeds the HKDF-derived launch key AND the ``user_logs.api_key``
+            blind index (``content_registry._fingerprint_key``), which is keyed
+            off it even when the active *content* key is supplied explicitly.
+            Booting on the default secret would yield a weak/unstable
+            fingerprint and orphan ``api_key_fp`` lookups once it is fixed.
+          * **The active kid is set and charset-safe.** It is embedded verbatim
+            in the colon-delimited envelope header, so a ``':'`` would corrupt
+            every envelope and silently break all reads.
+          * **EVERY ``CONTENT_ENCRYPTION_KEYS`` entry is well-formed** (kid
+            charset + base64 + 32 bytes), active or not — a malformed *inactive*
+            key would otherwise boot fine and raise from ``_build_keyring`` on
+            the first encrypt, losing that turn.
+
+        Import-cycle-free: must NOT import the codec (it imports ``settings``);
+        the kid charset is replicated here.
+        """
+        if not self.CONTENT_ENCRYPTION_ENABLED:
+            return self
+
+        import base64
+        import re
+
+        kid_re = re.compile(r"^[A-Za-z0-9_.-]+$")  # mirror content_encryption._KID_RE
+
+        active = (self.CONTENT_ENCRYPTION_ACTIVE_KID or "").strip()
+        if not active:
+            raise ValueError("CONTENT_ENCRYPTION_ACTIVE_KID must be set when CONTENT_ENCRYPTION_ENABLED.")
+        if not kid_re.match(active):
+            raise ValueError(
+                f"CONTENT_ENCRYPTION_ACTIVE_KID {active!r} must match [A-Za-z0-9_.-] "
+                "(no ':' — it delimits the envelope header)."
+            )
+
+        for entry in (self.CONTENT_ENCRYPTION_KEYS or "").split(","):
+            entry = entry.strip()
+            if not entry:
+                continue
+            if ":" not in entry:
+                raise ValueError("CONTENT_ENCRYPTION_KEYS entries must be 'kid:<base64-32B>'.")
+            kid, _, b64 = entry.partition(":")
+            kid = kid.strip()
+            if not kid_re.match(kid):
+                raise ValueError(f"CONTENT_ENCRYPTION_KEYS kid {kid!r} must match [A-Za-z0-9_.-].")
+            try:
+                raw = base64.b64decode(b64.strip(), validate=True)
+            except Exception as exc:
+                raise ValueError(f"CONTENT_ENCRYPTION_KEYS[{kid}] is not valid base64.") from exc
+            if len(raw) != 32:
+                raise ValueError(f"CONTENT_ENCRYPTION_KEYS[{kid}] must decode to 32 bytes; got {len(raw)}.")
+
+        # The blind index and the derived launch key both need a real secret,
+        # even when the active content key is explicit — require it unconditionally.
+        secret = self.ENCRYPTION_SECRET_KEY or ""
+        if not secret or secret == "default-docsgpt-encryption-key" or len(secret) < 16:
+            raise ValueError(
+                "content encryption is enabled but ENCRYPTION_SECRET_KEY is missing, the default, "
+                "or <16 chars. It is required both to derive the content key and to key the "
+                "user_logs api_key blind index. Set a real ENCRYPTION_SECRET_KEY (>=16 chars)."
+            )
+
+        return self
 
     @field_validator(
         "API_KEY",

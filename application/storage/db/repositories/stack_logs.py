@@ -15,6 +15,8 @@ from typing import Optional
 
 from sqlalchemy import Connection, text
 
+from application.security.content_registry import encrypt_value
+
 
 class StackLogsRepository:
     """Postgres-backed replacement for Mongo ``stack_logs`` collection."""
@@ -53,8 +55,9 @@ class StackLogsRepository:
                 "level": level,
                 "user_id": user_id,
                 "api_key": api_key,
-                "query": query,
-                "stacks": json.dumps(stacks or []),
+                # Content: prompt text + tool/exception trace. No-op when disabled.
+                "query": encrypt_value("stack_logs", "query", query),
+                "stacks": json.dumps(encrypt_value("stack_logs", "stacks", stacks or [])),
                 "timestamp": timestamp,
                 "requester_user_id": requester_user_id,
             },

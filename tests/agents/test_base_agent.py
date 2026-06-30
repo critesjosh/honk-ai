@@ -163,6 +163,34 @@ class TestBaseAgentBuildMessages:
         assert len(user_messages) >= 3
         assert len(assistant_messages) >= 2
 
+    def test_build_messages_skips_none_content_history(
+        self, agent_base_params, mock_llm_creator, mock_llm_handler_creator
+    ):
+        # An unreadable/erased turn (prompt or response is None) must never reach
+        # the provider as {"content": None}; the turn is dropped (PLAN §6). This
+        # is the universal backstop for the compression re-fetch path.
+        agent_base_params["chat_history"] = [
+            {"prompt": "good q", "response": "good a"},
+            {"prompt": None, "response": "orphan a"},  # decrypt-failed prompt
+            {"prompt": "orphan q", "response": None},  # decrypt-failed response
+            # Unreadable turn that still has decryptable tool_calls: the WHOLE
+            # turn must be dropped, not just the prompt/response pair.
+            {"prompt": None, "response": None, "tool_calls": [
+                {"call_id": "z", "action_name": "leak", "arguments": {}, "result": "should not appear"}
+            ]},
+        ]
+        agent = ClassicAgent(**agent_base_params)
+
+        messages = agent._build_messages("System prompt", "new q")
+
+        assert all(m.get("content") is not None for m in messages if m["role"] != "assistant")
+        contents = [m.get("content") for m in messages]
+        assert "good q" in contents and "good a" in contents
+        assert "orphan a" not in contents and "orphan q" not in contents
+        # The dropped turn's tool_calls must not leak into the message stream.
+        assert not any(m.get("role") == "tool" for m in messages)
+        assert "should not appear" not in str(messages)
+
     def test_build_messages_with_tool_calls_in_history(
         self, agent_base_params, mock_llm_creator, mock_llm_handler_creator
     ):

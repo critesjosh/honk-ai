@@ -160,9 +160,7 @@ class ResearchAgent(BaseAgent):
     # Main orchestration
     # ------------------------------------------------------------------
 
-    def _gen_inner(
-        self, query: str, log_context: LogContext
-    ) -> Generator[Dict, None, None]:
+    def _gen_inner(self, query: str, log_context: LogContext) -> Generator[Dict, None, None]:
         self._start_time = time.monotonic()
         tools_dict = self._setup_tools()
 
@@ -174,9 +172,7 @@ class ResearchAgent(BaseAgent):
                 yield {"answer": clarification}
                 yield {"sources": []}
                 yield {"tool_calls": []}
-                log_context.stacks.append(
-                    {"component": "agent", "data": {"clarification": True}}
-                )
+                log_context.stacks.append({"component": "agent", "data": {"clarification": True}})
                 return
 
         # Phase 1: Planning (with adaptive depth)
@@ -200,15 +196,10 @@ class ResearchAgent(BaseAgent):
             step_query = step.get("query", query)
 
             if self._is_timed_out():
-                logger.warning(
-                    f"ResearchAgent: Timeout at step {step_num}/{len(plan)} "
-                    f"({self._elapsed()}s)"
-                )
+                logger.warning(f"ResearchAgent: Timeout at step {step_num}/{len(plan)} ({self._elapsed()}s)")
                 break
             if self._is_over_budget():
-                logger.warning(
-                    f"ResearchAgent: Token budget exhausted at step {step_num}/{len(plan)}"
-                )
+                logger.warning(f"ResearchAgent: Token budget exhausted at step {step_num}/{len(plan)}")
                 break
 
             yield {
@@ -248,9 +239,7 @@ class ResearchAgent(BaseAgent):
                 "tokens_used": self._tokens_used,
             },
         }
-        yield from self._synthesis_phase(
-            query, plan, intermediate_reports, tools_dict, log_context
-        )
+        yield from self._synthesis_phase(query, plan, intermediate_reports, tools_dict, log_context)
 
         # Sources and tool calls
         self.retrieved_docs = self.citations.get_all_docs()
@@ -261,9 +250,7 @@ class ResearchAgent(BaseAgent):
             f"ResearchAgent completed: {len(intermediate_reports)}/{len(plan)} steps, "
             f"{self._elapsed()}s, ~{self._tokens_used} tokens"
         )
-        log_context.stacks.append(
-            {"component": "agent", "data": {"tool_calls": self.tool_calls.copy()}}
-        )
+        log_context.stacks.append({"component": "agent", "data": {"tool_calls": self.tool_calls.copy()}})
 
     # ------------------------------------------------------------------
     # Tool setup
@@ -319,7 +306,8 @@ class ResearchAgent(BaseAgent):
             )
             text = self._extract_text(response)
             self._track_tokens(self._snapshot_llm_tokens())
-            logger.info(f"ResearchAgent clarification response: {text[:300]}")
+            # Content redacted (LLM output persists in logs at rest). §3D.
+            logger.debug("ResearchAgent clarification response received (%d chars)", len(text))
 
             data = self._parse_clarification_json(text)
             if not data or not data.get("needs_clarification"):
@@ -330,14 +318,10 @@ class ResearchAgent(BaseAgent):
                 return None
 
             # Format as a friendly response
-            lines = [
-                "Before I begin researching, I'd like to clarify a few things:\n"
-            ]
+            lines = ["Before I begin researching, I'd like to clarify a few things:\n"]
             for i, q in enumerate(questions[:3], 1):
                 lines.append(f"{i}. {q}")
-            lines.append(
-                "\nPlease provide these details and I'll start the research."
-            )
+            lines.append("\nPlease provide these details and I'll start the research.")
             return "\n".join(lines)
 
         except Exception as e:
@@ -397,7 +381,8 @@ class ResearchAgent(BaseAgent):
             )
             text = self._extract_text(response)
             self._track_tokens(self._snapshot_llm_tokens())
-            logger.info(f"ResearchAgent planning LLM response: {text[:500]}")
+            # Content redacted (LLM output persists in logs at rest). §3D.
+            logger.debug("ResearchAgent planning LLM response received (%d chars)", len(text))
 
             plan_data = self._parse_plan_json(text)
             if isinstance(plan_data, dict):
@@ -412,10 +397,7 @@ class ResearchAgent(BaseAgent):
             cap = min(cap, self.max_steps)
             steps = steps[:cap]
 
-            logger.info(
-                f"ResearchAgent plan: complexity={complexity}, "
-                f"steps={len(steps)} (cap={cap})"
-            )
+            logger.info(f"ResearchAgent plan: complexity={complexity}, steps={len(steps)} (cap={cap})")
             return steps, complexity
 
         except Exception as e:
@@ -464,7 +446,8 @@ class ResearchAgent(BaseAgent):
                             continue
                 break
 
-        logger.warning(f"Could not parse plan JSON from: {text[:200]}")
+        # Content redacted (LLM output). §3D.
+        logger.warning("Could not parse plan JSON from LLM response (%d chars)", len(text))
         return []
 
     # ------------------------------------------------------------------
@@ -473,15 +456,11 @@ class ResearchAgent(BaseAgent):
 
     def _research_step(self, step_query: str, tools_dict: Dict) -> str:
         """Run a focused research loop for one sub-question (sequential path)."""
-        report = self._research_step_with_executor(
-            step_query, tools_dict, self.tool_executor
-        )
+        report = self._research_step_with_executor(step_query, tools_dict, self.tool_executor)
         self._collect_step_sources()
         return report
 
-    def _research_step_with_executor(
-        self, step_query: str, tools_dict: Dict, executor: ToolExecutor
-    ) -> str:
+    def _research_step_with_executor(self, step_query: str, tools_dict: Dict, executor: ToolExecutor) -> str:
         """Core research loop. Works with any ToolExecutor instance."""
         system_prompt = STEP_PROMPT.replace("{step_query}", step_query)
         messages = [
@@ -494,14 +473,11 @@ class ResearchAgent(BaseAgent):
         for iteration in range(self.max_sub_iterations):
             # Check timeout and budget
             if self._is_timed_out():
-                logger.info(
-                    f"Research step '{step_query[:50]}' timed out at iteration {iteration}"
-                )
+                # Query text redacted (user-derived content). §3D.
+                logger.info("Research step timed out at iteration %d", iteration)
                 break
             if self._is_over_budget():
-                logger.info(
-                    f"Research step '{step_query[:50]}' hit token budget at iteration {iteration}"
-                )
+                logger.info("Research step hit token budget at iteration %d", iteration)
                 break
 
             try:
@@ -536,9 +512,7 @@ class ResearchAgent(BaseAgent):
             }
         )
         try:
-            response = self.llm.gen(
-                model=self.model_id, messages=messages, tools=None
-            )
+            response = self.llm.gen(model=self.model_id, messages=messages, tools=None)
             self._track_tokens(self._snapshot_llm_tokens())
             text = self._extract_text(response)
             return text or "Research step completed."
@@ -560,9 +534,7 @@ class ResearchAgent(BaseAgent):
         search_returned_empty = False
 
         for call in tool_calls:
-            gen = executor.execute(
-                tools_dict, call, self.llm.__class__.__name__
-            )
+            gen = executor.execute(tools_dict, call, self.llm.__class__.__name__)
             result = None
             call_id = None
             while True:
@@ -595,20 +567,20 @@ class ResearchAgent(BaseAgent):
 
             import json as _json
 
-            args_str = (
-                _json.dumps(call.arguments)
-                if isinstance(call.arguments, dict)
-                else call.arguments
+            args_str = _json.dumps(call.arguments) if isinstance(call.arguments, dict) else call.arguments
+            messages.append(
+                {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [
+                        {
+                            "id": call_id,
+                            "type": "function",
+                            "function": {"name": call.name, "arguments": args_str},
+                        }
+                    ],
+                }
             )
-            messages.append({
-                "role": "assistant",
-                "content": None,
-                "tool_calls": [{
-                    "id": call_id,
-                    "type": "function",
-                    "function": {"name": call.name, "arguments": args_str},
-                }],
-            })
             tool_message = self.llm_handler.create_tool_message(call, result)
             messages.append(tool_message)
 
@@ -637,18 +609,14 @@ class ResearchAgent(BaseAgent):
         """Compile all findings into a final cited report (streaming)."""
         plan_lines = []
         for i, step in enumerate(plan, 1):
-            plan_lines.append(
-                f"{i}. {step.get('query', 'Unknown')} — {step.get('rationale', '')}"
-            )
+            plan_lines.append(f"{i}. {step.get('query', 'Unknown')} — {step.get('rationale', '')}")
         plan_summary = "\n".join(plan_lines)
 
         findings_parts = []
         for i, report in enumerate(intermediate_reports, 1):
             step_query = report["step"].get("query", "Unknown")
             content = report["content"]
-            findings_parts.append(
-                f"--- Step {i}: {step_query} ---\n{content}"
-            )
+            findings_parts.append(f"--- Step {i}: {step_query} ---\n{content}")
         findings = "\n\n".join(findings_parts)
 
         references = self.citations.format_references()
@@ -663,20 +631,14 @@ class ResearchAgent(BaseAgent):
             {"role": "user", "content": f"Please write the research report for: {question}"},
         ]
 
-        llm_response = self.llm.gen_stream(
-            model=self.model_id, messages=messages, tools=None
-        )
+        llm_response = self.llm.gen_stream(model=self.model_id, messages=messages, tools=None)
 
         if log_context:
             from application.logging import build_stack_data
 
-            log_context.stacks.append(
-                {"component": "synthesis_llm", "data": build_stack_data(self.llm)}
-            )
+            log_context.stacks.append({"component": "synthesis_llm", "data": build_stack_data(self.llm)})
 
-        yield from self._handle_response(
-            llm_response, tools_dict, messages, log_context
-        )
+        yield from self._handle_response(llm_response, tools_dict, messages, log_context)
 
     # ------------------------------------------------------------------
     # Helpers

@@ -108,6 +108,10 @@ user_logs_table = Table(
     # Added by 0011. Canonical requester pseudonym so /forget-me can DELETE the
     # log rows that copy the bot user's question/response into ``data``.
     Column("requester_user_id", Text),
+    # Added by 0012. HMAC blind-index of the request's bearer api_key, so the
+    # ``data->>'api_key'`` lookup keeps working once ``data`` is encrypted at
+    # rest. See application/security/content_registry.py.
+    Column("api_key_fp", Text),
 )
 
 stack_logs_table = Table(

@@ -10,59 +10,7 @@ from application.llm.base import BaseLLM
 from application.storage.storage_creator import StorageCreator
 
 
-def _truncate_base64_for_logging(messages):
-    """
-    Create a copy of messages with base64 data truncated for readable logging.
-
-    Args:
-        messages: List of message dicts
-
-    Returns:
-        Copy of messages with truncated base64 content
-    """
-    import copy
-
-    def truncate_content(content):
-        if isinstance(content, str):
-            # Check if it looks like a data URL with base64
-            if content.startswith("data:") and ";base64," in content:
-                prefix_end = content.index(";base64,") + len(";base64,")
-                prefix = content[:prefix_end]
-                return f"{prefix}[BASE64_DATA_TRUNCATED, length={len(content) - prefix_end}]"
-            return content
-        elif isinstance(content, list):
-            return [truncate_item(item) for item in content]
-        elif isinstance(content, dict):
-            return {k: truncate_content(v) for k, v in content.items()}
-        return content
-
-    def truncate_item(item):
-        if isinstance(item, dict):
-            result = {}
-            for k, v in item.items():
-                if k == "url" and isinstance(v, str) and ";base64," in v:
-                    prefix_end = v.index(";base64,") + len(";base64,")
-                    prefix = v[:prefix_end]
-                    result[k] = f"{prefix}[BASE64_DATA_TRUNCATED, length={len(v) - prefix_end}]"
-                elif k == "data" and isinstance(v, str) and len(v) > 100:
-                    result[k] = f"[BASE64_DATA_TRUNCATED, length={len(v)}]"
-                else:
-                    result[k] = truncate_content(v)
-            return result
-        return truncate_content(item)
-
-    truncated = []
-    for msg in messages:
-        msg_copy = copy.copy(msg)
-        if "content" in msg_copy:
-            msg_copy["content"] = truncate_content(msg_copy["content"])
-        truncated.append(msg_copy)
-
-    return truncated
-
-
 class OpenAILLM(BaseLLM):
-
     def __init__(self, api_key=None, user_api_key=None, base_url=None, *args, **kwargs):
 
         super().__init__(*args, **kwargs)
@@ -73,10 +21,7 @@ class OpenAILLM(BaseLLM):
         effective_base_url = None
         if base_url and isinstance(base_url, str) and base_url.strip():
             effective_base_url = base_url
-        elif (
-            isinstance(settings.OPENAI_BASE_URL, str)
-            and settings.OPENAI_BASE_URL.strip()
-        ):
+        elif isinstance(settings.OPENAI_BASE_URL, str) and settings.OPENAI_BASE_URL.strip():
             effective_base_url = settings.OPENAI_BASE_URL
         else:
             effective_base_url = "https://api.openai.com/v1"
@@ -108,26 +53,32 @@ class OpenAILLM(BaseLLM):
                             args = json.dumps(self._remove_null_values(parsed))
                         except (json.JSONDecodeError, TypeError):
                             pass
-                    cleaned_tcs.append({
-                        "id": tc.get("id", ""),
-                        "type": "function",
-                        "function": {"name": func.get("name", ""), "arguments": args},
-                    })
-                cleaned_messages.append({
-                    "role": "assistant",
-                    "content": None,
-                    "tool_calls": cleaned_tcs,
-                })
+                    cleaned_tcs.append(
+                        {
+                            "id": tc.get("id", ""),
+                            "type": "function",
+                            "function": {"name": func.get("name", ""), "arguments": args},
+                        }
+                    )
+                cleaned_messages.append(
+                    {
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": cleaned_tcs,
+                    }
+                )
                 continue
 
             # Standard format: tool message with tool_call_id (passthrough)
             tool_call_id = message.get("tool_call_id")
             if role == "tool" and tool_call_id is not None:
-                cleaned_messages.append({
-                    "role": "tool",
-                    "tool_call_id": tool_call_id,
-                    "content": content if isinstance(content, str) else json.dumps(content),
-                })
+                cleaned_messages.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": tool_call_id,
+                        "content": content if isinstance(content, str) else json.dumps(content),
+                    }
+                )
                 continue
 
             if role and content is not None:
@@ -153,19 +104,21 @@ class OpenAILLM(BaseLLM):
                                     "arguments": json.dumps(cleaned_args),
                                 },
                             }
-                            cleaned_messages.append({
-                                "role": "assistant",
-                                "content": None,
-                                "tool_calls": [tool_call],
-                            })
+                            cleaned_messages.append(
+                                {
+                                    "role": "assistant",
+                                    "content": None,
+                                    "tool_calls": [tool_call],
+                                }
+                            )
                         elif "function_response" in item:
-                            cleaned_messages.append({
-                                "role": "tool",
-                                "tool_call_id": item["function_response"]["call_id"],
-                                "content": json.dumps(
-                                    item["function_response"]["response"]["result"]
-                                ),
-                            })
+                            cleaned_messages.append(
+                                {
+                                    "role": "tool",
+                                    "tool_call_id": item["function_response"]["call_id"],
+                                    "content": json.dumps(item["function_response"]["response"]["result"]),
+                                }
+                            )
                         elif isinstance(item, dict):
                             if "type" in item and item["type"] == "text" and "text" in item:
                                 content_parts.append(item)
@@ -189,9 +142,7 @@ class OpenAILLM(BaseLLM):
         if isinstance(value, str):
             return value
         if isinstance(value, list):
-            return "".join(
-                OpenAILLM._normalize_reasoning_value(item) for item in value
-            )
+            return "".join(OpenAILLM._normalize_reasoning_value(item) for item in value)
         if isinstance(value, dict):
             for key in ("text", "content", "value", "reasoning_content", "reasoning"):
                 normalized = OpenAILLM._normalize_reasoning_value(value.get(key))
@@ -238,7 +189,10 @@ class OpenAILLM(BaseLLM):
         **kwargs,
     ):
         messages = self._clean_messages_openai(messages)
-        logging.info(f"Cleaned messages: {_truncate_base64_for_logging(messages)}")
+        # Content redacted: messages carry user prompts/history/snippets and
+        # persist in container logs at rest. Log shape only. See
+        # PLAN-content-encryption.md §3D.
+        logging.debug("Prepared %d messages for the LLM call", len(messages))
 
         # Convert max_tokens to max_completion_tokens for newer models
         if "max_tokens" in kwargs:
@@ -256,7 +210,8 @@ class OpenAILLM(BaseLLM):
         if response_format:
             request_params["response_format"] = response_format
         response = self.client.chat.completions.create(**request_params)
-        logging.info(f"OpenAI response: {response}")
+        # Content redacted (response body is user-facing answer text). §3D.
+        logging.debug("Received OpenAI completion")
         if tools:
             return response.choices[0]
         else:
@@ -274,7 +229,10 @@ class OpenAILLM(BaseLLM):
         **kwargs,
     ):
         messages = self._clean_messages_openai(messages)
-        logging.info(f"Cleaned messages: {_truncate_base64_for_logging(messages)}")
+        # Content redacted: messages carry user prompts/history/snippets and
+        # persist in container logs at rest. Log shape only. See
+        # PLAN-content-encryption.md §3D.
+        logging.debug("Prepared %d messages for the LLM call", len(messages))
 
         # Convert max_tokens to max_completion_tokens for newer models
         if "max_tokens" in kwargs:
@@ -306,7 +264,9 @@ class OpenAILLM(BaseLLM):
 
         try:
             for line in response:
-                logging.debug(f"OpenAI stream line: {line}")
+                # Content redacted: stream chunks carry the answer text and
+                # persist in container logs at rest. See §3D.
+                logging.debug("OpenAI stream chunk received")
 
                 # OpenRouter wraps upstream errors as an ``error`` field
                 # on a streamed line. The OpenAI SDK preserves it as a
@@ -325,9 +285,7 @@ class OpenAILLM(BaseLLM):
                         except Exception:  # noqa: BLE001 — log-only fallback
                             provider_error = {"repr": repr(line_error)}
                     else:
-                        provider_error = getattr(
-                            line_error, "__dict__", {"repr": repr(line_error)}
-                        )
+                        provider_error = getattr(line_error, "__dict__", {"repr": repr(line_error)})
 
                 if not getattr(line, "choices", None):
                     continue
@@ -370,8 +328,7 @@ class OpenAILLM(BaseLLM):
             # it so operators can grep for ``llm.empty_response`` and
             # so message_metadata-level follow-up work has a hook.
             empty_with_signal = not had_content and (
-                last_finish_reason not in (None, "stop", "tool_calls")
-                or provider_error is not None
+                last_finish_reason not in (None, "stop", "tool_calls") or provider_error is not None
             )
             if empty_with_signal:
                 logging.warning(
@@ -401,9 +358,7 @@ class OpenAILLM(BaseLLM):
                         # Ensure 'required' includes all properties for OpenAI strict mode
 
                         if "properties" in schema_copy:
-                            schema_copy["required"] = list(
-                                schema_copy["properties"].keys()
-                            )
+                            schema_copy["required"] = list(schema_copy["properties"].keys())
                     for key, value in schema_copy.items():
                         if key == "properties" and isinstance(value, dict):
                             schema_copy[key] = {
@@ -412,13 +367,8 @@ class OpenAILLM(BaseLLM):
                             }
                         elif key == "items" and isinstance(value, dict):
                             schema_copy[key] = add_additional_properties_false(value)
-                        elif key in ["anyOf", "oneOf", "allOf"] and isinstance(
-                            value, list
-                        ):
-                            schema_copy[key] = [
-                                add_additional_properties_false(sub_schema)
-                                for sub_schema in value
-                            ]
+                        elif key in ["anyOf", "oneOf", "allOf"] and isinstance(value, list):
+                            schema_copy[key] = [add_additional_properties_false(sub_schema) for sub_schema in value]
                     return schema_copy
                 return schema_obj
 
@@ -428,9 +378,7 @@ class OpenAILLM(BaseLLM):
                 "type": "json_schema",
                 "json_schema": {
                     "name": processed_schema.get("name", "response"),
-                    "description": processed_schema.get(
-                        "description", "Structured response"
-                    ),
+                    "description": processed_schema.get("description", "Structured response"),
                     "schema": processed_schema,
                     "strict": True,
                 },
@@ -452,6 +400,7 @@ class OpenAILLM(BaseLLM):
             list: List of supported MIME types
         """
         from application.core.model_configs import OPENAI_ATTACHMENTS
+
         return OPENAI_ATTACHMENTS
 
     def prepare_messages_with_attachments(self, messages, attachments=None):
@@ -482,14 +431,14 @@ class OpenAILLM(BaseLLM):
             user_message_index = len(prepared_messages) - 1
         if isinstance(prepared_messages[user_message_index].get("content"), str):
             text_content = prepared_messages[user_message_index]["content"]
-            prepared_messages[user_message_index]["content"] = [
-                {"type": "text", "text": text_content}
-            ]
+            prepared_messages[user_message_index]["content"] = [{"type": "text", "text": text_content}]
         elif not isinstance(prepared_messages[user_message_index].get("content"), list):
             prepared_messages[user_message_index]["content"] = []
         for attachment in attachments:
             mime_type = attachment.get("mime_type")
-            logging.info(f"Processing attachment with mime_type: {mime_type}, has_data: {'data' in attachment}, has_path: {'path' in attachment}")
+            logging.info(
+                f"Processing attachment with mime_type: {mime_type}, has_data: {'data' in attachment}, has_path: {'path' in attachment}"
+            )
 
             if mime_type and mime_type.startswith("image/"):
                 try:
@@ -502,16 +451,12 @@ class OpenAILLM(BaseLLM):
                     prepared_messages[user_message_index]["content"].append(
                         {
                             "type": "image_url",
-                            "image_url": {
-                                "url": f"data:{mime_type};base64,{base64_image}"
-                            },
+                            "image_url": {"url": f"data:{mime_type};base64,{base64_image}"},
                         }
                     )
 
                 except Exception as e:
-                    logging.error(
-                        f"Error processing image attachment: {e}", exc_info=True
-                    )
+                    logging.error(f"Error processing image attachment: {e}", exc_info=True)
                     if "content" in attachment:
                         prepared_messages[user_message_index]["content"].append(
                             {
@@ -584,9 +529,9 @@ class OpenAILLM(BaseLLM):
         try:
             file_id = self.storage.process_file(
                 file_path,
-                lambda local_path, **kwargs: self.client.files.create(
-                    file=open(local_path, "rb"), purpose="assistants"
-                ).id,
+                lambda local_path, **kwargs: (
+                    self.client.files.create(file=open(local_path, "rb"), purpose="assistants").id
+                ),
             )
 
             # Cache the OpenAI file id on the attachment row so we don't
@@ -614,9 +559,7 @@ class OpenAILLM(BaseLLM):
                             {"openai_file_id": file_id},
                         )
                 except Exception as cache_err:
-                    logging.warning(
-                        f"Failed to cache openai_file_id on attachment {attachment_id}: {cache_err}"
-                    )
+                    logging.warning(f"Failed to cache openai_file_id on attachment {attachment_id}: {cache_err}")
             return file_id
         except Exception as e:
             logging.error(f"Error uploading file to OpenAI: {e}", exc_info=True)
@@ -624,7 +567,6 @@ class OpenAILLM(BaseLLM):
 
 
 class AzureOpenAILLM(OpenAILLM):
-
     def __init__(self, api_key, user_api_key, *args, **kwargs):
 
         super().__init__(api_key)

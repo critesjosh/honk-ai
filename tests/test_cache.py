@@ -11,6 +11,13 @@ from application.cache import (
 from application.utils import get_hash
 
 
+@pytest.fixture(autouse=True)
+def _enable_llm_cache(monkeypatch):
+    """The LLM cache defaults OFF (privacy posture, see PLAN-content-encryption.md
+    §3B). This module tests the cache machinery itself, so enable it."""
+    monkeypatch.setattr("application.cache.settings.LLM_CACHE_ENABLED", True, raising=False)
+
+
 @pytest.mark.unit
 def test_make_gen_cache_key():
     messages = [
@@ -132,7 +139,6 @@ def test_stream_cache_miss(mock_make_redis):
 
 @pytest.mark.unit
 class TestGetRedisInstance:
-
     def setup_method(self):
         """Reset module-level redis state between tests."""
         import application.cache as cache_mod
@@ -156,9 +162,7 @@ class TestGetRedisInstance:
         result = get_redis_instance()
 
         assert result is mock_instance
-        mock_from_url.assert_called_once_with(
-            "redis://localhost:6379/0", socket_connect_timeout=2
-        )
+        mock_from_url.assert_called_once_with("redis://localhost:6379/0", socket_connect_timeout=2)
 
     @patch("application.cache.redis.Redis.from_url")
     @patch("application.cache.settings")
@@ -423,6 +427,41 @@ def test_stream_cache_redis_set_error(mock_make_redis):
 # =====================================================================
 # Coverage gap tests  (lines 86-89)
 # =====================================================================
+
+
+@pytest.mark.unit
+@patch("application.cache.get_redis_instance")
+def test_gen_cache_disabled_bypasses_redis(mock_make_redis, monkeypatch):
+    """LLM_CACHE_ENABLED=false skips Redis entirely (default privacy posture)."""
+    monkeypatch.setattr("application.cache.settings.LLM_CACHE_ENABLED", False)
+    mock_redis = MagicMock()
+    mock_make_redis.return_value = mock_redis
+
+    @gen_cache
+    def fn(self, model, messages, stream, tools):
+        return "live"
+
+    result = fn(None, "m", [{"role": "user", "content": "x"}], stream=False, tools=None)
+    assert result == "live"
+    mock_redis.get.assert_not_called()
+    mock_redis.set.assert_not_called()
+
+
+@pytest.mark.unit
+@patch("application.cache.get_redis_instance")
+def test_stream_cache_disabled_bypasses_redis(mock_make_redis, monkeypatch):
+    monkeypatch.setattr("application.cache.settings.LLM_CACHE_ENABLED", False)
+    mock_redis = MagicMock()
+    mock_make_redis.return_value = mock_redis
+
+    @stream_cache
+    def fn(self, model, messages, stream, tools):
+        yield "live"
+
+    result = list(fn(None, "m", [{"role": "user", "content": "x"}], stream=True, tools=None))
+    assert result == ["live"]
+    mock_redis.get.assert_not_called()
+    mock_redis.set.assert_not_called()
 
 
 @patch("application.cache.get_redis_instance")

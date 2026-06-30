@@ -12,6 +12,24 @@ class MessageBuilder:
     """Builds message arrays from compressed context."""
 
     @staticmethod
+    def _readable_queries(recent_queries: List[Dict]) -> List[Dict]:
+        """Drop unreadable/erased turns before building provider messages.
+
+        A real turn carries ``prompt``/``response`` keys; a ``None`` value there
+        means the content was erased or failed to decrypt
+        (``content_registry.safe_decrypt_value``). Such a turn must not become a
+        ``{"content": None}`` message or contribute orphaned tool-call messages —
+        drop it entirely (PLAN §6), mirroring the ``BaseAgent._build_messages``
+        backstop. Filtering here (vs. inside each loop) keeps the emission and the
+        ``recent_msg_count`` math in :meth:`rebuild_messages_after_compression`
+        consistent."""
+        return [
+            q
+            for q in recent_queries
+            if not (("prompt" in q and q["prompt"] is None) or ("response" in q and q["response"] is None))
+        ]
+
+    @staticmethod
     def build_from_compressed_context(
         system_prompt: str,
         compressed_summary: Optional[str],
@@ -37,6 +55,8 @@ class MessageBuilder:
             system_prompt = MessageBuilder._append_compression_context(
                 system_prompt, compressed_summary, context_type
             )
+
+        recent_queries = MessageBuilder._readable_queries(recent_queries)
 
         messages = [{"role": "system", "content": system_prompt}]
 
@@ -158,6 +178,8 @@ class MessageBuilder:
         if not system_message:
             logger.warning("No system message found in messages list")
             return None
+
+        recent_queries = MessageBuilder._readable_queries(recent_queries)
 
         # Update system message with compressed summary
         if compressed_summary:
