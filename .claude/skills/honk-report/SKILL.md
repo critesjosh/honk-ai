@@ -227,14 +227,18 @@ JOIN conversations c ON c.id = cm.conversation_id
 JOIN agents a        ON a.id = c.agent_id
 WHERE cm.timestamp >= NOW() - INTERVAL '\$DAYS days'
   AND (cm.message_metadata->'literal_identifier_guard'->>'scrubbed')::int > 0
+  AND a.surface IN ('widget','discord','web_ask','mcp','slack')
 ORDER BY cm.timestamp DESC;
 " > /tmp/honk-literal-scrubs.txt
 ```
 
 For each scrub in `/tmp/honk-literal-scrubs.txt`: if the redacted address actually
-appears in the cited `sources` or is a real on-chain address, it's an **allowlist
-gap** (e.g. a tool whose `result_full` isn't harvested, or multi-round agentic) —
-flag it against `_build_literal_allowlist`. A rising `scrubbed` rate with legit
+appears in the cited `sources`, retrieved tool payloads, or other grounding the
+allowlist should have harvested, it's an **allowlist gap** (e.g. a tool whose
+`result_full` isn't harvested, or multi-round agentic) — flag it against
+`_build_literal_allowlist`. A real on-chain address that was NOT in the grounding
+is a *correct* scrub, not a false positive — the guard verifies against what the
+model was given, not against the whole chain. A rising rate of genuinely-grounded
 scrubs is the trigger to revisit allowlist coverage.
 
 ## Step 4 — Quality telemetry from container logs
