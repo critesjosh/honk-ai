@@ -180,6 +180,63 @@ ORDER BY cm.timestamp DESC;
 " > /tmp/honk-feedback.txt
 ```
 
+### Literal-identifier guardrail (address-corruption guard)
+
+Prod runs `LITERAL_GUARD_MODE=enforce` (flipped 2026-06-30). The guard verifies
+long `0x` hex literals (contract addresses, tx/block hashes, pubkeys) in answers
+against the grounding and either corrects a corrupted copy or scrubs an
+unverifiable one. The audit row lands at
+`message_metadata->'literal_identifier_guard'` (`{mode, checked, corrected,
+scrubbed}`) — written ONLY when `corrected`/`scrubbed` > 0:
+
+```bash
+docker exec docsgpt-aztec-postgres-1 psql -U docsgpt -d docsgpt -c "
+SELECT a.surface,
+       cm.message_metadata->'literal_identifier_guard'->>'mode'                              AS mode,
+       COUNT(*)                                                                              AS guard_events,
+       COALESCE(SUM((cm.message_metadata->'literal_identifier_guard'->>'corrected')::int),0) AS corrected,
+       COALESCE(SUM((cm.message_metadata->'literal_identifier_guard'->>'scrubbed')::int),0)  AS scrubbed
+FROM conversation_messages cm
+JOIN conversations c ON c.id = cm.conversation_id
+JOIN agents a        ON a.id = c.agent_id
+WHERE cm.timestamp >= NOW() - INTERVAL '\$DAYS days'
+  AND cm.message_metadata ? 'literal_identifier_guard'
+  AND a.surface IN ('widget','discord','web_ask','mcp','slack')
+GROUP BY a.surface, mode
+ORDER BY scrubbed DESC, corrected DESC;
+"
+```
+
+Interpretation:
+- **`corrected` = wins.** A grounded identifier the model corrupted mid-answer,
+  auto-fixed before it streamed (the 2026-06-29 $AZTEC single-nibble incident is
+  the canonical case). Higher = the guard is earning its keep; report it as
+  prevented funds-loss-risk errors, not as a problem.
+- **`scrubbed` = false-positive signal — investigate every one.** A long hex
+  literal that matched nothing in the grounding → replaced with `[unverified
+  address removed]`. Each is either (a) a genuine hallucination (correct, good)
+  or (b) a *legitimate* address the allowlist missed (a real UX regression).
+  Pull them and classify:
+
+```bash
+docker exec docsgpt-aztec-postgres-1 psql -U docsgpt -d docsgpt -P pager=off -c "
+SELECT a.surface, cm.timestamp, cm.prompt, LEFT(cm.response, 1000) AS response,
+       cm.message_metadata->'literal_identifier_guard' AS guard, cm.sources
+FROM conversation_messages cm
+JOIN conversations c ON c.id = cm.conversation_id
+JOIN agents a        ON a.id = c.agent_id
+WHERE cm.timestamp >= NOW() - INTERVAL '\$DAYS days'
+  AND (cm.message_metadata->'literal_identifier_guard'->>'scrubbed')::int > 0
+ORDER BY cm.timestamp DESC;
+" > /tmp/honk-literal-scrubs.txt
+```
+
+For each scrub in `/tmp/honk-literal-scrubs.txt`: if the redacted address actually
+appears in the cited `sources` or is a real on-chain address, it's an **allowlist
+gap** (e.g. a tool whose `result_full` isn't harvested, or multi-round agentic) —
+flag it against `_build_literal_allowlist`. A rising `scrubbed` rate with legit
+scrubs is the trigger to revisit allowlist coverage.
+
 ## Step 4 — Quality telemetry from container logs
 
 The DB doesn't record everything. Empty-response trips and breaker events
@@ -191,7 +248,7 @@ HOURS=$((24 * $DAYS))
 
 docker compose -f deployment/docker-compose-hub.yaml --env-file .env \
   logs --since ${HOURS}h --no-color backend 2>&1 \
-  | grep -E "llm\.empty_response|llm\.cited_(missing|malformed|invalid_index)|provider_error" \
+  | grep -E "llm\.empty_response|llm\.cited_(missing|malformed|invalid_index)|llm\.literal_guard|provider_error" \
   > /tmp/honk-backend-telemetry.txt
 
 docker compose -f deployment/docker-compose-hub.yaml --env-file .env \
@@ -209,6 +266,11 @@ Counts to extract per surface from these files:
 - `llm.empty_response` — content-filter / silent provider failures
 - `llm.cited_missing` — model didn't emit citation marker (fail-open)
 - `llm.cited_malformed` / `llm.cited_invalid_index` — model emitted bad indices
+- `llm.literal_guard` (`… mode=enforce checked=N corrected=N scrubbed=N`) —
+  address-corruption guard. Sum `corrected` (wins) and `scrubbed` (false-positive
+  signal). Logs are the durable source here: they catch the no-save paths
+  (e.g. tool-continuation) the DB query in Step 3 misses, and carry only counts
+  (no content), so they survive content-encryption-at-rest
 - Discord breaker trips, shared-429 hits, per-guild cap exhaustion
 - Slack breaker trips, shared-429 hits, per-workspace cap exhaustion
 
@@ -267,6 +329,12 @@ What are they trying to build or solve? Look for:
   hallucinated identifier, missing source, rude tone, etc.)
 - citation filter dropping all sources (`zero_cited`) — is the answer still
   good, or is the model refusing to ground?
+- literal-identifier guard (`enforce`): `corrected` (address corruptions
+  auto-fixed — report as prevented errors) and `scrubbed` (hex literals redacted
+  to `[unverified address removed]`). Classify every `scrubbed` from
+  `/tmp/honk-literal-scrubs.txt` as a genuine hallucination (good) or a
+  legitimate address the allowlist missed (false positive → `_build_literal_allowlist`
+  gap). Call out a rising `scrubbed` rate explicitly.
 
 ## Factual accuracy spot-check
 Pick 8–12 answers across surfaces (mix of cited / uncited / 👎). For each,
