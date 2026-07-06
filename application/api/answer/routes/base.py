@@ -103,7 +103,8 @@ _AWESOME_AZTEC_GITHUB_BASE = (
 )
 
 # ── Version-aware routing ────────────────────────────────────────────────
-# The KB serves TWO doc versions (mainnet v4.3.1 + testnet v5.0.0-rc.1).
+# The KB serves TWO doc versions (mainnet v4.3.1 + testnet v5.0.0-rc.2; rc.1
+# keys retained through the cutover window).
 # docs.aztec.network serves the mainnet (current/``lastVersion``) docs at the
 # BARE path and other versions under a Docusaurus ``path:`` segment (see
 # docusaurus.config.js). Confirmed live:
@@ -117,26 +118,35 @@ _AWESOME_AZTEC_GITHUB_BASE = (
 # Per-version Docusaurus site path infix (mainnet/current = bare ""; others
 # under their version path). Unknown versions fall back to bare (treated as
 # current) — safe for a future bump before this map is updated.
-_DOCS_SITE_INFIX = {"v4.3.1": "", "v5.0.0-rc.1": "testnet"}
+# NOTE: rc.1 keys are retained alongside rc.2 through the cutover window so the
+# rewriter stays correct for whichever testnet sources are live (rc.1 until the
+# source-swap completes, rc.2 after). Drop the rc.1 entries in the post-cutover
+# cleanup once the old rc.1 sources are swept.
+_DOCS_SITE_INFIX = {"v4.3.1": "", "v5.0.0-rc.1": "testnet", "v5.0.0-rc.2": "testnet"}
 # Per-version aztec-packages release tag (code-corpus GitHub blobs).
-_CODE_TAG = {"v4.3.1": "v4.3.1", "v5.0.0-rc.1": "v5.0.0-rc.1"}
+_CODE_TAG = {"v4.3.1": "v4.3.1", "v5.0.0-rc.1": "v5.0.0-rc.1", "v5.0.0-rc.2": "v5.0.0-rc.2"}
 # Per-version noir-lang/noir commit (noir/noir-repo submodule pin at that tag;
-# noir-stdlib apiref blobs). noir didn't move v4.3.0→v4.3.1.
+# noir-stdlib apiref blobs). noir didn't move v4.3.0→v4.3.1, nor rc.1→rc.2.
 _NOIR_PIN = {
     "v4.3.1": "1d9727a6e0a9df75a71bb9c87daacbe30659ba09",
     "v5.0.0-rc.1": "c57152f91260ecdb9faad4efc20abb14b6d2ece7",
+    "v5.0.0-rc.2": "c57152f91260ecdb9faad4efc20abb14b6d2ece7",
 }
 # Per-version rendered TS-API network folder on the ``next`` snapshot.
-_TS_API_FOLDER = {"v4.3.1": "mainnet", "v5.0.0-rc.1": "testnet"}
+_TS_API_FOLDER = {"v4.3.1": "mainnet", "v5.0.0-rc.1": "testnet", "v5.0.0-rc.2": "testnet"}
 # Default active version when a caller doesn't pass one (testnet/v5 — primary
 # audience). The retrieval path threads the real active_version explicitly.
-_DEFAULT_DOC_VERSION = "v5.0.0-rc.1"
+_DEFAULT_DOC_VERSION = "v5.0.0-rc.2"
 _AZTEC_GITHUB = "https://github.com/AztecProtocol/aztec-packages/blob"
 _NOIR_GITHUB = "https://github.com/noir-lang/noir/blob"
 # Pinned ``next`` snapshot the docs corpora + rendered TS-API are built from
-# (the per-version TS-API folder differs; the snapshot SHA is shared). MUST equal
-# the ``--aztec-pkg-docs`` snapshot used in scripts/ingest/corpora.py's build.
-_AZTEC_DOCS_SNAPSHOT_SHA = "d69ab88adc2bef952696ff4b6ab8b109ae4b75ac"
+# (the per-version TS-API folder differs; the snapshot SHA is shared across
+# versions). MUST equal the ``--aztec-pkg-docs`` snapshot used in
+# scripts/ingest/corpora.py's build. Bumped to the rc.2 snapshot (which carries
+# version-v5.0.0-rc.2 + version-v4.3.1). Transient caveat during the swap window:
+# TS-API source links for any still-live rc.1 sources resolve against this rc.2
+# snapshot's testnet folder — cosmetic, and rc.1 is swept right after cutover.
+_AZTEC_DOCS_SNAPSHOT_SHA = "815b472822bbedf524ab495e2592f4c8c7314c37"
 # Matches the Docusaurus version-folder prefix (``version-vX.Y.Z/``). Digit-guarded
 # so it only matches real version folders, not an arbitrary ``version-v…`` prefix.
 _VERSIONED_DOCS_RE = re.compile(r"^version-v\d[^/]*/")

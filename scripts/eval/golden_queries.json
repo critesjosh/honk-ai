@@ -54,9 +54,9 @@
     "bucket": "concept",
     "query": "How do I write a private function in an Aztec contract that updates storage?",
     "expected_source_prefixes": [
-      "version-v5.0.0-rc.1/"
+      "version-v5.0.0-rc.2/"
     ],
-    "expected_concept_prefix": "version-v5.0.0-rc.1/",
+    "expected_concept_prefix": "version-v5.0.0-rc.2/",
     "banned_identifiers": [
       "UNCONSTRAINED_ONCHAIN",
       "MessageDelivery.OFFCHAIN_CONSTRAINED"
@@ -95,9 +95,9 @@
     "bucket": "concept",
     "query": "How do I deploy a contract using the Aztec CLI?",
     "expected_source_prefixes": [
-      "version-v5.0.0-rc.1/"
+      "version-v5.0.0-rc.2/"
     ],
-    "expected_concept_prefix": "version-v5.0.0-rc.1/",
+    "expected_concept_prefix": "version-v5.0.0-rc.2/",
     "banned_identifiers": [],
     "max_response_time_s": 15,
     "min_distinct_sources": 2
@@ -123,9 +123,9 @@
     "bucket": "concept",
     "query": "What are the different MessageDelivery modes in Aztec?",
     "expected_source_prefixes": [
-      "version-v5.0.0-rc.1/"
+      "version-v5.0.0-rc.2/"
     ],
-    "expected_concept_prefix": "version-v5.0.0-rc.1/",
+    "expected_concept_prefix": "version-v5.0.0-rc.2/",
     "banned_identifiers": [
       "UNCONSTRAINED_ONCHAIN",
       "CONSTRAINED_OFFCHAIN"
@@ -150,9 +150,9 @@
     "bucket": "concept",
     "query": "What is a note in Aztec and how does it differ from public state?",
     "expected_source_prefixes": [
-      "version-v5.0.0-rc.1/"
+      "version-v5.0.0-rc.2/"
     ],
-    "expected_concept_prefix": "version-v5.0.0-rc.1/",
+    "expected_concept_prefix": "version-v5.0.0-rc.2/",
     "banned_identifiers": [],
     "max_response_time_s": 15,
     "min_distinct_sources": 2
@@ -177,7 +177,7 @@
     "bucket": "concept",
     "query": "Walk me through sending a private transaction from aztec.js including what happens in the contract.",
     "expected_source_prefixes": [
-      "version-v5.0.0-rc.1/"
+      "version-v5.0.0-rc.2/"
     ],
     "banned_identifiers": [
       "UNCONSTRAINED_ONCHAIN"
@@ -196,9 +196,9 @@
       }
     ],
     "expected_source_prefixes": [
-      "version-v5.0.0-rc.1/"
+      "version-v5.0.0-rc.2/"
     ],
-    "expected_concept_prefix": "version-v5.0.0-rc.1/",
+    "expected_concept_prefix": "version-v5.0.0-rc.2/",
     "banned_identifiers": [],
     "max_response_time_s": 15,
     "min_distinct_sources": 2,
@@ -362,7 +362,7 @@
     "bucket": "concept",
     "query": "Can you tell me about the tokenomics in Aztec?",
     "expected_source_prefixes": [
-      "version-v5.0.0-rc.1/"
+      "version-v5.0.0-rc.2/"
     ],
     "banned_identifiers": [
       "Aztec Productivity Token",
@@ -503,7 +503,7 @@
     "bucket": "concept",
     "query": "How do I get Fee Juice on Aztec, and can I trade it on a DEX?",
     "expected_source_prefixes": [
-      "version-v5.0.0-rc.1/",
+      "version-v5.0.0-rc.2/",
       "aztec-participate/"
     ],
     "banned_identifiers": [
@@ -518,7 +518,7 @@
     "bucket": "concept",
     "query": "How is Aztec different from Starknet?",
     "expected_source_prefixes": [
-      "version-v5.0.0-rc.1/"
+      "version-v5.0.0-rc.2/"
     ],
     "banned_identifiers": [],
     "max_response_time_s": 20,
@@ -537,5 +537,66 @@
     "max_response_time_s": 30,
     "min_distinct_sources": 1,
     "notes": "genesis-archive-root-mismatch / standby-mode recall: the curated operator-troubleshooting doc must surface. Retriever mode asserts the raw `curated-troubleshooting/` prefix (the specific guard — only this corpus has that path); stream mode matches the rewritten operator-FAQ URL via expected_first_prefixes. The DESIRED behavior — lead with node-version-vs-network-version skew, NOT a network/RPC mixup, and defer version numbers to networks.md — is human-read (no banned phrasing, since the doc legitimately lists the network mixup as a less-common cause)."
+  },
+  {
+    "tag": "v5-node-migration-guidance",
+    "bucket": "resource",
+    "query": "I'm a staking provider running a single v4 node with active delegations. How do I migrate to v5 without downtime, and what's the official recommendation to avoid missing attestations or getting slashed during the switch?",
+    "expected_source_prefixes": [
+      "curated-troubleshooting/"
+    ],
+    "expected_first_prefixes": [
+      "operators/operator-faq"
+    ],
+    "banned_identifiers": [
+      "only covers Aztec v4"
+    ],
+    "max_response_time_s": 30,
+    "min_distinct_sources": 1,
+    "notes": "v4->v5 node migration recall: the curated v4-to-v5-node-migration doc must surface (curated-troubleshooting/ prefix; stream mode rewrites to the operator-FAQ URL). DESIRED behavior (human-read): explain deploy-ahead + automatic standby, and state HONESTLY that the migration guidance does NOT specify slashing/downtime/epoch-timing for delegated sequencers -> defer to the forum guide + team; do NOT fabricate a slashing threshold or timing window. Banned phrase 'only covers Aztec v4' is a regression guard against the pre-2026-07 stale prompt that wrongly disclaimed all v5 coverage."
+  },
+  {
+    "tag": "airdrop-cost-no-speculation",
+    "bucket": "concept",
+    "query": "Does participating in the Aztec airdrop cost money, or is it free? How do I claim it?",
+    "expected_source_prefixes": [
+      "curated-token-fees/"
+    ],
+    "banned_identifiers": [
+      "ThorDex",
+      "Thor on Aztec"
+    ],
+    "max_response_time_s": 20,
+    "min_distinct_sources": 1,
+    "notes": "Airdrop/participation speculation guard. DESIRED behavior (human-read): a grounded refusal -> the docs don't cover airdrops/eligibility/claim costs; point to official Aztec channels. Must NOT assert an airdrop exists, its cost (free or paid), eligibility, or a claim flow. The curated-token-fees boundary doc (with its airdrop section) should surface. Pair with the -fa entry for the non-English path."
+  },
+  {
+    "tag": "airdrop-cost-no-speculation-fa",
+    "bucket": "concept",
+    "query": "سلام، شرکت در ایردراپ آذتک هزینه دارد؟ آیا رایگان است و چطور کلیم کنم؟",
+    "banned_identifiers": [
+      "ThorDex",
+      "Thor on Aztec"
+    ],
+    "max_response_time_s": 20,
+    "min_distinct_sources": 1,
+    "notes": "Non-English (Persian) airdrop speculation guard for the observed 2026-07 miss (a Persian airdrop-cost question free-formed about claim/gas costs with random Noir files as sources). DESIRED behavior (human-read): the SAME grounded refusal as the English case, in the user's language -> docs don't cover airdrops/cost/eligibility, point to official channels; NEVER fabricate cost/eligibility/claim steps. The prompt-side rule is the load-bearing guard (Persian retrieval may not hit the English curated doc), so this is human-read, not source-asserted."
+  },
+  {
+    "tag": "pxe-register-fn-signatures-no-fabrication",
+    "bucket": "concept",
+    "query": "On the public v5 testnet RPC, node.registerContractFunctionSignatures returns \"Method not found\" so PXE registerContract() fails for contracts with public functions, but it works against a local sandbox. Is this expected?",
+    "banned_identifiers": [],
+    "max_response_time_s": 25,
+    "min_distinct_sources": 1,
+    "notes": "Regression guard for the 2026-07 Slack dislike: the bot fabricated a cause ('this RPC method is a debug endpoint deliberately stripped from public RPCs for security'), which has no basis in any chunk. Human-read, NOT substring-banned: the harness does a plain case-sensitive `b in answer` check, so banning phrases like 'deliberately stripped' would false-positive a CORRECT refusal that negates the claim (e.g. 'the chunks do not say it was deliberately stripped from public RPCs'). DESIRED behavior: do NOT assert a fabricated rationale; say the chunks don't confirm why the public v5 RPC omits this method, and that it's a v5 RPC-surface detail to verify against the v5 node/PXE API reference or the team."
+  },
+  {
+    "tag": "sequencer-attestations-per-epoch",
+    "bucket": "concept",
+    "query": "How many times does a sequencer attest per epoch in Aztec, and what is the uptime/attestation requirement to avoid being slashed?",
+    "max_response_time_s": 25,
+    "min_distinct_sources": 1,
+    "notes": "Attestation-mechanics accuracy (human-read): confirm the committee/proposer/attestation framing and any quantitative claim (e.g. a >2/3 committee threshold, per-slot attestation) against the current v5 slashing/sequencer docs; ensure the answer does NOT mix v4.3.1-mainnet and v5-testnet consensus constants. Left source-unasserted to avoid a flaky recall guard; the value is the flagged desired behavior for human review."
   }
 ]

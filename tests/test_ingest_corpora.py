@@ -340,7 +340,7 @@ def test_skip_for_missing_root_never_skips_production_corpus():
     # (it should hard-error downstream instead) — including awesome_aztec,
     # now that it's promoted.
     assert _skip_for_missing_root(
-        get_corpus("aztec_developer_docs_v5_0_0_rc_1"), {}, explicitly_selected=False
+        get_corpus("aztec_developer_docs_v5_0_0_rc_2"), {}, explicitly_selected=False
     ) is False
     assert _skip_for_missing_root(
         get_corpus("awesome_aztec"), {}, explicitly_selected=False

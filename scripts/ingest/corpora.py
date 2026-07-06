@@ -499,11 +499,11 @@ _SHARED_CORPORA: Tuple[Corpus, ...] = (
 )
 
 
-# Active versions in the KB: mainnet (v4.3.1) + testnet (v5.0.0-rc.1).
+# Active versions in the KB: mainnet (v4.3.1) + testnet (v5.0.0-rc.2).
 # The rendered TS-API folder on ``next`` is per network (mainnet/testnet).
 CORPORA: Tuple[Corpus, ...] = (
     *_versioned_corpora("v4.3.1", "mainnet", ts_api_folder="mainnet"),
-    *_versioned_corpora("v5.0.0-rc.1", "testnet", ts_api_folder="testnet"),
+    *_versioned_corpora("v5.0.0-rc.2", "testnet", ts_api_folder="testnet"),
     *_SHARED_CORPORA,
 )
 

@@ -42,7 +42,7 @@ class TestSelectActiveVersion:
         assert select_active_version("on v4 the API was different") == MAINNET_VERSION
 
     def test_v5_version_token(self):
-        assert select_active_version("what changed in v5.0.0-rc.1?") == TESTNET_VERSION
+        assert select_active_version("what changed in v5.0.0-rc.2?") == TESTNET_VERSION
         assert select_active_version("the v5 wallet API") == TESTNET_VERSION
 
     def test_ambiguous_both_named_falls_to_default(self):

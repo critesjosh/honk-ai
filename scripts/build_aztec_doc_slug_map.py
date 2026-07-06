@@ -74,6 +74,24 @@ _RETAINED_LEGACY_OVERRIDES: dict[str, str] = {
     "version-v4.3.0/operators/setup/sequencer-setup": "sequencer_management",
     "version-v4.3.0/operators/setup/staking-provider": "become_a_staking_provider",
     "version-v4.3.0/operators/setup/syncing-best-practices": "syncing_best_practices",
+    # Retained v5.0.0-rc.1 keys through the rc.2 cutover: identical slugs to rc.2,
+    # but rc.1 sources stay live until the post-swap sweep, so dropping these would
+    # 404 rc.1 id-slug operator-doc citations in the swap window. **Delete this
+    # block once the rc.1 sources are swept** (same lifecycle as the v4.3.0 block).
+    "version-v5.0.0-rc.1/operators/keystore/creating-keystores": "creating_keystores",
+    "version-v5.0.0-rc.1/operators/reference/ethereum-rpc-reference": "ethereum_rpc_reference",
+    "version-v5.0.0-rc.1/operators/reference/node-api-reference": "node_api_reference",
+    "version-v5.0.0-rc.1/operators/sequencer-management/governance-participation": "creating_and_voting_on_proposals",
+    "version-v5.0.0-rc.1/operators/sequencer-management/slashing-configuration": "slashing_and_offenses",
+    "version-v5.0.0-rc.1/operators/setup/bootnode-operation": "bootnode_operation",
+    "version-v5.0.0-rc.1/operators/setup/building-from-source": "building_from_source",
+    "version-v5.0.0-rc.1/operators/setup/high-availability": "high_availability_sequencers",
+    "version-v5.0.0-rc.1/operators/setup/registering-sequencer": "registering_sequencer",
+    "version-v5.0.0-rc.1/operators/setup/running-a-node": "running_a_node",
+    "version-v5.0.0-rc.1/operators/setup/running-a-prover": "running_a_prover",
+    "version-v5.0.0-rc.1/operators/setup/sequencer-setup": "sequencer_management",
+    "version-v5.0.0-rc.1/operators/setup/staking-provider": "become_a_staking_provider",
+    "version-v5.0.0-rc.1/operators/setup/syncing-best-practices": "syncing_best_practices",
 }
 
 _FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n", re.DOTALL)

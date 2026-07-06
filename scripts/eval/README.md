@@ -7,7 +7,7 @@ the system prompt (`application/prompts/aztec_4_3_0_grounded.txt`), or the
 
 Two workflows live here:
 
-1. **Regression suite** (`eval_retrieval.py` alone) — pass/fail on the 25
+1. **Regression suite** (`eval_retrieval.py` alone) — pass/fail on the
    golden queries. Run on the current prod agent before merging.
 2. **Variant comparison** (`provision_test_agent.py` → `eval_retrieval.py
    --capture-answers` → `compare.py`) — see how an experimental prompt,
@@ -20,10 +20,10 @@ Two workflows live here:
   `ClassicRAG._get_data()`) and `stream` (full SSE roundtrip via `/stream`).
   `--capture-answers` records the full answer + cited URLs into the JSON
   output so `compare.py` can diff two runs.
-- `golden_queries.json` — 25 hand-written queries (each tagged `bucket` of
-  `identifier` / `concept` / `example`) that exercise each indexed corpus
+- `golden_queries.json` — hand-written queries (each tagged `bucket` of
+  `identifier` / `concept` / `example` / `resource`) that exercise each indexed corpus
   plus a multi-turn follow-up that exercises the rephrase path. Filter
-  with `--bucket {identifier,concept,example,all}`.
+  with `--bucket {identifier,concept,example,resource,all}`.
 - `provision_test_agent.py` — upserts a throwaway agent + prompt row under
   `user_id = 'eval-variant'` with `surface = 'eval'` (the
   `agents.surface` taxonomy keeps these out of per-surface prod
@@ -421,7 +421,7 @@ Field meanings:
 | `min_distinct_sources` | both | Floor on bucket count. Cross-source queries set this ≥ 2. |
 | `banned_identifiers` | stream | Substrings that must NOT appear in the answer. Use to lock down hallucinated APIs (e.g. an old method name that was renamed in v4.3.0). |
 | `max_response_time_s` | stream | Wall-time SLA. Defaults to 15. |
-| `expected_first_prefixes` | stream | Identifier-bucket only. Path prefixes — the first cited source's rewritten URL must contain one of them. Defaults to `("aztec-nr/", "noir-stdlib/")` (`APIREF_PREFIXES`). Override for queries whose canonical apiref isn't a `.nr` file, e.g. TypeScript-API queries set `["typescript-api/", "aztec.js/"]`. Ignored if `expected_apiref_paths` is also set. |
+| `expected_first_prefixes` | stream | Used by identifier- and resource-bucket queries. Path prefixes — the first cited source's rewritten URL must contain one of them. Defaults to `("aztec-nr/", "noir-stdlib/")` (`APIREF_PREFIXES`). Override for queries whose canonical apiref isn't a `.nr` file, e.g. TypeScript-API queries set `["typescript-api/", "aztec.js/"]`. Ignored if `expected_apiref_paths` is also set. |
 
 Pick a `tag` that names the corpus + concept (`aztec-nr-private-storage`,
 `l1-contracts-rollup`). One query per indexed corpus is the floor; add more

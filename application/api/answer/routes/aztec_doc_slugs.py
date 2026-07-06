@@ -74,6 +74,20 @@ AZTEC_DOC_SLUG_OVERRIDES: dict[str, str] = {
     "version-v5.0.0-rc.1/operators/setup/sequencer-setup": "sequencer_management",
     "version-v5.0.0-rc.1/operators/setup/staking-provider": "become_a_staking_provider",
     "version-v5.0.0-rc.1/operators/setup/syncing-best-practices": "syncing_best_practices",
+    "version-v5.0.0-rc.2/operators/keystore/creating-keystores": "creating_keystores",
+    "version-v5.0.0-rc.2/operators/reference/ethereum-rpc-reference": "ethereum_rpc_reference",
+    "version-v5.0.0-rc.2/operators/reference/node-api-reference": "node_api_reference",
+    "version-v5.0.0-rc.2/operators/sequencer-management/governance-participation": "creating_and_voting_on_proposals",
+    "version-v5.0.0-rc.2/operators/sequencer-management/slashing-configuration": "slashing_and_offenses",
+    "version-v5.0.0-rc.2/operators/setup/bootnode-operation": "bootnode_operation",
+    "version-v5.0.0-rc.2/operators/setup/building-from-source": "building_from_source",
+    "version-v5.0.0-rc.2/operators/setup/high-availability": "high_availability_sequencers",
+    "version-v5.0.0-rc.2/operators/setup/registering-sequencer": "registering_sequencer",
+    "version-v5.0.0-rc.2/operators/setup/running-a-node": "running_a_node",
+    "version-v5.0.0-rc.2/operators/setup/running-a-prover": "running_a_prover",
+    "version-v5.0.0-rc.2/operators/setup/sequencer-setup": "sequencer_management",
+    "version-v5.0.0-rc.2/operators/setup/staking-provider": "become_a_staking_provider",
+    "version-v5.0.0-rc.2/operators/setup/syncing-best-practices": "syncing_best_practices",
 }
 
 

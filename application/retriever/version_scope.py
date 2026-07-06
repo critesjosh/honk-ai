@@ -1,7 +1,7 @@
 """Pre-retrieval version selection + source-set narrowing for the two-version KB.
 
 The Aztec knowledge base carries TWO doc versions at once — **v4.3.1 (mainnet)**
-and **v5.0.0-rc.1 (testnet)** — inside one agent/surface (see
+and **v5.0.0-rc.2 (testnet)** — inside one agent/surface (see
 ``PLAN-two-version-kb.md``). To keep a single answer from mixing versions we:
 
   1. pick an ``active_version`` per request from the query / conversation
@@ -56,8 +56,15 @@ logger = logging.getLogger(__name__)
 
 # Canonical doc versions served by the two-version KB.
 MAINNET_VERSION = "v4.3.1"
-TESTNET_VERSION = "v5.0.0-rc.1"
+TESTNET_VERSION = "v5.0.0-rc.2"
 KNOWN_VERSIONS = (MAINNET_VERSION, TESTNET_VERSION)
+
+# All release candidates on the current testnet (v5) line. Narrowing treats
+# these as interchangeable so retrieval stays correct across a testnet RC bump
+# regardless of whether the live sources are still the previous RC or the new
+# one (see the cutover window in ``filter_sources_by_version``). Drop the
+# superseded RC from this set once its old sources are swept.
+_V5_LINE_VERSIONS = frozenset({"v5.0.0-rc.1", "v5.0.0-rc.2"})
 
 # Default when the query/conversation carries no version or network signal.
 # Testnet (v5) is the primary audience; for version-agnostic concept questions
@@ -188,7 +195,15 @@ def filter_sources_by_version(
         meta = version_map.get(str(sid)) or {}
         version = meta.get("version")
         network = meta.get("network")
-        if not version or network == SHARED_NETWORK or version == active_version:
+        if (
+            not version
+            or network == SHARED_NETWORK
+            or version == active_version
+            # Cutover safety: rc.1 and rc.2 sources are interchangeable for a
+            # testnet query, so a swap in progress never narrows to the wrong
+            # (or empty) set regardless of source-vs-code ordering.
+            or (active_version in _V5_LINE_VERSIONS and version in _V5_LINE_VERSIONS)
+        ):
             kept.append(sid)
 
     if not kept:

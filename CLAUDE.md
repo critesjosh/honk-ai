@@ -10,6 +10,7 @@ Repo-specific instructions for Claude Code. Long-form architecture / operator co
 - **`.env` changes need `up -d --force-recreate`**, not `restart` (restart re-uses the old container env).
 - **Source edits don't cross composes.** Each builds its own images — rebuilding dev does NOT update hub and vice versa.
 - **`scripts/` is at repo root and NOT copied into the backend image.** Bind-mount with `-v $(pwd)/scripts:/app/scripts:ro` when running scripts via `docker compose run --rm backend …`.
+- **Prod down after an environment restart? Suspect the DinD image wipe, not the app.** josh-box stores containerd image layers on the ephemeral rootfs, so a restart wipes every image/container (named volumes incl. Postgres survive, so no data loss). `docker images` returns 0 and containers show `Exited (255)` / phantom "No such container". Recovery is rebuild-from-`main` + `up -d` (not app debugging); full procedure + the durable fix + the boot-reconcile unit are in `AZTEC_SETUP.md` → "Docker-in-Docker layer durability & outage detection".
 
 ## Repo map
 

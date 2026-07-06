@@ -126,8 +126,8 @@ class TestDocusaurusIdOverrides:
 
     @pytest.mark.parametrize("tail,expected", _OVERRIDE_CASES)
     def test_override_applied_v5_testnet_infix(self, tail, expected):
-        # v5.0.0-rc.1 (testnet) → /operate/testnet path + the SAME slug override.
-        assert _aztec_source_url(f"version-v5.0.0-rc.1/{tail}") == (
+        # v5.0.0-rc.2 (testnet) → /operate/testnet path + the SAME slug override.
+        assert _aztec_source_url(f"version-v5.0.0-rc.2/{tail}") == (
             f"https://docs.aztec.network/operate/testnet/{expected}"
         )
 
@@ -155,7 +155,7 @@ class TestDocusaurusIdOverrides:
         # but Docusaurus serves index files at the parent path regardless
         # of the declared id. We must NOT inject the id into the URL here.
         assert _aztec_source_url(
-            "version-v5.0.0-rc.1/operators/keystore/index.md"
+            "version-v5.0.0-rc.2/operators/keystore/index.md"
         ) == (
             "https://docs.aztec.network/operate/testnet/operators/keystore"
         )
@@ -261,7 +261,7 @@ class TestCuratedTroubleshooting:
     raw-path string."""
 
     def test_routes_to_operator_faq_default_version(self):
-        # Default active_version is v5.0.0-rc.1 (testnet), so the default
+        # Default active_version is v5.0.0-rc.2 (testnet), so the default
         # carries the /testnet infix.
         assert _aztec_source_url(
             "curated-troubleshooting/genesis-archive-root-mismatch.md"
@@ -274,7 +274,7 @@ class TestCuratedTroubleshooting:
 
     def test_testnet_active_version_keeps_infix(self):
         assert _aztec_source_url(
-            "curated-troubleshooting/genesis-archive-root-mismatch.md", "v5.0.0-rc.1"
+            "curated-troubleshooting/genesis-archive-root-mismatch.md", "v5.0.0-rc.2"
         ) == "https://docs.aztec.network/operate/testnet/operators/operator-faq"
 
     def test_unknown_version_falls_back_to_bare(self):
@@ -290,7 +290,7 @@ class TestCuratedTokenFees:
     foundational fees page."""
 
     def test_routes_to_fees_default_version(self):
-        # Default active_version is v5.0.0-rc.1 (testnet) → /testnet infix.
+        # Default active_version is v5.0.0-rc.2 (testnet) → /testnet infix.
         assert _aztec_source_url(
             "curated-token-fees/aztec-token-and-fees-boundaries.md"
         ) == "https://docs.aztec.network/developers/testnet/docs/foundational-topics/fees"
@@ -383,9 +383,9 @@ class TestCodeRepoMappings:
         ],
     )
     def test_strips_extension_hack(self, corpus_path, expected_repo_path):
-        # Default active_version is v5 → the v5.0.0-rc.1 release tag.
+        # Default active_version is v5 → the v5.0.0-rc.2 release tag.
         assert _aztec_source_url(corpus_path) == (
-            f"https://github.com/AztecProtocol/aztec-packages/blob/v5.0.0-rc.1/{expected_repo_path}"
+            f"https://github.com/AztecProtocol/aztec-packages/blob/v5.0.0-rc.2/{expected_repo_path}"
         )
 
     def test_code_corpus_uses_mainnet_tag_for_v4_3_1(self):
@@ -406,7 +406,7 @@ class TestCodeRepoMappings:
         # (the GitHub blob needs the real filename). Default active_version v5.
         base = (
             "https://github.com/AztecProtocol/aztec-packages/blob/"
-            "d69ab88adc2bef952696ff4b6ab8b109ae4b75ac/docs/static/typescript-api/testnet/"
+            "815b472822bbedf524ab495e2592f4c8c7314c37/docs/static/typescript-api/testnet/"
         )
         assert _aztec_source_url("typescript-api/aztec.js.md") == base + "aztec.js.md"
         assert _aztec_source_url("typescript-api/llm-summary.txt") == base + "llm-summary.txt"
@@ -418,7 +418,7 @@ class TestCodeRepoMappings:
             "typescript-api/aztec.js.md", active_version="v4.3.1"
         ) == (
             "https://github.com/AztecProtocol/aztec-packages/blob/"
-            "d69ab88adc2bef952696ff4b6ab8b109ae4b75ac/docs/static/typescript-api/mainnet/"
+            "815b472822bbedf524ab495e2592f4c8c7314c37/docs/static/typescript-api/mainnet/"
             "aztec.js.md"
         )
 
@@ -465,16 +465,16 @@ class TestEdgeCases:
         )
 
     def test_v5_docs_route_to_testnet_infix(self):
-        # v5.0.0-rc.1 is the testnet version → the docs URL carries the
+        # v5.0.0-rc.2 is the testnet version → the docs URL carries the
         # ``/testnet/`` path segment (derived from the source path's version
         # prefix, NOT from the active_version arg). Paths with no slug override.
-        assert _aztec_source_url("version-v5.0.0-rc.1/overview.md") == (
+        assert _aztec_source_url("version-v5.0.0-rc.2/overview.md") == (
             "https://docs.aztec.network/developers/testnet/overview"
         )
-        assert _aztec_source_url("version-v5.0.0-rc.1/docs/aztec-js/index.md") == (
+        assert _aztec_source_url("version-v5.0.0-rc.2/docs/aztec-js/index.md") == (
             "https://docs.aztec.network/developers/testnet/docs/aztec-js"
         )
-        assert _aztec_source_url("version-v5.0.0-rc.1/operators/setup/quickstart.md") == (
+        assert _aztec_source_url("version-v5.0.0-rc.2/operators/setup/quickstart.md") == (
             "https://docs.aztec.network/operate/testnet/operators/setup/quickstart"
         )
 
@@ -485,7 +485,7 @@ class TestEdgeCases:
         # stripping (where both produced the same URL).
         for tail in ("docs/aztec-js/index.md", "operators/setup/quickstart.md", "overview.md"):
             v4 = _aztec_source_url(f"version-v4.3.1/{tail}")
-            v5 = _aztec_source_url(f"version-v5.0.0-rc.1/{tail}")
+            v5 = _aztec_source_url(f"version-v5.0.0-rc.2/{tail}")
             assert "/testnet/" not in v4
             assert "/testnet/" in v5
             assert v4 != v5
@@ -496,7 +496,7 @@ class TestEdgeCases:
         # (underscore), not the filename — alongside the /testnet/ version
         # segment. (Was a documented fallback gap before the map regen.)
         assert _aztec_source_url(
-            "version-v5.0.0-rc.1/operators/setup/registering-sequencer.md"
+            "version-v5.0.0-rc.2/operators/setup/registering-sequencer.md"
         ) == (
             "https://docs.aztec.network/operate/testnet/operators/setup/registering_sequencer"
         )

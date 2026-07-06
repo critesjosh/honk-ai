@@ -375,6 +375,89 @@ Roll back by reverting the dashboard Service URL. The prod compose has no `cloud
 | `permitlisten` doesn't include a port you tried to add | `authorized_keys` edit on bastion; the failing `-R` already restart-loops so detection is automatic. |
 | CF backbone fails to us-east-2 | Provision a second relay in a different region. Today this is a single-anchor topology. |
 
+## Docker-in-Docker layer durability & outage detection
+
+**Incident 2026-07-03 → 07-06:** an environment restart took the whole prod stack
+down for ~3 days, silently. Root cause: josh-box is Docker-in-Docker, and Docker
+29 defaults to the **containerd snapshotter**, which stores all image + container
+layers under `/var/lib/containerd`. On this host that path is on the **ephemeral**
+overlay rootfs — NOT the persistent volume that backs `/var/lib/docker`. So a
+restart wipes every image/container; `restart: unless-stopped` can't help
+(`RW layer not found` on daemon start). Named volumes (incl.
+`docsgpt-aztec_postgres_data`) live under `/var/lib/docker` and **survive** — so
+the DB is safe, but the stack must be rebuilt.
+
+Diagnose the condition:
+
+```bash
+docker images -q | wc -l            # 0 after a wipe (images gone)
+docker volume ls | grep docsgpt     # postgres_data / uploads still present
+findmnt /var/lib/containerd || true  # is it on the persistent volume or rootfs?
+docker info | grep -i 'Storage Driver'  # 'overlayfs' + io.containerd.snapshotter.v1
+```
+
+### Durable fix (do this — stops the recurrence)
+
+Persist the daemon state on the same persistent volume that backs
+`/var/lib/docker`. With the containerd snapshotter, moving `data-root` alone is
+NOT enough — image state lives under **containerd's** root (`/var/lib/containerd`),
+so that path must be persisted too. Two ways, at the DinD-host level (outside this
+repo, since it's how josh-box itself is launched):
+
+- Bind/symlink both `/var/lib/docker` and `/var/lib/containerd` onto the
+  persistent volume, or
+- Set explicit persistent roots in the daemon config (docker `data-root` +
+  containerd `root`/`state`) in the DinD entrypoint.
+
+Do NOT "fix" this by switching back to the `overlay2` graphdriver: a future Docker
+upgrade re-flips the default to the containerd snapshotter and silently
+reintroduces the bug.
+
+### Boot-reconcile backstop (in-repo, second layer)
+
+`deployment/systemd/docsgpt-aztec.service` brings the stack up on boot and, if the
+images were wiped, rebuilds from the deploy worktree first. Install it:
+
+```bash
+sudo ln -s /mnt/user-data/josh/honk-deploy-main/deployment/systemd/docsgpt-aztec.service \
+  /etc/systemd/system/docsgpt-aztec.service
+sudo systemctl daemon-reload && sudo systemctl enable --now docsgpt-aztec.service
+```
+
+### Manual recovery (if it happens before the fix is in place)
+
+```bash
+export PATH=/usr/bin:$PATH; unset DOCKER_HOST
+cd /mnt/user-data/josh/honk-deploy-main   # deploy worktree at origin/main
+# 1. Rebuild images (base image was wiped; benign BUILD_EXIT=1 "already exists"
+#    is fine — backend+worker share the aztec/docsgpt tag).
+docker compose -f deployment/docker-compose-hub.yaml --env-file .env build
+# 2. Clear phantom "ghost" containers: they list in `docker ps -a` but every
+#    op says "No such container" (on-disk dirs whose layers are gone; a daemon
+#    restart does NOT clear them). Stop docker, MOVE (don't delete) the ghost
+#    dirs, restart. Never blanket `docker rm -f $(docker ps -aq)` — it also
+#    kills the dev docsgpt-oss stack.
+#      sudo systemctl stop docker.socket docker.service
+#      sudo mv /var/lib/docker/containers/<ghost-id> /var/lib/docker/_ghost_backup/
+#      sudo systemctl start docker.service
+# 3. Bring the stack up (reattaches the surviving named volumes; DB preserved).
+docker compose -f deployment/docker-compose-hub.yaml --env-file .env up -d
+```
+
+### Outage detection (so it's never silent again)
+
+Run `scripts/ops/healthcheck.sh` from **outside** josh-box (a bastion cron or a
+third-party uptime monitor) — it probes `/api/health` and, with `STREAM_API_KEY`
+set, a synthetic `/stream` query to catch "health-200 but RAG broken." Do NOT
+monitor `/` (Caddy returns a static 200 sentinel there even when the backend is
+down). Example, from the bastion against the tunnel origin:
+
+```bash
+HEALTH_URL=http://localhost:5080/api/health HOST_HEADER=$PUBLIC_HOSTNAME \
+STREAM_API_KEY=<a-read-only-agent-key> \
+  scripts/ops/healthcheck.sh   # exit != 0 → alert
+```
+
 ## Capacity & SLOs (production)
 
 | Subsystem | Limit | Source |
