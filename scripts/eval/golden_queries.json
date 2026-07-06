@@ -370,7 +370,9 @@
       "ATP (Aztec Productivity",
       "ATV (Aztec Validation",
       "ThorDex",
-      "Thor on Aztec"
+      "Thor on Aztec",
+      "aztec-token-voucher",
+      "token voucher"
     ],
     "max_response_time_s": 30,
     "min_distinct_sources": 2
@@ -508,7 +510,9 @@
     ],
     "banned_identifiers": [
       "ThorDex",
-      "Thor on Aztec"
+      "Thor on Aztec",
+      "aztec-token-voucher",
+      "token voucher"
     ],
     "max_response_time_s": 30,
     "min_distinct_sources": 2
@@ -564,7 +568,9 @@
     ],
     "banned_identifiers": [
       "ThorDex",
-      "Thor on Aztec"
+      "Thor on Aztec",
+      "aztec-token-voucher",
+      "token voucher"
     ],
     "max_response_time_s": 20,
     "min_distinct_sources": 1,
@@ -576,7 +582,9 @@
     "query": "سلام، شرکت در ایردراپ آذتک هزینه دارد؟ آیا رایگان است و چطور کلیم کنم؟",
     "banned_identifiers": [
       "ThorDex",
-      "Thor on Aztec"
+      "Thor on Aztec",
+      "aztec-token-voucher",
+      "token voucher"
     ],
     "max_response_time_s": 20,
     "min_distinct_sources": 1,
