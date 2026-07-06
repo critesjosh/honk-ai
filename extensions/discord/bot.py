@@ -1662,12 +1662,7 @@ async def forget_me(interaction: discord.Interaction):
         summary_lines.append(f"• {messages_erased} chat message(s) erased")
     if not deleted.get("agents") and not deleted.get("conversations") and not messages_erased:
         summary_lines.append("• No data was found for your Discord ID.")
-    summary_lines.append(
-        "\nNote: only messages you sent after data-erasure shipped are covered; "
-        "anything older ages out automatically. Run `/forget-me` again if you "
-        "were mid-conversation."
-    )
-    summary_lines.append("You can run `/mcp-key` again any time to provision a fresh key.")
+    summary_lines.append("\nYou can run `/mcp-key` again any time to provision a fresh key.")
     await interaction.followup.send("\n".join(summary_lines), ephemeral=True)
 
 
