@@ -1,0 +1,381 @@
+import logging
+from typing import Any, Dict, List, Optional, Tuple
+
+from application.core.settings import settings
+from application.vectorstore.base import BaseVectorStore
+from application.vectorstore.document_class import Document
+
+
+class PGVectorStore(BaseVectorStore):
+    def __init__(
+        self,
+        source_id: str = "",
+        embeddings_key: str = "embeddings",
+        table_name: str = "documents",
+        decoded_token: Optional[str] = None,
+        vector_column: str = "embedding",
+        text_column: str = "text",
+        metadata_column: str = "metadata",
+        connection_string: str = None,
+        ensure_schema: bool = True,
+    ):
+        """
+        ``ensure_schema=False`` skips ``CREATE EXTENSION``/``CREATE TABLE``/
+        ``CREATE INDEX`` at init. Callers that connect with a read-only
+        Postgres role (e.g. the MCP server's ``docsgpt_mcp_ro``) must pass
+        ``False``; the DDL bootstrap is the worker / backend's job and
+        will already have run by the time a read-only client connects.
+        """
+        super().__init__()
+        # Store the source_id for use in add_chunk
+        self._source_id = str(source_id).replace("application/indexes/", "").rstrip("/")
+        self._embeddings_key = embeddings_key
+        self._table_name = table_name
+        self._vector_column = vector_column
+        self._text_column = text_column
+        self._metadata_column = metadata_column
+        self._embedding = self._get_embeddings(settings.EMBEDDINGS_NAME, embeddings_key)
+        
+        # Use provided connection string or fall back to settings.
+        # If PGVECTOR_CONNECTION_STRING is not set but POSTGRES_URI is,
+        # reuse the same cluster — normalize from SQLAlchemy dialect to libpq form.
+        self._connection_string = connection_string or getattr(settings, 'PGVECTOR_CONNECTION_STRING', None)
+
+        if not self._connection_string and getattr(settings, 'POSTGRES_URI', None):
+            from application.core.db_uri import normalize_pgvector_connection_string
+            self._connection_string = normalize_pgvector_connection_string(settings.POSTGRES_URI)
+
+        if not self._connection_string:
+            raise ValueError(
+                "PostgreSQL connection string is required. "
+                "Set PGVECTOR_CONNECTION_STRING or POSTGRES_URI in settings, "
+                "or pass connection_string parameter."
+            )
+
+        try:
+            import psycopg
+            from psycopg.types.json import Jsonb
+            from pgvector.psycopg import register_vector
+        except ImportError:
+            raise ImportError(
+                "Could not import required packages. "
+                "Please install with `pip install 'psycopg[binary,pool]' pgvector`."
+            )
+
+        self._psycopg = psycopg
+        self._Jsonb = Jsonb
+        self._register_vector = register_vector
+        self._connection = None
+        if ensure_schema:
+            self._ensure_table_exists()
+
+    def _get_connection(self):
+        """Get or create database connection"""
+        if self._connection is None or self._connection.closed:
+            self._connection = self._psycopg.connect(self._connection_string)
+            # Register pgvector types
+            self._register_vector(self._connection)
+        return self._connection
+
+    def _ensure_table_exists(self):
+        """Create table and enable pgvector extension if they don't exist"""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        
+        try:
+            # Enable pgvector extension
+            cursor.execute("CREATE EXTENSION IF NOT EXISTS vector;")
+            
+            # The embedding dimension must match the configured model. We
+            # can't reliably infer it without a network call, and creating
+            # the table with the wrong dim silently corrupts later inserts,
+            # so require it as an explicit setting.
+            embedding_dim = getattr(settings, "EMBEDDINGS_DIMENSION", None) \
+                or getattr(self._embedding, "dimension", None) or 768
+            
+            # Create table with vector column
+            create_table_query = f"""
+            CREATE TABLE IF NOT EXISTS {self._table_name} (
+                id SERIAL PRIMARY KEY,
+                {self._text_column} TEXT NOT NULL,
+                {self._vector_column} vector({embedding_dim}),
+                {self._metadata_column} JSONB,
+                source_id TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+            """
+            cursor.execute(create_table_query)
+
+            # pgvector's ivfflat/hnsw indexes cap at 2000 dims for the vector
+            # type; skip the ANN index for larger embeddings (e.g. OpenAI
+            # text-embedding-3-large at 3072). Sequential scan still returns
+            # correct results — revisit with halfvec if query latency matters.
+            if embedding_dim <= 2000:
+                index_query = f"""
+                CREATE INDEX IF NOT EXISTS {self._table_name}_{self._vector_column}_idx
+                ON {self._table_name} USING ivfflat ({self._vector_column} vector_cosine_ops)
+                WITH (lists = 100);
+                """
+                cursor.execute(index_query)
+            
+            # Create index for source_id filtering
+            source_index_query = f"""
+            CREATE INDEX IF NOT EXISTS {self._table_name}_source_id_idx 
+            ON {self._table_name} (source_id);
+            """
+            cursor.execute(source_index_query)
+            
+            conn.commit()
+        except Exception as e:
+            conn.rollback()
+            logging.error(f"Error creating table: {e}")
+            raise
+        finally:
+            cursor.close()
+
+    def search_by_vector_with_score(
+        self,
+        vector: List[float],
+        k: int = 2,
+        source_ids: Optional[List[str]] = None,
+    ) -> List[Tuple[Document, float]]:
+        """Search by a precomputed query vector across one or many sources.
+
+        Returns ``(Document, cosine_distance)`` pairs ordered by ascending
+        distance (lower = more similar under cosine). Each Document has
+        ``metadata['_source_id']`` populated so callers can tell which
+        source a chunk came from without a second round trip.
+
+        When ``source_ids`` is provided, all listed sources are searched
+        in a SINGLE SQL query (``WHERE source_id = ANY(...) ORDER BY
+        embedding <=> $1 LIMIT k``). This is deliberately one query rather
+        than N fanout queries: for approximate vector indexes, filtering
+        after an ANN scan reduces recall, so per-source ``LIMIT k`` with a
+        tight ``k`` is a recall trap. With the current 3072-dim embeddings
+        the table uses a sequential scan (pgvector's ivfflat/hnsw cap at
+        2000 dims), so a single global scan is also cheaper than N of them.
+
+        ``source_ids=None`` falls back to the instance's own
+        ``_source_id`` — preserves backward compatibility for callers that
+        construct a store bound to one source and call search directly.
+        """
+        if source_ids is not None:
+            cleaned = [
+                str(s).strip() for s in source_ids if s and str(s).strip()
+            ]
+        else:
+            cleaned = [self._source_id] if self._source_id else []
+        if not cleaned:
+            return []
+
+        conn = self._get_connection()
+        cursor = conn.cursor()
+
+        try:
+            # Ordering tiebreak (source_id, id) makes results deterministic
+            # when distances are equal — matters for order-invariance tests
+            # and reproducible retrieval under the same query.
+            search_query = f"""
+            SELECT {self._text_column}, {self._metadata_column},
+                   ({self._vector_column} <=> %s::vector) as distance,
+                   source_id, id
+            FROM {self._table_name}
+            WHERE source_id = ANY(%s)
+            ORDER BY {self._vector_column} <=> %s::vector, source_id, id
+            LIMIT %s;
+            """
+            cursor.execute(search_query, (vector, cleaned, vector, k))
+            results = cursor.fetchall()
+
+            out: List[Tuple[Document, float]] = []
+            for text, metadata, distance, source_id, _row_id in results:
+                md = dict(metadata or {})
+                # Authoritative: the SQL-selected source_id wins over any
+                # stale _source_id that might be present in stored metadata.
+                md["_source_id"] = source_id
+                out.append(
+                    (Document(page_content=text, metadata=md), float(distance))
+                )
+            return out
+
+        # NB: deliberately no broad ``except Exception: return []`` here.
+        # The prior code masked real backend errors as empty retrieval,
+        # so a misconfigured DB or a column-grant gap looked like "no
+        # relevant docs" to callers (which then answered from the LLM's
+        # training prior, the worst-case failure mode for a grounded
+        # RAG). Letting the exception propagate surfaces those as a 5xx
+        # at /stream / /api/search, which is the correct visibility for
+        # an operational fault. Callers that legitimately want graceful
+        # degradation can catch at their boundary.
+        finally:
+            cursor.close()
+
+    def search(self, question: str, k: int = 2, *args, **kwargs) -> List[Document]:
+        """Legacy single-source search. Embeds the question and delegates to
+        ``search_by_vector_with_score`` so the SQL path is shared.
+        """
+        try:
+            query_vector = self._embedding.embed_query(question)
+        except Exception as e:
+            logging.error(f"Error embedding question: {e}", exc_info=True)
+            return []
+        pairs = self.search_by_vector_with_score(query_vector, k=k)
+        return [doc for doc, _ in pairs]
+
+    def add_texts(
+        self,
+        texts: List[str],
+        metadatas: Optional[List[Dict[str, Any]]] = None,
+        *args,
+        **kwargs,
+    ) -> List[str]:
+        """Add texts with their embeddings to the vector store"""
+        if not texts:
+            return []
+
+        embeddings = self._embedding.embed_documents(texts)
+        metadatas = metadatas or [{}] * len(texts)
+        
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        
+        try:
+            insert_query = f"""
+            INSERT INTO {self._table_name} ({self._text_column}, {self._vector_column}, {self._metadata_column}, source_id)
+            VALUES (%s, %s, %s, %s)
+            RETURNING id;
+            """
+            
+            inserted_ids = []
+            for text, embedding, metadata in zip(texts, embeddings, metadatas):
+                cursor.execute(
+                    insert_query,
+                    (text, embedding, self._Jsonb(metadata or {}), self._source_id)
+                )
+                inserted_id = cursor.fetchone()[0]
+                inserted_ids.append(str(inserted_id))
+            
+            conn.commit()
+            return inserted_ids
+            
+        except Exception as e:
+            conn.rollback()
+            logging.error(f"Error adding texts: {e}")
+            raise
+        finally:
+            cursor.close()
+
+    def delete_index(self, *args, **kwargs):
+        """Delete all documents for this source_id"""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        
+        try:
+            delete_query = f"DELETE FROM {self._table_name} WHERE source_id = %s;"
+            cursor.execute(delete_query, (self._source_id,))
+            conn.commit()
+            
+        except Exception as e:
+            conn.rollback()
+            logging.error(f"Error deleting index: {e}")
+            raise
+        finally:
+            cursor.close()
+
+    def save_local(self, *args, **kwargs):
+        """No-op for PostgreSQL - data is already persisted"""
+        pass
+
+    def get_chunks(self) -> List[Dict[str, Any]]:
+        """Get all chunks for this source_id"""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        
+        try:
+            select_query = f"""
+            SELECT id, {self._text_column}, {self._metadata_column}
+            FROM {self._table_name}
+            WHERE source_id = %s;
+            """
+            cursor.execute(select_query, (self._source_id,))
+            results = cursor.fetchall()
+            
+            chunks = []
+            for doc_id, text, metadata in results:
+                chunks.append({
+                    "doc_id": str(doc_id),
+                    "text": text,
+                    "metadata": metadata or {}
+                })
+            
+            return chunks
+            
+        except Exception as e:
+            logging.error(f"Error getting chunks: {e}")
+            return []
+        finally:
+            cursor.close()
+
+    def add_chunk(self, text: str, metadata: Optional[Dict[str, Any]] = None) -> str:
+        """Add a single chunk to the vector store"""
+        metadata = metadata or {}
+
+        final_metadata = metadata.copy()
+
+        final_metadata["source_id"] = self._source_id
+
+        embeddings = self._embedding.embed_documents([text])
+
+        if not embeddings:
+            raise ValueError("Could not generate embedding for chunk")
+        
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        
+        try:
+            insert_query = f"""
+            INSERT INTO {self._table_name} ({self._text_column}, {self._vector_column}, {self._metadata_column}, source_id)
+            VALUES (%s, %s, %s, %s)
+            RETURNING id;
+            """
+            
+            cursor.execute(
+                insert_query,
+                (text, embeddings[0], self._Jsonb(final_metadata), self._source_id)
+            )
+            inserted_id = cursor.fetchone()[0]
+            conn.commit()
+            
+            return str(inserted_id)
+            
+        except Exception as e:
+            conn.rollback()
+            logging.error(f"Error adding chunk: {e}")
+            raise
+        finally:
+            cursor.close()
+
+    def delete_chunk(self, chunk_id: str) -> bool:
+        """Delete a specific chunk by its ID"""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        
+        try:
+            delete_query = f"DELETE FROM {self._table_name} WHERE id = %s AND source_id = %s;"
+            cursor.execute(delete_query, (int(chunk_id), self._source_id))
+            deleted_count = cursor.rowcount
+            conn.commit()
+            
+            return deleted_count > 0
+            
+        except Exception as e:
+            conn.rollback()
+            logging.error(f"Error deleting chunk: {e}")
+            return False
+        finally:
+            cursor.close()
+
+    def __del__(self):
+        """Close database connection when object is destroyed"""
+        if hasattr(self, '_connection') and self._connection and not self._connection.closed:
+            self._connection.close()

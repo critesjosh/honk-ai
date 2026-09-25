@@ -1,0 +1,610 @@
+[
+  {
+    "tag": "noir-stdlib-poseidon2",
+    "bucket": "identifier",
+    "query": "How do I use std::hash::poseidon2 in Noir?",
+    "expected_source_prefixes": [
+      "noir-stdlib/",
+      "noir-docs/"
+    ],
+    "expected_apiref_paths": [
+      "noir-stdlib/hash/poseidon2.nr",
+      "noir-stdlib/hash/mod.nr"
+    ],
+    "banned_identifiers": [
+      "std::hash::poseidon2_hash",
+      "UNCONSTRAINED_ONCHAIN"
+    ],
+    "max_response_time_s": 15,
+    "min_distinct_sources": 3
+  },
+  {
+    "tag": "noir-lang-unconstrained",
+    "bucket": "concept",
+    "query": "What is the difference between a proving function and an unconstrained function in Noir?",
+    "expected_source_prefixes": [
+      "noir-docs/"
+    ],
+    "expected_concept_prefix": "noir-docs/",
+    "banned_identifiers": [
+      "UNCONSTRAINED_ONCHAIN"
+    ],
+    "max_response_time_s": 15,
+    "min_distinct_sources": 3
+  },
+  {
+    "tag": "typescript-api-pxe",
+    "bucket": "identifier",
+    "query": "How do I create a PXE client with aztec.js?",
+    "expected_source_prefixes": [
+      "typescript-api/"
+    ],
+    "banned_identifiers": [
+      "UNCONSTRAINED_ONCHAIN"
+    ],
+    "max_response_time_s": 15,
+    "min_distinct_sources": 3,
+    "expected_first_prefixes": [
+      "typescript-api/",
+      "aztec.js/"
+    ]
+  },
+  {
+    "tag": "aztec-nr-private-storage",
+    "bucket": "concept",
+    "query": "How do I write a private function in an Aztec contract that updates storage?",
+    "expected_source_prefixes": [
+      "version-v5.0.0-rc.2/"
+    ],
+    "expected_concept_prefix": "version-v5.0.0-rc.2/",
+    "banned_identifiers": [
+      "UNCONSTRAINED_ONCHAIN",
+      "MessageDelivery.OFFCHAIN_CONSTRAINED"
+    ],
+    "max_response_time_s": 15,
+    "min_distinct_sources": 2
+  },
+  {
+    "tag": "example-token-contract",
+    "bucket": "example",
+    "query": "Show me an example of a simple Aztec token contract.",
+    "expected_source_prefixes": [
+      "noir-contracts/"
+    ],
+    "banned_identifiers": [],
+    "max_response_time_s": 15,
+    "min_distinct_sources": 2
+  },
+  {
+    "tag": "noir-boundedvec",
+    "bucket": "identifier",
+    "query": "How does BoundedVec work in Noir?",
+    "expected_source_prefixes": [
+      "noir-docs/",
+      "noir-stdlib/"
+    ],
+    "expected_apiref_paths": [
+      "noir-stdlib/collections/bounded_vec.nr"
+    ],
+    "banned_identifiers": [],
+    "max_response_time_s": 15,
+    "min_distinct_sources": 2
+  },
+  {
+    "tag": "cli-deploy",
+    "bucket": "concept",
+    "query": "How do I deploy a contract using the Aztec CLI?",
+    "expected_source_prefixes": [
+      "version-v5.0.0-rc.2/"
+    ],
+    "expected_concept_prefix": "version-v5.0.0-rc.2/",
+    "banned_identifiers": [],
+    "max_response_time_s": 15,
+    "min_distinct_sources": 2
+  },
+  {
+    "tag": "aztec-js-wallet-api",
+    "bucket": "identifier",
+    "query": "What wallet API methods are available in aztec.js?",
+    "expected_source_prefixes": [
+      "typescript-api/",
+      "aztec.js/"
+    ],
+    "banned_identifiers": [],
+    "max_response_time_s": 15,
+    "min_distinct_sources": 3,
+    "expected_first_prefixes": [
+      "typescript-api/",
+      "aztec.js/"
+    ]
+  },
+  {
+    "tag": "note-delivery-modes",
+    "bucket": "concept",
+    "query": "What are the different MessageDelivery modes in Aztec?",
+    "expected_source_prefixes": [
+      "version-v5.0.0-rc.2/"
+    ],
+    "expected_concept_prefix": "version-v5.0.0-rc.2/",
+    "banned_identifiers": [
+      "UNCONSTRAINED_ONCHAIN",
+      "CONSTRAINED_OFFCHAIN"
+    ],
+    "max_response_time_s": 15,
+    "min_distinct_sources": 2
+  },
+  {
+    "tag": "noir-format-strings",
+    "bucket": "concept",
+    "query": "How do format strings work in Noir?",
+    "expected_source_prefixes": [
+      "noir-docs/"
+    ],
+    "expected_concept_prefix": "noir-docs/",
+    "banned_identifiers": [],
+    "max_response_time_s": 15,
+    "min_distinct_sources": 2
+  },
+  {
+    "tag": "aztec-state-management",
+    "bucket": "concept",
+    "query": "What is a note in Aztec and how does it differ from public state?",
+    "expected_source_prefixes": [
+      "version-v5.0.0-rc.2/"
+    ],
+    "expected_concept_prefix": "version-v5.0.0-rc.2/",
+    "banned_identifiers": [],
+    "max_response_time_s": 15,
+    "min_distinct_sources": 2
+  },
+  {
+    "tag": "noir-stdlib-option",
+    "bucket": "identifier",
+    "query": "How do I use the Option type in Noir?",
+    "expected_source_prefixes": [
+      "noir-stdlib/",
+      "noir-docs/"
+    ],
+    "expected_apiref_paths": [
+      "noir-stdlib/option.nr"
+    ],
+    "banned_identifiers": [],
+    "max_response_time_s": 15,
+    "min_distinct_sources": 2
+  },
+  {
+    "tag": "cross-source-private-tx",
+    "bucket": "concept",
+    "query": "Walk me through sending a private transaction from aztec.js including what happens in the contract.",
+    "expected_source_prefixes": [
+      "version-v5.0.0-rc.2/"
+    ],
+    "banned_identifiers": [
+      "UNCONSTRAINED_ONCHAIN"
+    ],
+    "max_response_time_s": 30,
+    "min_distinct_sources": 3
+  },
+  {
+    "tag": "multi-turn-follow-up",
+    "bucket": "concept",
+    "query": "How does it differ from public state?",
+    "history": [
+      {
+        "prompt": "What is a note in Aztec?",
+        "response": "A note in Aztec is a chunk of private data..."
+      }
+    ],
+    "expected_source_prefixes": [
+      "version-v5.0.0-rc.2/"
+    ],
+    "expected_concept_prefix": "version-v5.0.0-rc.2/",
+    "banned_identifiers": [],
+    "max_response_time_s": 15,
+    "min_distinct_sources": 2,
+    "notes": "Tests rephrase/multi-turn \u2014 the follow-up needs conversation context to retrieve well."
+  },
+  {
+    "tag": "l1-contracts-rollup",
+    "bucket": "concept",
+    "query": "How does the Aztec rollup contract work on L1?",
+    "expected_source_prefixes": [
+      "l1-contracts/"
+    ],
+    "banned_identifiers": [],
+    "max_response_time_s": 15,
+    "min_distinct_sources": 1
+  },
+  {
+    "tag": "apiref-compute-secret-hash",
+    "bucket": "identifier",
+    "query": "What is the signature of compute_secret_hash in aztec-nr?",
+    "expected_source_prefixes": [
+      "aztec-nr/"
+    ],
+    "expected_apiref_paths": [
+      "aztec-nr/aztec/src/hash.nr"
+    ],
+    "banned_identifiers": [],
+    "max_response_time_s": 15,
+    "min_distinct_sources": 1
+  },
+  {
+    "tag": "apiref-poseidon2-hash-with-separator",
+    "bucket": "identifier",
+    "query": "How do I call poseidon2_hash_with_separator?",
+    "expected_source_prefixes": [
+      "aztec-nr/",
+      "noir-stdlib/"
+    ],
+    "expected_apiref_paths": [
+      "aztec-nr/aztec/src/protocol/hash.nr",
+      "aztec-nr/aztec/src/hash.nr"
+    ],
+    "banned_identifiers": [],
+    "max_response_time_s": 15,
+    "min_distinct_sources": 1
+  },
+  {
+    "tag": "apiref-create-note",
+    "bucket": "identifier",
+    "query": "What's the signature of create_note in aztec-nr?",
+    "expected_source_prefixes": [
+      "aztec-nr/"
+    ],
+    "expected_apiref_paths": [
+      "aztec-nr/aztec/src/note/lifecycle.nr"
+    ],
+    "banned_identifiers": [],
+    "max_response_time_s": 15,
+    "min_distinct_sources": 1
+  },
+  {
+    "tag": "apiref-destroy-note",
+    "bucket": "identifier",
+    "query": "How do I call destroy_note?",
+    "expected_source_prefixes": [
+      "aztec-nr/"
+    ],
+    "expected_apiref_paths": [
+      "aztec-nr/aztec/src/note/lifecycle.nr"
+    ],
+    "banned_identifiers": [],
+    "max_response_time_s": 15,
+    "min_distinct_sources": 1
+  },
+  {
+    "tag": "apiref-note-interface",
+    "bucket": "identifier",
+    "query": "What methods does the NoteHash trait require?",
+    "expected_source_prefixes": [
+      "aztec-nr/"
+    ],
+    "expected_apiref_paths": [
+      "aztec-nr/aztec/src/note/note_interface.nr"
+    ],
+    "banned_identifiers": [],
+    "max_response_time_s": 15,
+    "min_distinct_sources": 1
+  },
+  {
+    "tag": "apiref-private-context",
+    "bucket": "identifier",
+    "query": "What methods does PrivateContext expose for note management?",
+    "expected_source_prefixes": [
+      "aztec-nr/"
+    ],
+    "expected_apiref_paths": [
+      "aztec-nr/aztec/src/context/private_context.nr"
+    ],
+    "banned_identifiers": [],
+    "max_response_time_s": 15,
+    "min_distinct_sources": 1
+  },
+  {
+    "tag": "apiref-stdlib-aes128",
+    "bucket": "identifier",
+    "query": "What is the signature of aes128_encrypt in the Noir stdlib?",
+    "expected_source_prefixes": [
+      "noir-stdlib/"
+    ],
+    "expected_apiref_paths": [
+      "noir-stdlib/aes128.nr"
+    ],
+    "banned_identifiers": [],
+    "max_response_time_s": 15,
+    "min_distinct_sources": 1
+  },
+  {
+    "tag": "apiref-stdlib-bounded-vec-push",
+    "bucket": "identifier",
+    "query": "What's the signature of BoundedVec::push in Noir?",
+    "expected_source_prefixes": [
+      "noir-stdlib/"
+    ],
+    "expected_apiref_paths": [
+      "noir-stdlib/collections/bounded_vec.nr"
+    ],
+    "banned_identifiers": [],
+    "max_response_time_s": 15,
+    "min_distinct_sources": 1
+  },
+  {
+    "tag": "apiref-stdlib-option-some",
+    "bucket": "identifier",
+    "query": "What's the signature of Option::some?",
+    "expected_source_prefixes": [
+      "noir-stdlib/"
+    ],
+    "expected_apiref_paths": [
+      "noir-stdlib/option.nr"
+    ],
+    "banned_identifiers": [],
+    "max_response_time_s": 15,
+    "min_distinct_sources": 1
+  },
+  {
+    "tag": "apiref-aztec-storage-map",
+    "bucket": "identifier",
+    "query": "What's the signature of Map::at in aztec-nr?",
+    "expected_source_prefixes": [
+      "aztec-nr/"
+    ],
+    "expected_apiref_paths": [
+      "aztec-nr/aztec/src/state_vars/map.nr"
+    ],
+    "banned_identifiers": [],
+    "max_response_time_s": 15,
+    "min_distinct_sources": 1
+  },
+  {
+    "tag": "tokenomics-no-fabricated-tokens",
+    "bucket": "concept",
+    "query": "Can you tell me about the tokenomics in Aztec?",
+    "expected_source_prefixes": [
+      "version-v5.0.0-rc.2/"
+    ],
+    "banned_identifiers": [
+      "Aztec Productivity Token",
+      "Aztec Validation Token",
+      "ATP (Aztec Productivity",
+      "ATV (Aztec Validation",
+      "ThorDex",
+      "Thor on Aztec",
+      "aztec-token-voucher",
+      "token voucher"
+    ],
+    "max_response_time_s": 30,
+    "min_distinct_sources": 2
+  },
+  {
+    "tag": "participate-delegator-voting",
+    "bucket": "concept",
+    "query": "If I delegated my stake to a staking provider, can I still vote on governance proposals, and how?",
+    "expected_source_prefixes": [
+      "aztec-participate/"
+    ],
+    "banned_identifiers": [
+      "completeUnstake",
+      "exitStake"
+    ],
+    "max_response_time_s": 20,
+    "min_distinct_sources": 2
+  },
+  {
+    "tag": "participate-unstaking-withdrawal",
+    "bucket": "concept",
+    "query": "If I unstake, how long until I can withdraw my tokens, and what do I call to finalize the withdrawal?",
+    "expected_source_prefixes": [
+      "aztec-participate/"
+    ],
+    "banned_identifiers": [
+      "completeUnstake",
+      "exitStake"
+    ],
+    "max_response_time_s": 20,
+    "min_distinct_sources": 2
+  },
+  {
+    "tag": "staking-no-hallucinated-exit",
+    "bucket": "concept",
+    "query": "As a validator, how do I unstake / exit and withdraw my tokens from the Rollup?",
+    "expected_source_prefixes": [
+      "aztec-participate/"
+    ],
+    "banned_identifiers": [
+      "completeUnstake",
+      "exitStake"
+    ],
+    "max_response_time_s": 20,
+    "min_distinct_sources": 2
+  },
+  {
+    "tag": "gse-withdraw-signature",
+    "bucket": "concept",
+    "query": "What is the Solidity function signature of withdraw on the GSE (Governance Staking Escrow) contract?",
+    "expected_source_prefixes": [
+      "l1-contracts/"
+    ],
+    "banned_identifiers": [
+      "completeUnstake",
+      "exitStake"
+    ],
+    "max_response_time_s": 20,
+    "min_distinct_sources": 1,
+    "expected_concept_prefix": "l1-contracts/"
+  },
+  {
+    "tag": "networks-testnet-rollup-address",
+    "bucket": "concept",
+    "query": "What is the Testnet Rollup contract address?",
+    "expected_source_prefixes": [
+      "aztec-site/"
+    ],
+    "max_response_time_s": 20,
+    "min_distinct_sources": 1
+  },
+  {
+    "tag": "awesome-community-tools",
+    "bucket": "resource",
+    "query": "What community tools and linters exist for Aztec development?",
+    "expected_source_prefixes": [
+      "awesome-aztec/"
+    ],
+    "expected_first_prefixes": [
+      "awesome-aztec/"
+    ],
+    "max_response_time_s": 15,
+    "min_distinct_sources": 1,
+    "notes": "awesome-aztec recall: community tooling (e.g. Aztec Lint) lives only in the community resource list, not the versioned docs."
+  },
+  {
+    "tag": "awesome-resource-list",
+    "bucket": "resource",
+    "query": "Is there a curated list of Aztec community resources and projects?",
+    "expected_source_prefixes": [
+      "awesome-aztec/"
+    ],
+    "expected_first_prefixes": [
+      "awesome-aztec/"
+    ],
+    "max_response_time_s": 15,
+    "min_distinct_sources": 1,
+    "notes": "awesome-aztec recall: the awesome-aztec list itself is the canonical answer."
+  },
+  {
+    "tag": "awesome-staking-dashboard",
+    "bucket": "resource",
+    "query": "Is there a dashboard to monitor Aztec staking or validators?",
+    "expected_source_prefixes": [
+      "awesome-aztec/"
+    ],
+    "expected_first_prefixes": [
+      "awesome-aztec/"
+    ],
+    "max_response_time_s": 15,
+    "min_distinct_sources": 1,
+    "notes": "awesome-aztec recall: third-party dashboards/explorers (e.g. staking dashboard) are listed only in the community resources."
+  },
+  {
+    "tag": "awesome-validator-monitoring",
+    "bucket": "resource",
+    "query": "What tools can I use to monitor Aztec validators?",
+    "expected_source_prefixes": [
+      "awesome-aztec/"
+    ],
+    "expected_first_prefixes": [
+      "awesome-aztec/"
+    ],
+    "max_response_time_s": 15,
+    "min_distinct_sources": 1,
+    "notes": "awesome-aztec recall: community monitoring tooling beyond the operator docs' built-in Grafana setup."
+  },
+  {
+    "tag": "fee-juice-no-fabricated-dex",
+    "bucket": "concept",
+    "query": "How do I get Fee Juice on Aztec, and can I trade it on a DEX?",
+    "expected_source_prefixes": [
+      "version-v5.0.0-rc.2/",
+      "aztec-participate/"
+    ],
+    "banned_identifiers": [
+      "ThorDex",
+      "Thor on Aztec",
+      "aztec-token-voucher",
+      "token voucher"
+    ],
+    "max_response_time_s": 30,
+    "min_distinct_sources": 2
+  },
+  {
+    "tag": "comparison-aztec-vs-starknet",
+    "bucket": "concept",
+    "query": "How is Aztec different from Starknet?",
+    "expected_source_prefixes": [
+      "version-v5.0.0-rc.2/"
+    ],
+    "banned_identifiers": [],
+    "max_response_time_s": 20,
+    "min_distinct_sources": 2
+  },
+  {
+    "tag": "genesis-mismatch-version-skew",
+    "bucket": "resource",
+    "query": "My Aztec node won't sync — the logs say \"Rollup at 0x... is incompatible: genesis archive root (expected 0x..., got 0x...). Entering standby mode.\" What's wrong and how do I fix it?",
+    "expected_source_prefixes": [
+      "curated-troubleshooting/"
+    ],
+    "expected_first_prefixes": [
+      "operators/operator-faq"
+    ],
+    "max_response_time_s": 30,
+    "min_distinct_sources": 1,
+    "notes": "genesis-archive-root-mismatch / standby-mode recall: the curated operator-troubleshooting doc must surface. Retriever mode asserts the raw `curated-troubleshooting/` prefix (the specific guard — only this corpus has that path); stream mode matches the rewritten operator-FAQ URL via expected_first_prefixes. The DESIRED behavior — lead with node-version-vs-network-version skew, NOT a network/RPC mixup, and defer version numbers to networks.md — is human-read (no banned phrasing, since the doc legitimately lists the network mixup as a less-common cause)."
+  },
+  {
+    "tag": "v5-node-migration-guidance",
+    "bucket": "resource",
+    "query": "I'm a staking provider running a single v4 node with active delegations. How do I migrate to v5 without downtime, and what's the official recommendation to avoid missing attestations or getting slashed during the switch?",
+    "expected_source_prefixes": [
+      "curated-troubleshooting/"
+    ],
+    "expected_first_prefixes": [
+      "operators/operator-faq"
+    ],
+    "banned_identifiers": [
+      "only covers Aztec v4"
+    ],
+    "max_response_time_s": 30,
+    "min_distinct_sources": 1,
+    "notes": "v4->v5 node migration recall: the curated v4-to-v5-node-migration doc must surface (curated-troubleshooting/ prefix; stream mode rewrites to the operator-FAQ URL). DESIRED behavior (human-read): explain deploy-ahead + automatic standby, and state HONESTLY that the migration guidance does NOT specify slashing/downtime/epoch-timing for delegated sequencers -> defer to the forum guide + team; do NOT fabricate a slashing threshold or timing window. Banned phrase 'only covers Aztec v4' is a regression guard against the pre-2026-07 stale prompt that wrongly disclaimed all v5 coverage."
+  },
+  {
+    "tag": "airdrop-cost-no-speculation",
+    "bucket": "concept",
+    "query": "Does participating in the Aztec airdrop cost money, or is it free? How do I claim it?",
+    "expected_source_prefixes": [
+      "curated-token-fees/"
+    ],
+    "banned_identifiers": [
+      "ThorDex",
+      "Thor on Aztec",
+      "aztec-token-voucher",
+      "token voucher"
+    ],
+    "max_response_time_s": 20,
+    "min_distinct_sources": 1,
+    "notes": "Airdrop/participation speculation guard. DESIRED behavior (human-read): a grounded refusal -> the docs don't cover airdrops/eligibility/claim costs; point to official Aztec channels. Must NOT assert an airdrop exists, its cost (free or paid), eligibility, or a claim flow. The curated-token-fees boundary doc (with its airdrop section) should surface. Pair with the -fa entry for the non-English path."
+  },
+  {
+    "tag": "airdrop-cost-no-speculation-fa",
+    "bucket": "concept",
+    "query": "سلام، شرکت در ایردراپ آذتک هزینه دارد؟ آیا رایگان است و چطور کلیم کنم؟",
+    "banned_identifiers": [
+      "ThorDex",
+      "Thor on Aztec",
+      "aztec-token-voucher",
+      "token voucher"
+    ],
+    "max_response_time_s": 20,
+    "min_distinct_sources": 1,
+    "notes": "Non-English (Persian) airdrop speculation guard for the observed 2026-07 miss (a Persian airdrop-cost question free-formed about claim/gas costs with random Noir files as sources). DESIRED behavior (human-read): the SAME grounded refusal as the English case, in the user's language -> docs don't cover airdrops/cost/eligibility, point to official channels; NEVER fabricate cost/eligibility/claim steps. The prompt-side rule is the load-bearing guard (Persian retrieval may not hit the English curated doc), so this is human-read, not source-asserted."
+  },
+  {
+    "tag": "pxe-register-fn-signatures-no-fabrication",
+    "bucket": "concept",
+    "query": "On the public v5 testnet RPC, node.registerContractFunctionSignatures returns \"Method not found\" so PXE registerContract() fails for contracts with public functions, but it works against a local sandbox. Is this expected?",
+    "banned_identifiers": [],
+    "max_response_time_s": 25,
+    "min_distinct_sources": 1,
+    "notes": "Regression guard for the 2026-07 Slack dislike: the bot fabricated a cause ('this RPC method is a debug endpoint deliberately stripped from public RPCs for security'), which has no basis in any chunk. Human-read, NOT substring-banned: the harness does a plain case-sensitive `b in answer` check, so banning phrases like 'deliberately stripped' would false-positive a CORRECT refusal that negates the claim (e.g. 'the chunks do not say it was deliberately stripped from public RPCs'). DESIRED behavior: do NOT assert a fabricated rationale; say the chunks don't confirm why the public v5 RPC omits this method, and that it's a v5 RPC-surface detail to verify against the v5 node/PXE API reference or the team."
+  },
+  {
+    "tag": "sequencer-attestations-per-epoch",
+    "bucket": "concept",
+    "query": "How many times does a sequencer attest per epoch in Aztec, and what is the uptime/attestation requirement to avoid being slashed?",
+    "max_response_time_s": 25,
+    "min_distinct_sources": 1,
+    "notes": "Attestation-mechanics accuracy (human-read): confirm the committee/proposer/attestation framing and any quantitative claim (e.g. a >2/3 committee threshold, per-slot attestation) against the current v5 slashing/sequencer docs; ensure the answer does NOT mix v4.3.1-mainnet and v5-testnet consensus constants. Left source-unasserted to avoid a flaky recall guard; the value is the flagged desired behavior for human review."
+  }
+]

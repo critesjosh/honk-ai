@@ -1,0 +1,17 @@
+# Build context is the application/ directory itself (see
+# deployment/*.yaml: `build: ../application`). Keep dev junk out of the
+# image — before this file the prod image carried ~47MB of dev uploads
+# under inputs/ and dozens of __pycache__ dirs.
+#
+# NOTE: dockerignore patterns are anchored to the context root; `**/` is
+# required to match nested directories (plain `__pycache__/` only
+# matches a top-level one).
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+**/.pytest_cache/
+**/.ruff_cache/
+# inputs/ is a volume mountpoint at runtime (named `uploads` volume in
+# the hub compose, bind mount in dev). The Dockerfile recreates
+# inputs/local empty with appuser ownership.
+inputs/

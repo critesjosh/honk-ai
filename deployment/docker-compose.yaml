@@ -1,0 +1,203 @@
+name: docsgpt-oss
+services:
+  # Dev smoke-test for the /ask public bundle. Built like prod (nginx
+  # static) since vite dev under a `base` prefix differs enough from
+  # the production serve that a "dev mode" build wouldn't catch the
+  # bugs we care about. Hits backend at http://localhost:7091.
+  frontend-ask:
+    build:
+      context: ../frontend-ask
+      dockerfile: Dockerfile.prod
+      args:
+        VITE_ASK_AZTEC_AGENT_KEY: ${VITE_ASK_AZTEC_AGENT_KEY:-}
+        VITE_ASK_AZTEC_API_BASE: http://localhost:7091
+        # Dev path is cross-origin: bundle on :5174, backend on :7091.
+        # Allow both in CSP connect-src so the browser doesn't block
+        # the /stream POST. Prod build leaves this at the default
+        # ('self' only) since /ask and /stream are same-origin via Caddy.
+        ASK_CONNECT_SRC: "'self' http://localhost:7091"
+    ports:
+      - "5174:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+
+  backend:
+    user: root
+    build: ../application
+    env_file:
+      - ../.env
+    environment:
+      # Override URLs to use docker service names
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/1
+      - CACHE_REDIS_URL=redis://redis:6379/2
+      - POSTGRES_URI=postgresql://docsgpt:docsgpt@postgres:5432/docsgpt
+      # Mirror the hub compose: without these overrides the dev stack
+      # inherits PGVECTOR_CONNECTION_STRING/VECTOR_STORE from the shared
+      # ../.env, i.e. the PROD password pointed at the dev database.
+      # Dev postgres hardcodes POSTGRES_PASSWORD=docsgpt (below).
+      - PGVECTOR_CONNECTION_STRING=postgresql://docsgpt:docsgpt@postgres:5432/docsgpt
+      - VECTOR_STORE=pgvector
+    ports:
+      - "7091:7091"
+    healthcheck:
+      # The image ships no curl/wget — use the stdlib. /api/health is
+      # the unauthenticated liveness route in application/app.py.
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:7091/api/health', timeout=4)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    volumes:
+      # Match prod (docker-compose-hub.yaml) — UPLOAD_FOLDER in .env is
+      # /app/application/inputs; backend + worker must mount the same
+      # path so the worker can read what the backend just wrote. The
+      # upstream `/app/inputs` mount silently dropped uploads into the
+      # backend container's writable layer where the worker couldn't
+      # see them; ingest tasks reliably failed on dev with "File not
+      # found: /app/application/inputs/...".
+      - ../application/inputs:/app/application/inputs
+    depends_on:
+      redis:
+        condition: service_started
+      postgres:
+        condition: service_healthy
+
+  worker:
+    user: root
+    build: ../application
+    # Beat is co-located via -B; ``--schedule`` points state at /tmp
+    # to mirror docker-compose-hub.yaml (where the image runs as
+    # appuser without write access to the default CWD). Dev compose
+    # uses ``user: root`` so it would technically work without this
+    # flag — but mirroring prod ensures dev exercises the same beat
+    # path that prod runs.
+    command: celery -A application.app.celery worker -l INFO -B --schedule=/tmp/celerybeat-schedule -c 2
+    env_file:
+      - ../.env
+    environment:
+      # Override URLs to use docker service names
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/1
+      - API_URL=http://backend:7091
+      - CACHE_REDIS_URL=redis://redis:6379/2
+      - POSTGRES_URI=postgresql://docsgpt:docsgpt@postgres:5432/docsgpt
+      # Mirror the hub compose — see the backend service for why these
+      # must be overridden instead of inherited from the shared ../.env.
+      - PGVECTOR_CONNECTION_STRING=postgresql://docsgpt:docsgpt@postgres:5432/docsgpt
+      - VECTOR_STORE=pgvector
+    volumes:
+      # Match prod (docker-compose-hub.yaml) — UPLOAD_FOLDER in .env is
+      # /app/application/inputs; backend + worker must mount the same
+      # path so the worker can read what the backend just wrote. The
+      # upstream `/app/inputs` mount silently dropped uploads into the
+      # backend container's writable layer where the worker couldn't
+      # see them; ingest tasks reliably failed on dev with "File not
+      # found: /app/application/inputs/...".
+      - ../application/inputs:/app/application/inputs
+    depends_on:
+      redis:
+        condition: service_started
+      postgres:
+        condition: service_healthy
+
+  # MCP server (honk-ai-host MCP). Read-only SQL / RAG / logs surface
+  # for remote claudebox clients. Lives inside the same compose network
+  # so it can reach postgres + the docker-socket-proxy without going
+  # through Caddy. The image is built from the same backend source tree
+  # so application.* imports resolve identically.
+  mcp:
+    build: ../application
+    image: aztec/docsgpt-mcp:${IMAGE_TAG:-latest}
+    command: ["python", "-m", "application.mcp_server"]
+    env_file:
+      - ../.env
+    environment:
+      # The MCP server connects with the docsgpt_mcp_ro role in both
+      # dev and prod. The dev compose's postgres-init script creates
+      # the role; alembic 0006 sets its grants. Operators set the
+      # password by `ALTER ROLE docsgpt_mcp_ro WITH LOGIN PASSWORD ...`
+      # before bringing the mcp service up.
+      - MCP_DB_URL=postgresql://docsgpt_mcp_ro:${MCP_DB_PASSWORD:-mcpdev}@postgres:5432/docsgpt
+      - MCP_DOCKER_PROXY_URL=http://docker-proxy:2375
+      - MCP_COMPOSE_PROJECT=docsgpt-oss
+      - MCP_HOST=0.0.0.0
+      - MCP_PORT=7092
+    # 127.0.0.1 — never reachable beyond the dev host. Dev tokens
+    # aren't worth the bearer-leak risk of binding to 0.0.0.0.
+    ports:
+      - "127.0.0.1:7092:7092"
+    networks:
+      - default
+      - docker_proxy_net
+    depends_on:
+      postgres:
+        condition: service_healthy
+      docker-proxy:
+        condition: service_started
+
+  # Read-only Docker Engine API proxy. Exposes only the LOGS endpoint
+  # to the MCP server; all start/stop/exec/run paths return 403. Keeps
+  # the MCP container away from the raw /var/run/docker.sock so a code-
+  # execution bug there can't escape into Docker control plane.
+  # On its own network — only mcp is attached, so backend/worker
+  # compromise doesn't reach the unauthenticated Docker API.
+  docker-proxy:
+    image: tecnativa/docker-socket-proxy:0.3.0
+    restart: unless-stopped
+    environment:
+      - LOG_LEVEL=info
+      # Endpoint allowlist. CONTAINERS=1 grants `GET /containers/json`
+      # which is needed for service → container resolution; LOGS=1
+      # grants `GET /containers/<id>/logs`. Everything else (POST,
+      # exec, networks, volumes) defaults to 403.
+      - CONTAINERS=1
+      - LOGS=1
+      - POST=0
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - docker_proxy_net
+
+  redis:
+    image: redis:6-alpine
+    # 127.0.0.1 — this dev compose runs on the tunnel-exposed prod host;
+    # never bind the unauthenticated redis port to 0.0.0.0.
+    ports:
+      - "127.0.0.1:6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      - POSTGRES_USER=docsgpt
+      - POSTGRES_PASSWORD=docsgpt
+      - POSTGRES_DB=docsgpt
+    # 127.0.0.1 — dev postgres has a well-known password; keep it off
+    # the host's external interfaces (same rationale as redis above).
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./postgres-init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U docsgpt -d docsgpt"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  postgres_data:
+
+networks:
+  default:
+  # Private network for the docker-socket-proxy. ONLY mcp + docker-proxy
+  # are attached. See docker-compose-hub.yaml for the prod rationale.
+  docker_proxy_net:
+    internal: true
+

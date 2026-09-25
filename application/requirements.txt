@@ -1,0 +1,103 @@
+alembic>=1.13,<2
+beautifulsoup4==4.14.3
+cel-python==0.5.0
+celery==5.6.3
+cryptography==46.0.7
+dataclasses-json==0.6.7
+defusedxml==0.7.1  # optional hardening: openpyxl uses it for XML parsing when present
+# docling / rapidocr / onnxruntime removed for this fork. docling
+# transitively required torch + torchvision, which re-dragged in the
+# CUDA stack we were trying to drop. Ingest uses the stock parsers
+# (PDFParser/DocxParser/PandasCSVParser/…) — see
+# get_default_file_extractor() in parser/file/bulk.py. Our corpus is
+# markdown + source code, so docling's layout/OCR features weren't
+# meaningfully exercised. Reinstate (parser module + extractor map +
+# this dependency) if you start ingesting scanned PDFs or
+# image-heavy docs.
+# Removed during the unused-component sweep:
+#   - anthropic / google-genai / groq / llama_cpp / novita / premai /
+#     sagemaker / docsgpt LLM SDKs (registry pruned to openai +
+#     openrouter only, see application/llm/llm_creator.py)
+#   - faiss-cpu (registry pruned to pgvector only)
+#   - boto3 (S3 storage backend removed; LocalStorage only)
+#   - elevenlabs / gTTS (TTS removed)
+#   - google-api-python-client / google-auth-* / msal (Drive /
+#     SharePoint / Confluence connectors removed)
+docx2txt==0.9
+fast-ebook==0.2.0
+Flask==3.1.3
+fastmcp==3.2.4
+flask-restx==1.3.2
+gunicorn==26.0.0
+jinja2==3.1.6
+jiter==0.13.0
+jmespath==1.1.0
+jsonpatch==1.33
+jsonpointer==3.1.1
+kombu==5.6.2
+# Top-level `langchain` is intentionally NOT pinned. Nothing in the
+# application imports `langchain.*` directly — we only use the
+# submodules below (`langchain_community`, `langchain_core`,
+# `langchain_openai`). Carrying a top-level pin put us on a
+# coordinated-bump treadmill every time `langchain-core` released a
+# major (e.g. langchain 1.2.18 requires langchain-core>=1.3.3 even
+# though our submodule pins are happy on 1.2.x). `langchain-classic`
+# (the renamed legacy package) is still pulled transitively by
+# `langchain-community` for code that needs it.
+langchain-community==0.4.1
+langchain-core==1.2.29
+langchain-openai==1.1.12
+langchain-text-splitters==1.1.1
+langsmith==0.7.31
+lazy-object-proxy==1.12.0
+lxml==6.0.2
+markupsafe==3.0.3
+marshmallow>=3.18.0,<5.0.0
+multidict==6.7.1
+mypy-extensions==1.1.0
+numpy==2.4.4
+openai==2.32.0
+orjson==3.11.7
+packaging==26.0
+pandas==3.0.2
+openpyxl==3.1.5
+pdf2image>=1.17.0
+pillow==12.2.0
+prompt-toolkit==3.0.52
+psycopg[binary,pool]>=3.1,<4
+pgvector>=0.4.2,<1
+pydantic==2.13.4
+pydantic-core==2.46.4
+pydantic-settings==2.14.1
+pypdf==6.9.2
+python-dateutil==2.9.0.post0
+python-dotenv==1.2.2
+python-jose==3.5.0
+python-pptx==1.0.2
+redis==7.4.0
+referencing>=0.28.0,<0.38.0
+regex==2026.4.4
+requests==2.33.1
+# Removed for this fork: sentence-transformers, torch, transformers,
+# tokenizers. Embeddings are computed by a remote provider
+# (EMBEDDINGS_BASE_URL / EMBEDDINGS_NAME / EMBEDDINGS_KEY), never locally.
+# Dropping these saves ~5GB of CUDA/torch/triton wheels in the backend image.
+# If you need local embeddings (HuggingFace SentenceTransformer / mpnet),
+# reinstate them — and pin torch to the CPU wheel index for GPU-less hosts.
+sqlalchemy>=2.0,<3
+# Replaces the abandoned `retry` package (last release 2016; dragged in
+# py==1.11.0, CVE-2022-42969). Already in the image transitively via
+# langchain-core — pinned here because application code imports it
+# directly (application/parser/embedding_pipeline.py).
+tenacity==9.1.4
+tiktoken==0.12.0
+tqdm==4.67.3
+typing-extensions==4.15.0
+typing-inspect==0.9.0
+tzdata==2026.1
+urllib3==2.6.3
+vine==5.1.0
+wcwidth==0.6.0
+werkzeug>=3.1.0
+yarl==1.23.0
+websockets==16.0

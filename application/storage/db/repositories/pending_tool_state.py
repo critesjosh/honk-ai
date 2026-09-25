@@ -1,0 +1,159 @@
+"""Repository for the ``pending_tool_state`` table.
+
+Mirrors the continuation service's three operations on
+``pending_tool_state`` in Mongo:
+
+- save_state  → upsert (INSERT ... ON CONFLICT DO UPDATE)
+- load_state  → find_one by (conversation_id, user_id)
+- delete_state → delete_one by (conversation_id, user_id)
+
+Plus a cleanup method for the Celery beat task that replaces Mongo's
+TTL index.
+"""
+
+from __future__ import annotations
+
+import json
+from datetime import datetime, timezone
+from typing import Optional
+
+from sqlalchemy import Connection, text
+
+from application.security.content_registry import decrypt_value, encrypt_value
+from application.storage.db.base_repository import row_to_dict
+
+PENDING_STATE_TTL_SECONDS = 30 * 60  # 1800 seconds
+
+# All content-bearing JSONB columns (paused message history + tool defs/args).
+_ENCRYPTED_COLS = (
+    "messages",
+    "pending_tool_calls",
+    "tools_dict",
+    "tool_schemas",
+    "agent_config",
+    "client_tools",
+)
+
+
+def _row_to_dict(row) -> dict:
+    """Decrypt choke point for pending-state reads. Read-both: a no-op on
+    legacy plaintext."""
+    out = row_to_dict(row)
+    for col in _ENCRYPTED_COLS:
+        if out.get(col) is not None:
+            out[col] = decrypt_value("pending_tool_state", col, out[col])
+    return out
+
+
+def _enc_blob(column: str, value):
+    """Encrypt a JSONB content value and JSON-serialize for the CAST, or None."""
+    enc = encrypt_value("pending_tool_state", column, value)
+    return json.dumps(enc) if enc is not None else None
+
+
+class PendingToolStateRepository:
+    def __init__(self, conn: Connection) -> None:
+        self._conn = conn
+
+    def save_state(
+        self,
+        conversation_id: str,
+        user_id: str,
+        *,
+        messages: list,
+        pending_tool_calls: list,
+        tools_dict: dict,
+        tool_schemas: list,
+        agent_config: dict,
+        client_tools: list | None = None,
+        ttl_seconds: int = PENDING_STATE_TTL_SECONDS,
+        requester_user_id: str | None = None,
+    ) -> dict:
+        """Upsert pending tool state.
+
+        Mirrors Mongo's ``replace_one(..., upsert=True)``.
+
+        ``requester_user_id`` is the canonical pseudonym of the end-user who
+        triggered the paused turn, so ``/forget-me`` can erase the
+        content-bearing ``messages``/``pending_tool_calls`` it stores. NULL for
+        anonymous traffic. See migration 0011.
+        """
+        now = datetime.now(timezone.utc)
+        expires = datetime.fromtimestamp(
+            now.timestamp() + ttl_seconds,
+            tz=timezone.utc,
+        )
+
+        result = self._conn.execute(
+            text(
+                """
+                INSERT INTO pending_tool_state
+                    (conversation_id, user_id, messages, pending_tool_calls,
+                     tools_dict, tool_schemas, agent_config, client_tools,
+                     created_at, expires_at, requester_user_id)
+                VALUES
+                    (CAST(:conv_id AS uuid), :user_id,
+                     CAST(:messages AS jsonb), CAST(:pending AS jsonb),
+                     CAST(:tools_dict AS jsonb), CAST(:schemas AS jsonb),
+                     CAST(:agent_config AS jsonb), CAST(:client_tools AS jsonb),
+                     :created_at, :expires_at, :requester_user_id)
+                ON CONFLICT (conversation_id, user_id) DO UPDATE SET
+                    messages = EXCLUDED.messages,
+                    pending_tool_calls = EXCLUDED.pending_tool_calls,
+                    tools_dict = EXCLUDED.tools_dict,
+                    tool_schemas = EXCLUDED.tool_schemas,
+                    agent_config = EXCLUDED.agent_config,
+                    client_tools = EXCLUDED.client_tools,
+                    created_at = EXCLUDED.created_at,
+                    expires_at = EXCLUDED.expires_at,
+                    requester_user_id = EXCLUDED.requester_user_id
+                RETURNING *
+                """
+            ),
+            {
+                "conv_id": conversation_id,
+                "user_id": user_id,
+                # All content JSONB encrypted at rest (no-op when disabled).
+                "messages": _enc_blob("messages", messages),
+                "pending": _enc_blob("pending_tool_calls", pending_tool_calls),
+                "tools_dict": _enc_blob("tools_dict", tools_dict),
+                "schemas": _enc_blob("tool_schemas", tool_schemas),
+                "agent_config": _enc_blob("agent_config", agent_config),
+                "client_tools": _enc_blob("client_tools", client_tools),
+                "created_at": now,
+                "expires_at": expires,
+                "requester_user_id": requester_user_id,
+            },
+        )
+        return _row_to_dict(result.fetchone())
+
+    def load_state(self, conversation_id: str, user_id: str) -> Optional[dict]:
+        result = self._conn.execute(
+            text(
+                "SELECT * FROM pending_tool_state WHERE conversation_id = CAST(:conv_id AS uuid) AND user_id = :user_id"
+            ),
+            {"conv_id": conversation_id, "user_id": user_id},
+        )
+        row = result.fetchone()
+        return _row_to_dict(row) if row is not None else None
+
+    def delete_state(self, conversation_id: str, user_id: str) -> bool:
+        result = self._conn.execute(
+            text(
+                "DELETE FROM pending_tool_state WHERE conversation_id = CAST(:conv_id AS uuid) AND user_id = :user_id"
+            ),
+            {"conv_id": conversation_id, "user_id": user_id},
+        )
+        return result.rowcount > 0
+
+    def cleanup_expired(self) -> int:
+        """Delete rows where ``expires_at < now()``.
+
+        Replaces Mongo's ``expireAfterSeconds=0`` TTL index. Intended to
+        be called from a Celery beat task every 60 seconds.
+        """
+        # clock_timestamp() — not now() — since the latter is frozen to the
+        # start of the transaction, which would let state that has just
+        # expired survive one more cleanup tick.
+        result = self._conn.execute(text("DELETE FROM pending_tool_state WHERE expires_at < clock_timestamp()"))
+        return result.rowcount

@@ -1,0 +1,356 @@
+# Production compose for the Aztec fork of DocsGPT.
+#
+# Differences from upstream:
+#  - builds images from local source (not :develop pulls)
+#  - postgres uses pgvector (user data + vector store in one database)
+#  - host ports published only on loopback (127.0.0.1):
+#      caddy: 5080 (bastion-tunnel ingress for /api/*, /stream, /ask)
+#      mcp:   7092 (SSH-tunnel ingress for honk-ai introspection from
+#                   claudebox; only reachable via the bastion-mediated
+#                   tunnel chain set up by claudebox-deploy host's
+#                   cloxy-tunnel.service + josh-box's aztec-docs-tunnel)
+#    Everything else (postgres / redis / backend / worker / frontend /
+#    discord-bot / docker-proxy) is bridge-network-only.
+#  - secrets come from ../.env (generate via: openssl rand -hex 32)
+#
+# First-boot bootstrap (see AZTEC_SETUP.md):
+#   docker compose -f deployment/docker-compose-hub.yaml up -d postgres
+#   docker compose -f deployment/docker-compose-hub.yaml run --rm backend python scripts/db/init_postgres.py
+#   docker compose -f deployment/docker-compose-hub.yaml up -d
+
+name: docsgpt-aztec
+services:
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    # Loopback-only host port for the SSH reverse tunnel to ci-bastion.
+    # 127.0.0.1 (NOT 0.0.0.0) — never publicly reachable on josh-box.
+    # The systemd-user service `aztec-docs-tunnel` (file outside this
+    # repo, on josh-box at ~/.config/systemd/user/) carries this port to
+    # bastion's localhost:5080, where cloudflared on bastion picks it
+    # up and serves it to Cloudflare. See AZTEC_SETUP.md, "Bastion-anchored Cloudflare Tunnel".
+    ports:
+      - "127.0.0.1:5080:80"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    environment:
+      - PUBLIC_HOSTNAME=${PUBLIC_HOSTNAME:?PUBLIC_HOSTNAME must be set in .env}
+    # Gate on backend health so the tunnel ingress only comes up once
+    # /api/health answers — avoids a window of 502s on cold boot.
+    depends_on:
+      backend:
+        condition: service_healthy
+      frontend-ask:
+        condition: service_started
+
+  # Public-facing /ask landing page. Separate Vite/React bundle from the
+  # admin frontend; same origin via Caddy `handle /ask/*`. Bearer key
+  # baked at build time — see scripts/db/create_ask_aztec_public_agent.py
+  # for how the agent is provisioned with hard request/token caps.
+  frontend-ask:
+    build:
+      context: ../frontend-ask
+      dockerfile: Dockerfile.prod
+      args:
+        VITE_ASK_AZTEC_AGENT_KEY: ${VITE_ASK_AZTEC_AGENT_KEY:?VITE_ASK_AZTEC_AGENT_KEY must be set in .env (run scripts/db/create_ask_aztec_public_agent.py first)}
+    image: aztec/docsgpt-ask:${IMAGE_TAG:-0.17.0-aztec.1}
+    restart: unless-stopped
+    # No host port; Caddy reaches frontend-ask:80 on the internal network.
+    depends_on:
+      backend:
+        condition: service_healthy
+
+  backend:
+    build:
+      context: ../application
+    image: aztec/docsgpt:${IMAGE_TAG:-0.17.0-aztec.1}
+    restart: unless-stopped
+    # Allow Gunicorn --graceful-timeout 30 to actually drain long SSE
+    # streams on `up -d --force-recreate backend`. Compose default is 10s.
+    stop_grace_period: 40s
+    env_file:
+      - ../.env
+    environment:
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/1
+      - CACHE_REDIS_URL=redis://redis:6379/2
+      - POSTGRES_URI=postgresql://docsgpt:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}@postgres:5432/docsgpt
+      - PGVECTOR_CONNECTION_STRING=postgresql://docsgpt:${POSTGRES_PASSWORD}@postgres:5432/docsgpt
+      - VECTOR_STORE=${VECTOR_STORE:-pgvector}
+      - TIKTOKEN_CACHE_DIR=/tmp/tiktoken_cache
+      - FLASK_DEBUG=false
+    volumes:
+      # Persist raw uploads across container recreation.
+      - uploads:/app/application/inputs
+      # Live-mount model config so operators can tune model settings without rebuild.
+      - ../application/core/model_configs.py:/app/application/core/model_configs.py:ro
+    healthcheck:
+      # The image ships no curl/wget — use the stdlib. /api/health is
+      # the unauthenticated liveness route in application/app.py.
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:7091/api/health', timeout=4)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    depends_on:
+      redis:
+        condition: service_started
+      postgres:
+        condition: service_healthy
+
+  worker:
+    build:
+      context: ../application
+    image: aztec/docsgpt:${IMAGE_TAG:-0.17.0-aztec.1}
+    restart: unless-stopped
+    # Beat is co-located via -B. ``--schedule`` points the schedule
+    # state file at /tmp because the worker image runs as ``appuser``
+    # without write access to the default CWD (/app); without this,
+    # beat fails on boot with ``Permission denied: 'celerybeat-schedule'``
+    # and the periodic retention/cleanup tasks never fire.
+    command: celery -A application.app.celery worker -l INFO -B --schedule=/tmp/celerybeat-schedule -c 2
+    env_file:
+      - ../.env
+    environment:
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/1
+      - API_URL=http://backend:7091
+      - CACHE_REDIS_URL=redis://redis:6379/2
+      - POSTGRES_URI=postgresql://docsgpt:${POSTGRES_PASSWORD}@postgres:5432/docsgpt
+      - PGVECTOR_CONNECTION_STRING=postgresql://docsgpt:${POSTGRES_PASSWORD}@postgres:5432/docsgpt
+      - VECTOR_STORE=${VECTOR_STORE:-pgvector}
+      - TIKTOKEN_CACHE_DIR=/tmp/tiktoken_cache
+    volumes:
+      - uploads:/app/application/inputs
+      - ../application/core/model_configs.py:/app/application/core/model_configs.py:ro
+    depends_on:
+      redis:
+        condition: service_started
+      postgres:
+        condition: service_healthy
+
+  # Discord bot. Reaches backend:7091 internally so it bypasses
+  # Cloudflare Access entirely (no service token needed). The bot calls
+  # /stream for chat and /api/internal/create_mcp_key for the /mcp-key
+  # slash command (self-auth via MCP_PROVISIONING_KEY).
+  discord-bot:
+    build:
+      context: ../extensions/discord
+    image: aztec/docsgpt-discord-bot:${IMAGE_TAG:-0.17.0-aztec.1}
+    restart: unless-stopped
+    environment:
+      - DISCORD_TOKEN=${DISCORD_TOKEN:?DISCORD_TOKEN must be set in .env}
+      - API_BASE=http://backend:7091
+      - PUBLIC_HOSTNAME=${PUBLIC_HOSTNAME}
+      - API_KEY=${API_KEY}
+      - MCP_PROVISIONING_KEY=${MCP_PROVISIONING_KEY}
+      - NOIR_GUILD_IDS=${NOIR_GUILD_IDS:-}
+      - NOIR_GUILD_ID=${NOIR_GUILD_ID:-0}
+      # Per-guild daily USD spend cap (PR #133). bot.py reads these via
+      # os.getenv — compose must pass them through explicitly or the
+      # cap silently no-ops. All have sensible defaults in code so
+      # leaving them unset in .env is safe.
+      - DISCORD_GUILD_DAILY_USD_CAPS=${DISCORD_GUILD_DAILY_USD_CAPS:-}
+      - DISCORD_USD_PER_PROMPT_MTOK=${DISCORD_USD_PER_PROMPT_MTOK:-}
+      - DISCORD_USD_PER_COMPLETION_MTOK=${DISCORD_USD_PER_COMPLETION_MTOK:-}
+      - DISCORD_PRE_CALL_RESERVE_USD=${DISCORD_PRE_CALL_RESERVE_USD:-}
+      # Thread-context + rate-limit knobs (existing bot.py settings
+      # that were previously un-tunable without a compose edit).
+      - DISCORD_THREAD_CONTEXT_LIMIT=${DISCORD_THREAD_CONTEXT_LIMIT:-}
+      - DISCORD_THREAD_CONTEXT_MAX_CHARS=${DISCORD_THREAD_CONTEXT_MAX_CHARS:-}
+      - DISCORD_SHARED_429_COOLDOWN_SECONDS=${DISCORD_SHARED_429_COOLDOWN_SECONDS:-}
+    depends_on:
+      backend:
+        condition: service_healthy
+
+  # Slack bot (Honk AI for Slack). Same internal-only model as the
+  # Discord bot: Socket Mode (outbound websocket, no ingress), reaches
+  # backend:7091 directly. Calls /stream for chat (with its own
+  # surface='slack' agent key) and /api/internal/create_mcp_key for the
+  # /aztec-mcp-key slash command (self-auth via MCP_PROVISIONING_KEY).
+  # NOTE: API_KEY here is the Slack chat agent's key (provision it with
+  # scripts/db/create_slack_chat_agent.py), NOT the same agent as the
+  # Discord bot — keep per-surface analytics clean.
+  slack-bot:
+    build:
+      context: ../extensions/slack
+    image: aztec/docsgpt-slack-bot:${IMAGE_TAG:-0.17.0-aztec.1}
+    restart: unless-stopped
+    environment:
+      - SLACK_BOT_TOKEN=${SLACK_BOT_TOKEN:?SLACK_BOT_TOKEN must be set in .env}
+      - SLACK_APP_TOKEN=${SLACK_APP_TOKEN:?SLACK_APP_TOKEN must be set in .env}
+      - API_BASE=http://backend:7091
+      - PUBLIC_HOSTNAME=${PUBLIC_HOSTNAME}
+      - API_KEY=${SLACK_API_KEY:?SLACK_API_KEY (the surface=slack chat agent key) must be set in .env}
+      - MCP_PROVISIONING_KEY=${MCP_PROVISIONING_KEY}
+      - SLACK_TEAM_IDS=${SLACK_TEAM_IDS:-}
+      # Per-workspace daily USD spend cap (mirrors the Discord guild cap).
+      # bot.py reads these via os.getenv — compose must pass them through
+      # explicitly or the cap silently no-ops. All have code defaults.
+      - SLACK_TEAM_DAILY_USD_CAPS=${SLACK_TEAM_DAILY_USD_CAPS:-}
+      - SLACK_USD_PER_PROMPT_MTOK=${SLACK_USD_PER_PROMPT_MTOK:-}
+      - SLACK_USD_PER_COMPLETION_MTOK=${SLACK_USD_PER_COMPLETION_MTOK:-}
+      - SLACK_PRE_CALL_RESERVE_USD=${SLACK_PRE_CALL_RESERVE_USD:-}
+      # Thread-context knobs.
+      - SLACK_THREAD_CONTEXT_LIMIT=${SLACK_THREAD_CONTEXT_LIMIT:-}
+      - SLACK_THREAD_CONTEXT_MAX_CHARS=${SLACK_THREAD_CONTEXT_MAX_CHARS:-}
+    depends_on:
+      backend:
+        condition: service_healthy
+
+  # MCP server (honk-ai-host MCP). Read-only SQL / RAG / logs surface
+  # for remote claudebox sessions. Current production runs in network-
+  # trust mode: no CF Access app, no Caddy /mcp route, MCP_AUTH_REQUIRED
+  # is false. The container is published only on the host's loopback
+  # (127.0.0.1:7092:7092) and is reached exclusively over the bastion-
+  # anchored SSH tunnel chain from the claudebox-deploy host. To prevent
+  # the unauthenticated server from being reachable to traffic-serving
+  # services, mcp is isolated on its own compose network (`mcp_internal`)
+  # shared only with postgres. The bearer plumbing (mcp_tokens, alembic
+  # 0006, scripts/mcp/issue_token.py) is preserved for the reverse path —
+  # see AZTEC_SETUP.md → "Honk-ai MCP server" for the operating-mode
+  # switch and what else has to change on the claudebox side.
+  mcp:
+    build:
+      context: ../application
+    image: aztec/docsgpt-mcp:${IMAGE_TAG:-0.17.0-aztec.1}
+    restart: unless-stopped
+    command: ["python", "-m", "application.mcp_server"]
+    env_file:
+      - ../.env
+    environment:
+      # MCP_DB_URL is the read-only role bound to docsgpt_mcp_ro by
+      # alembic 0006. .env should set MCP_DB_PASSWORD; we compose the
+      # full URI here so operators rotate the password in one place.
+      - MCP_DB_URL=postgresql://docsgpt_mcp_ro:${MCP_DB_PASSWORD:?MCP_DB_PASSWORD must be set in .env}@postgres:5432/docsgpt
+      - MCP_DOCKER_PROXY_URL=http://docker-proxy:2375
+      - MCP_COMPOSE_PROJECT=docsgpt-aztec
+      - MCP_HOST=0.0.0.0
+      - MCP_PORT=7092
+      # Network-trust deployment: the public Caddy /mcp route has been
+      # retired in favour of an SSH-tunnel-only access path
+      # (claudebox-deploy → bastion → josh-box :7092). The bearer
+      # middleware is disabled because SSH-key possession + the
+      # docsgpt_mcp_ro role grants are the defense layers in this mode.
+      # If you republish the service to a non-loopback interface, set
+      # MCP_AUTH_REQUIRED=true and restore the Caddy route + CF Access
+      # application together.
+      - MCP_AUTH_REQUIRED=false
+    # Networks:
+    # - mcp_internal: shared only with postgres so we can reach the DB.
+    #   The default compose network is intentionally NOT attached — with
+    #   MCP_AUTH_REQUIRED=false, backend/worker/discord-bot/etc. on the
+    #   default network would otherwise have unauthenticated reach to
+    #   honk_sql/honk_rag/honk_logs. mcp_internal contains only us and
+    #   postgres, so only postgres can initiate a connection to us, and
+    #   it has no reason to. The host's loopback :7092 publish (above)
+    #   is the only path real callers (the SSH tunnel chain) use.
+    # - docker_proxy_net: for honk_logs.* via tecnativa/docker-socket-
+    #   proxy. Backend/worker are NOT on this network — a compromise of
+    #   either of those services should not give them an unauthenticated
+    #   Docker API.
+    networks:
+      - mcp_internal
+      - docker_proxy_net
+    # Publish to loopback only. The host's :7092 is consumed by josh-box's
+    # aztec-docs-tunnel.service (-R 7092:127.0.0.1:7092) which forwards to
+    # bastion, where claudebox-deploy host's cloxy-tunnel.service maps
+    # bastion's :7092 back to its own loopback. End-to-end the only
+    # external surface is the SSH tunnel chain; the docker port is never
+    # bound to 0.0.0.0. The MCP server inside the container is now
+    # MCP_AUTH_REQUIRED=false (see above) so do NOT relax the bind.
+    ports:
+      - "127.0.0.1:7092:7092"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      docker-proxy:
+        condition: service_started
+
+  # Read-only Docker Engine API proxy for the logs tool. LOGS=1 only.
+  # See application/mcp_server/tools/logs.py for the access pattern.
+  # Lives on its own network (docker_proxy_net) — only the mcp service
+  # is attached. Tecnativa's documentation specifically warns against
+  # sharing the proxy's network with other services because the proxy
+  # itself is unauthenticated.
+  docker-proxy:
+    image: tecnativa/docker-socket-proxy:0.3.0
+    restart: unless-stopped
+    environment:
+      # HAProxy expects full syslog level names: emerg/alert/crit/err/
+      # warning/notice/info/debug. ``warn`` triggers a fatal config
+      # parse error on startup.
+      - LOG_LEVEL=warning
+      - CONTAINERS=1
+      - LOGS=1
+      - POST=0
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - docker_proxy_net
+
+  redis:
+    image: redis:6-alpine
+    restart: unless-stopped
+    # Internal-only; no host port publishing.
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  postgres:
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    environment:
+      - POSTGRES_USER=docsgpt
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_DB=docsgpt
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./postgres-init:/docker-entrypoint-initdb.d:ro
+    # On both networks: ``default`` is the path for backend / worker /
+    # discord-bot, ``mcp_internal`` is the path for the host-side MCP
+    # server (which is intentionally NOT on ``default``; see comments
+    # under the ``mcp`` service for the threat model).
+    networks:
+      - default
+      - mcp_internal
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U docsgpt -d docsgpt"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  postgres_data:
+  uploads:
+  caddy_data:
+  caddy_config:
+
+networks:
+  # Default compose network — backend, worker, frontend-ask, redis,
+  # postgres, caddy, discord-bot. NOT mcp; in network-trust mode the
+  # honk-ai MCP server is unauthenticated and the only legitimate caller
+  # is the SSH tunnel chain landing on the host-published loopback port.
+  # If mcp shared this network, a code-exec compromise of any
+  # traffic-serving container (backend / worker / discord-bot / etc.)
+  # would broaden to honk_sql/honk_rag/honk_logs over `mcp:7092`.
+  default:
+  # Private network shared only by mcp + postgres so the MCP server can
+  # reach Postgres without sitting on the default network. postgres is on
+  # both networks (default for backend/worker/discord-bot; mcp_internal
+  # for mcp). NOT marked internal:true because mcp's honk_rag.search
+  # tool needs egress to the embeddings API (OpenAI). Compose-network
+  # isolation between mcp_internal and `default` is automatic; the
+  # `internal:` flag only controls outbound internet egress, not
+  # container-to-container reachability.
+  mcp_internal:
+  # Private network for the docker-socket-proxy. ONLY mcp + docker-proxy
+  # are attached. Keeps backend/worker code-execution bugs from being
+  # able to reach the unauthenticated proxy's Docker Engine surface.
+  docker_proxy_net:
+    internal: true

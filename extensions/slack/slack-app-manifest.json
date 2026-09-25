@@ -1,0 +1,58 @@
+{
+  "display_information": {
+    "name": "Honk AI",
+    "description": "Ask Aztec docs questions — @mention me in a channel or send me a DM. Powered by Aztec DocsGPT.",
+    "background_color": "#1f2937"
+  },
+  "features": {
+    "app_home": {
+      "home_tab_enabled": false,
+      "messages_tab_enabled": true,
+      "messages_tab_read_only_enabled": false
+    },
+    "bot_user": {
+      "display_name": "Honk AI",
+      "always_online": true
+    },
+    "slash_commands": [
+      {
+        "command": "/aztec-mcp-key",
+        "description": "Get your personal API key for the Aztec MCP server",
+        "should_escape": false
+      },
+      {
+        "command": "/aztec-forget-me",
+        "description": "Erase your Honk AI MCP data (GDPR right to erasure)",
+        "should_escape": false
+      }
+    ]
+  },
+  "oauth_config": {
+    "scopes": {
+      "bot": [
+        "app_mentions:read",
+        "chat:write",
+        "commands",
+        "users:read",
+        "im:history",
+        "channels:history",
+        "groups:history",
+        "mpim:history"
+      ]
+    }
+  },
+  "settings": {
+    "event_subscriptions": {
+      "bot_events": [
+        "app_mention",
+        "message.im"
+      ]
+    },
+    "interactivity": {
+      "is_enabled": true
+    },
+    "socket_mode_enabled": true,
+    "org_deploy_enabled": false,
+    "token_rotation_enabled": false
+  }
+}

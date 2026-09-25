@@ -1,0 +1,41 @@
+# Boot-reconcile backstop for the DocsGPT-aztec prod stack.
+#
+# WHY THIS EXISTS: josh-box is Docker-in-Docker. Docker 29 defaults to the
+# containerd snapshotter, which stores image + container layers under
+# /var/lib/containerd. On this host that path lives on the *ephemeral* overlay
+# rootfs, NOT the persistent volume that backs /var/lib/docker (which holds the
+# named volumes, incl. the Postgres data volume — those survive). So an
+# environment restart wipes all images/containers and `restart: unless-stopped`
+# cannot recover them ("RW layer not found"). The DURABLE fix is to move the
+# containerd data-root onto the persistent volume (see AZTEC_SETUP.md); this
+# unit is the second layer of defense: on boot, bring the stack back up, and if
+# the images were wiped, rebuild them from the deploy worktree first.
+#
+# INSTALL (on the host, as root):
+#   ln -s /mnt/user-data/josh/honk-deploy-main/deployment/systemd/docsgpt-aztec.service \
+#         /etc/systemd/system/docsgpt-aztec.service
+#   systemctl daemon-reload && systemctl enable --now docsgpt-aztec.service
+# Verify: systemctl status docsgpt-aztec.service ; docker ps
+
+[Unit]
+Description=Reconcile DocsGPT-aztec prod stack on boot (DinD image-wipe backstop)
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# The deploy worktree tracks origin/main and its .env symlinks the prod secrets.
+WorkingDirectory=/mnt/user-data/josh/honk-deploy-main
+Environment=COMPOSE=deployment/docker-compose-hub.yaml
+# If the base image is missing (containerd store was wiped), rebuild from main
+# before starting; otherwise `up` alone is enough. A rebuild is slow but only
+# runs on the wipe path.
+ExecStartPre=/bin/sh -c '/usr/bin/docker image inspect aztec/docsgpt:${IMAGE_TAG:-0.17.0-aztec.1} >/dev/null 2>&1 || /usr/bin/docker compose -f ${COMPOSE} --env-file .env build'
+ExecStart=/usr/bin/docker compose -f ${COMPOSE} --env-file .env up -d
+# Best-effort: don't fail the boot if reconcile hiccups; the healthcheck alerts.
+TimeoutStartSec=1800
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,108 @@
+# Caddyfile for Aztec DocsGPT production deployment.
+#
+# Deployment model (Cloudflare Tunnel path):
+#   Users → Cloudflare edge (TLS + Access SSO) → Tunnel → cloudflared
+#        → this Caddy (HTTP, internal) → backend:7091 / frontend:80
+#
+# TLS is terminated at Cloudflare's edge. cloudflared opens an outbound
+# tunnel and forwards decrypted HTTP to Caddy on the internal compose
+# network. Nothing on this host faces the public internet.
+#
+# Caddy's job here is path routing (/api/* and /stream → backend, rest →
+# frontend), streaming buffering (flush_interval -1 for SSE), security
+# headers, and propagating Cf-Access-Authenticated-User-Email → X-Auth-Email.
+#
+# Hardening checklist (operator-side, not in this file):
+#   - Cloudflare Access self-hosted application on $PUBLIC_HOSTNAME
+#     with SSO policy. Tunnel alone is NOT authentication.
+#   - Tunnel ingress: Additional application settings → Access →
+#     "Protect with Access" bound to the Access application AUD.
+#   - Host firewall can block all inbound (tunnel is outbound only).
+
+http://{$PUBLIC_HOSTNAME} {
+	# HTTP-only: the Cloudflare Tunnel carries plaintext from the edge
+	# to cloudflared → Caddy over the internal network. TLS lives at
+	# the CF edge. Leaving off the scheme would make Caddy try to issue
+	# a Let's Encrypt cert; `http://` keeps it on port 80 only.
+
+	# Security headers.
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		# Don't leak Caddy version.
+		-Server
+	}
+
+	# Propagate the Cloudflare Access identity to the backend so
+	# request logs and audit trails can attribute actions. The backend
+	# does not validate this JWT itself — Cloudflare Access (enforced
+	# at the edge + on the tunnel ingress via Access AUD) is the trust
+	# boundary. Under Tunnel, Caddy's immediate peer is cloudflared, so
+	# client IPs here are internal hops, not end-user IPs.
+	request_header X-Auth-Email {http.request.header.Cf-Access-Authenticated-User-Email}
+
+	# Backend API: Flask + Celery consumer endpoints. Use `handle` (not
+	# `handle_path`) so the /api/ prefix is preserved — Flask registers
+	# routes as /api/answer, /api/internal/create_mcp_key, etc.
+	handle /api/* {
+		reverse_proxy backend:7091 {
+			header_up Host {upstream_hostport}
+			# Streaming endpoints (answer, stream): disable buffering
+			# so chunked responses reach the client as they're produced.
+			flush_interval -1
+		}
+	}
+	handle /stream {
+		reverse_proxy backend:7091 {
+			flush_interval -1
+		}
+	}
+
+	# The honk-ai MCP server has no public route. The previous /mcp
+	# Caddy block (added in #119 to fix FastMCP path handling) and its
+	# matching Cloudflare Access "service-token only" application + the
+	# "Claudebox honkai mcp bypass" policy are retired here, together
+	# with the FastMCP bearer middleware on the MCP server
+	# (`MCP_AUTH_REQUIRED=false`, see deployment/docker-compose-hub.yaml).
+	# claudebox clients now reach the server through the SSH-tunnel chain
+	# to the host's loopback :7092 (`docker-compose-hub.yaml` publishes
+	# `127.0.0.1:7092:7092` for the ``mcp`` service). Re-adding the
+	# public route requires re-enabling the bearer middleware and the
+	# Access application *together* — see AZTEC_SETUP.md → "Honk-ai
+	# MCP server" for the bearer-mode revert checklist.
+
+# Public /ask landing page (anonymous, RAG-only). Served by the
+	# frontend-ask nginx container as a separate bundle from the admin
+	# SPA so the two design systems can evolve independently. The /ask
+	# bundle calls same-origin /stream above, so no CORS is involved.
+	#
+	# IMPORTANT operator action (out-of-band, not in this file):
+	# Cloudflare Access on $PUBLIC_HOSTNAME gates GET requests by
+	# default. Add a Bypass policy for path matches `/ask` and
+	# `/ask/*` so anonymous visitors aren't redirected to SSO. POST
+	# `/api/*` and `/stream` are already bypassed at the apex per
+	# the existing rule that lets the docs widget call the bot.
+	# Note: a named matcher (`/ask` plus `/ask/*`) instead of `/ask*` so
+	# we don't accidentally match unrelated paths like `/asky` should
+	# anyone ever land such a route at the apex.
+	@ask path /ask /ask/*
+	handle @ask {
+		reverse_proxy frontend-ask:80
+	}
+
+	# No admin SPA in this fork. Anything that doesn't match /api/*,
+	# /stream, or /ask above lands here. We respond with a small 200 so
+	# health checks don't 404 and humans landing at the apex get a hint.
+	handle {
+		respond "DocsGPT-Aztec backend. See /ask for the public chat surface." 200
+	}
+
+	# Access + error logs to stdout so `docker compose logs caddy`
+	# shows them. Structured JSON for easy parsing if you add a log
+	# collector later.
+	log {
+		output stdout
+		format json
+	}
+}
