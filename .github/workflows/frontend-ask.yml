@@ -21,7 +21,7 @@ jobs:
       run:
         working-directory: frontend-ask
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Set up Node 20
         uses: actions/setup-node@v4
         with:
